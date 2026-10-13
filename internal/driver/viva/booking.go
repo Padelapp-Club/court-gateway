@@ -169,7 +169,7 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 		return driver.Booking{}, err
 	}
 	if len(ivs) == 0 {
-		return driver.Booking{}, driver.ErrNotFound // a room that is not a configured court
+		return driver.Booking{}, driver.ErrCourtNotConfigured
 	}
 	iv := ivs[0]
 	status := driver.StatusActive
@@ -210,7 +210,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no room")
 	}
 	if _, ours := d.byRoom[strings.ToLower(s.Room.ID)]; !ours {
-		return driver.ErrNotOwned
+		return driver.ErrCourtNotConfigured
 	}
 	if err := d.checkOwnership(kind, raw, partner); err != nil {
 		return err

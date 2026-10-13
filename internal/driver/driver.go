@@ -28,6 +28,9 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrStarted: the booking has already started; it is not cancelled.
 	ErrStarted = errors.New("booking has already started")
+	// ErrCourtNotConfigured: the booking is on a court (a CRM room) that
+	// is not a court of the club's config, e.g. one removed from it.
+	ErrCourtNotConfigured = errors.New("booking is on a court that is not configured")
 )
 
 // MisconfigError says, in Russian, what in a club's config does not match

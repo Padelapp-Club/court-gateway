@@ -252,6 +252,8 @@ func classify(err error) (int, string, string) {
 		return http.StatusNotFound, "NOT_FOUND", "not found"
 	case errors.Is(err, driver.ErrNotOwned):
 		return http.StatusForbidden, "NOT_OWNED", "the booking was not created through this gateway by this partner"
+	case errors.Is(err, driver.ErrCourtNotConfigured):
+		return http.StatusConflict, "COURT_NOT_CONFIGURED", "the booking is on a court that is not configured for this club"
 	case errors.Is(err, driver.ErrStarted):
 		return http.StatusConflict, "BOOKING_STARTED", "the booking has already started and cannot be cancelled"
 	case errors.Is(err, driver.ErrSlotUnavailable):

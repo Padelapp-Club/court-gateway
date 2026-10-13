@@ -440,7 +440,7 @@ func TestCancelOwnershipRules(t *testing.T) {
 		{"comment without marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "club note"}), false, driver.ErrNotOwned},
 		{"null comment", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": nil}), false, driver.ErrNotOwned},
 		{"another partner's marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:other]"}), false, driver.ErrNotOwned},
-		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
+		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, driver.ErrCourtNotConfigured},
 		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:booker] note"}), false, nil},
 		{"own exercise, empty client fields", "e-" + seedEx(map[string]any{"clientsCount": 0, "clients": []any{}, "guests": nil, "participants": map[string]any{}, "bookings": "", "comment": "[cg:booker]"}), false, nil},
 		{"clients listed, no clientsCount", "e-" + seedEx(map[string]any{"clients": []any{map[string]any{"id": "fixture-client"}}, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
@@ -509,10 +509,13 @@ func TestGetBooking(t *testing.T) {
 	if leak := containsAny(raw, privacyMarkers); leak != "" {
 		t.Fatalf("leak %s", leak)
 	}
-	// a record in a room that is not a configured court is not exposed
+	// a record in a room that is not (or no longer) a configured court is
+	// not exposed: 409 COURT_NOT_CONFIGURED, for reading and cancelling
 	other := f.seedClubBooking(roomOther, d.Add(10*time.Hour), d.Add(11*time.Hour))
-	if st, _, raw := call(t, f, http.MethodGet, "/v1/clubs/test-club/bookings/e-"+other, contract.ReadKey, ""); st != 404 {
-		t.Fatalf("%d %s", st, raw)
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		if st, m, raw := call(t, f, method, "/v1/clubs/test-club/bookings/e-"+other, contract.BookKey, ""); st != 409 || m["code"] != "COURT_NOT_CONFIGURED" || strings.Contains(raw, roomOther) {
+			t.Fatalf("%s: %d %s", method, st, raw)
+		}
 	}
 	// a break id is read from the breaks endpoint
 	if st, _, _ := call(t, f, http.MethodGet, "/v1/clubs/test-club/bookings/b-"+id, contract.ReadKey, ""); st != 404 {

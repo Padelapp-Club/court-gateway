@@ -3,9 +3,13 @@ package core
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -57,5 +61,25 @@ func TestClubsReadyInParallel(t *testing.T) {
 	first, second := errors.New("first"), errors.New("second")
 	if err := clubsOf(t, slowDriver{err: first, delay: 20 * time.Millisecond}, slowDriver{err: second}).Ready(context.Background()); err != first {
 		t.Fatalf("err = %v, want the first club's", err)
+	}
+}
+
+// strayDriver reads a booking on a court the club's config does not have.
+type strayDriver struct{ slowDriver }
+
+func (strayDriver) Get(context.Context, string) (driver.Booking, error) {
+	return driver.Booking{ID: "e-00000000-0000-4000-8000-0000000000e1", Court: "removed-court", Start: time.Now(), End: time.Now().Add(time.Hour)}, nil
+}
+
+// A booking the driver places on a court the config does not have (one
+// removed from it) is 409 COURT_NOT_CONFIGURED, not exposed.
+func TestGetOfABookingOnAnUnknownCourt(t *testing.T) {
+	srv := NewServer(&Settings{ClubID: "club-a", Location: time.UTC, Courts: []Court{{ID: "court-1", Name: "C1"}}}, strayDriver{}, nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-a/bookings/e-00000000-0000-4000-8000-0000000000e1", nil)
+	r = r.WithContext(auth.WithPartnerName(r.Context(), "reader"))
+	w := httptest.NewRecorder()
+	srv.APIHandler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "COURT_NOT_CONFIGURED") || strings.Contains(w.Body.String(), "removed-court") {
+		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }

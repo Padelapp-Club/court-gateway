@@ -393,7 +393,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, known := s.cfg.CourtByID(b.Court); !known {
-		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such booking")
+		s.driverError(w, r, "get", driver.ErrCourtNotConfigured)
 		return
 	}
 	status := b.Status
