@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -172,42 +173,57 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		go client.Run(ctx)
 	}
 
-	// self-check -> health status file (read by `healthcheck`) and heartbeat
-	// to the hub: the CRM is checked every statusInterval, the hub
-	// connection every 2 seconds; the file is rewritten after each CRM check
-	// and whenever the hub connection changes, and each CRM check is sent to
-	// the hub as a heartbeat over the gateway's own connection
+	// self-check -> health status file (read by `healthcheck`, and the
+	// local /health/ready) and heartbeat to the hub: the CRM is checked
+	// every statusInterval, the hub connection every 2 seconds; the file is
+	// rewritten after each CRM check and whenever the readiness or the hub
+	// connection changes, and each CRM check is sent to the hub as a
+	// heartbeat over the gateway's own connection
+	var notReady atomic.Value // string: why the installation is not ready beyond the CRM
+	notReady.Store("")
+	clubs.SetNotReady(func() string { return notReady.Load().(string) })
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
 		check := &tunnel.SelfCheck{Ready: clubs.Ready, Reason: core.ReadyReason, Interval: statusInterval,
 			Timeout: core.ReadyTimeout, Version: version, Build: build()}
 		var st core.HealthStatus
-		lastHub := ""
+		var crm tunnel.Heartbeat
+		lastSeen := time.Now() // the hub, or the start
 		for {
-			hubState := ""
-			if s.Hub != nil {
-				hubState = "disconnected"
-				if gw.connected() {
-					hubState = "connected"
+			hs := hubState{}
+			if client != nil {
+				hs.configured, hs.connected, hs.authFailed = true, gw.connected(), client.Unauthorized()
+				if hs.connected {
+					lastSeen = time.Now()
 				}
+				hs.silentFor = time.Since(lastSeen)
+				hs.configRefused = syncer.State().Error != ""
 			}
 			hb, due := check.Step(ctx)
 			if ctx.Err() != nil {
 				return
 			}
 			if due {
-				st = core.HealthStatus{Version: version, Ready: hb.Ready, Reason: hb.Reason}
-				gw.ready.Store(st.Ready)
-				gw.reason.Store(st.Reason)
+				crm = hb
+				gw.ready.Store(hb.Ready)
+				gw.reason.Store(hb.Reason)
 				if client != nil {
 					cs := syncer.State()
 					hb.ConfigVersion, hb.ConfigError, hb.ClubErrors, hb.Clubs = cs.Version, cs.Error, cs.ClubErrors, cs.Clubs
 					go sendHeartbeat(ctx, client, hb, log)
 				}
 			}
-			if due || hubState != lastHub {
-				st.Time, st.Hub, lastHub = time.Now().UTC(), hubState, hubState
+			ready, reason := readiness(crm.Ready, crm.Reason, hs)
+			extra := ""
+			if crm.Ready && !ready {
+				extra = reason
+			}
+			notReady.Store(extra)
+			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
+			if due || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
+				next.Time = time.Now().UTC()
+				st = next
 				if werr := core.WriteHealthStatus(s.StateDir, st); werr != nil {
 					log.Warn("cannot write the health status file", "error", werr)
 				}
@@ -319,6 +335,49 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	}
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
+}
+
+// hubOfflineAfter is how long the hub may be unreachable before the
+// gateway reports itself not ready (the hub's default offline_after).
+const hubOfflineAfter = 3 * time.Minute
+
+// hubState is what readiness needs to know about the hub connection.
+type hubState struct {
+	configured    bool // the installation has a hub
+	connected     bool
+	authFailed    bool // the hub rejected the gateway secret
+	silentFor     time.Duration
+	configRefused bool // a club of the hub's config does not load
+}
+
+func (h hubState) String() string {
+	switch {
+	case !h.configured:
+		return ""
+	case h.connected:
+		return "connected"
+	default:
+		return "disconnected"
+	}
+}
+
+// readiness combines the CRM self-check with the hub: a gateway the hub
+// cannot reach or does not accept, or whose club config was refused, is
+// not ready either, with its own reason code.
+func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
+	switch {
+	case !crmReady:
+		return false, cmp.Or(crmReason, "STARTING")
+	case !h.configured:
+		return true, ""
+	case h.authFailed:
+		return false, "HUB_AUTH_FAILED"
+	case !h.connected && h.silentFor > hubOfflineAfter:
+		return false, "HUB_UNREACHABLE"
+	case h.configRefused:
+		return false, "CONFIG_REFUSED"
+	}
+	return true, ""
 }
 
 // sendHeartbeat reports one self-check to the hub. A failed heartbeat is

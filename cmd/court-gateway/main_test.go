@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
@@ -104,5 +105,35 @@ func TestHubExampleConfigIsValid(t *testing.T) {
 	env := map[string]string{"HUB_OPERATOR_KEY": strings.Repeat("o", 32), "PARTNER_KEY_1": strings.Repeat("k", 32)}
 	if _, err := hub.LoadFile("../../hub.example.yaml", func(k string) string { return env[k] }); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Readiness is the CRM and, with a hub, the hub: not accepted, unreachable
+// for longer than the hub's offline threshold, or a club config refused.
+func TestReadinessIncludesTheHub(t *testing.T) {
+	ok := hubState{configured: true, connected: true}
+	cases := []struct {
+		name     string
+		crmReady bool
+		hub      hubState
+		ready    bool
+		reason   string
+	}{
+		{"all well", true, ok, true, ""},
+		{"no hub", true, hubState{}, true, ""},
+		{"crm down wins", false, hubState{configured: true, authFailed: true}, false, "CRM_UNREACHABLE"},
+		{"secret rejected", true, hubState{configured: true, authFailed: true}, false, "HUB_AUTH_FAILED"},
+		{"hub gone briefly", true, hubState{configured: true, silentFor: time.Minute}, true, ""},
+		{"hub gone for long", true, hubState{configured: true, silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
+		{"config refused", true, hubState{configured: true, connected: true, configRefused: true}, false, "CONFIG_REFUSED"},
+	}
+	for _, c := range cases {
+		reason := ""
+		if !c.crmReady {
+			reason = "CRM_UNREACHABLE"
+		}
+		if ready, got := readiness(c.crmReady, reason, c.hub); ready != c.ready || got != c.reason {
+			t.Errorf("%s: %v %q, want %v %q", c.name, ready, got, c.ready, c.reason)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,9 @@ type Clubs struct {
 	readyNoClubs func(context.Context) error
 	// gatewayAPI serves /gateway/ on the tunnel handler only.
 	gatewayAPI http.Handler
+	// notReady names a reason, beyond the CRM, why the installation is not
+	// ready (its hub connection or config); "" when there is none.
+	notReady atomic.Pointer[func() string]
 }
 
 type clubEntry struct {
@@ -80,6 +84,10 @@ func NewClubs(base *Settings, o ClubsOptions) (*Clubs, error) {
 // must be called before TunnelHandler.
 func (c *Clubs) SetGatewayAPI(h http.Handler) { c.gatewayAPI = h }
 
+// SetNotReady sets what /health/ready asks besides the CRM: f returns a
+// reason code when the installation is not ready for another cause.
+func (c *Clubs) SetNotReady(f func() string) { c.notReady.Store(&f) }
+
 // Set replaces the served clubs. unavailable are clubs of the config that
 // are not served because their config does not load: partners get 503
 // for them rather than 404.
@@ -108,8 +116,13 @@ func (c *Clubs) Server(id string) (*Server, bool) {
 	return e.srv, ok
 }
 
-// Ready checks every club's CRM access (one CRM account, so in practice
-// the first failure is everybody's); with no club it checks the account.
+// readyParallel bounds how many clubs are checked at once.
+const readyParallel = 4
+
+// Ready checks every club's CRM access, a few clubs at a time, each within
+// ctx (one CRM account, so in practice the first failure is everybody's);
+// with no club it checks the account. The error is the first club's, in
+// id order.
 func (c *Clubs) Ready(ctx context.Context) error {
 	t := c.cur.Load()
 	if len(t.ids) == 0 {
@@ -118,8 +131,20 @@ func (c *Clubs) Ready(ctx context.Context) error {
 		}
 		return nil
 	}
-	for _, id := range t.ids {
-		if err := t.byID[id].srv.drv.Ready(ctx); err != nil {
+	errs := make([]error, len(t.ids))
+	sem := make(chan struct{}, readyParallel)
+	var wg sync.WaitGroup
+	for i, id := range t.ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			errs[i] = t.byID[id].srv.drv.Ready(ctx)
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
 			return err
 		}
 	}
@@ -173,6 +198,12 @@ func (c *Clubs) APIHandler() http.Handler {
 }
 
 func (c *Clubs) handleReady(w http.ResponseWriter, r *http.Request) {
+	if f := c.notReady.Load(); f != nil {
+		if reason := (*f)(); reason != "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), ReadyTimeout)
 	defer cancel()
 	if err := c.Ready(ctx); err != nil {
