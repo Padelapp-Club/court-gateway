@@ -32,7 +32,7 @@ if [ -n "${RELEASE_KEY_FILE:-}" ]; then
 fi
 DEFAULT_HUB_URL="${DEFAULT_HUB_URL:-}"
 OUT="${OUT:-dist}"
-TARGETS="${TARGETS:-linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64}"
+TARGETS="${TARGETS:-linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64 windows/arm64}"
 
 export CGO_ENABLED=0
 export GOFLAGS=-mod=readonly

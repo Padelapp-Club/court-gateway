@@ -48,9 +48,12 @@
 ### Windows
 
 1. Создайте папку `C:\court-gateway` и скачайте в неё со страницы выпуска
-   `court-gateway-<версия>-windows-amd64.exe` и `SHA256SUMS`. Если Windows предупредит о
-   неизвестном издателе, нажмите «Подробнее» → «Выполнить в любом случае».
-2. Откройте **PowerShell от имени администратора** и выполните, вписав версию в строку `$f`:
+   `court-gateway-<версия>-windows-amd64.exe` (Windows на ARM, например на процессоре Snapdragon, —
+   `windows-arm64.exe`) и `SHA256SUMS`. Сборка x64 работает и на Windows 11 для ARM через
+   эмуляцию, но там лучше родная `arm64`. Если Windows предупредит о неизвестном издателе, нажмите
+   «Подробнее» → «Выполнить в любом случае».
+2. Откройте **PowerShell от имени администратора** и выполните, вписав в строку `$f` версию (и
+   `arm64` вместо `amd64` на ARM):
 
    ```powershell
    cd C:\court-gateway
@@ -248,7 +251,7 @@ docker compose up -d --force-recreate court-gateway
 cd court-gateway-<версия>      # распакованный «Source code»
 RELEASE_KEY_FILE=~/Downloads/release.pub DEFAULT_HUB_URL="$(cat ~/Downloads/hub-url.txt)" \
   VERSION=<версия> scripts/build.sh
-# пять бинарников в dist/ и dist/SHA256SUMS — сравните с SHA256SUMS выпуска
+# шесть бинарников в dist/ и dist/SHA256SUMS — сравните с SHA256SUMS выпуска
 ```
 
 Сборка воспроизводимая: те же исходники, Go, ключ и адрес хаба дают побайтно те же файлы, поэтому

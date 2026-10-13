@@ -70,6 +70,7 @@ variables of the `setup` command in step 3 and nowhere else; never repeat them b
 | macOS Apple Silicon | `~/court-gateway` | `court-gateway-<v>-darwin-arm64` |
 | macOS Intel | `~/court-gateway` | `court-gateway-<v>-darwin-amd64` |
 | Windows x64 | `C:\court-gateway` | `court-gateway-<v>-windows-amd64.exe` |
+| Windows ARM64 | `C:\court-gateway` | `court-gateway-<v>-windows-arm64.exe` (the x64 build also runs under emulation on Windows 11 ARM; prefer arm64) |
 
 Detect: `uname -s -m` (Linux/macOS) or `$env:PROCESSOR_ARCHITECTURE` (Windows). Create the folder
 and `cd` into it. (On Windows `setup` closes the folder and `.env` to everyone but Administrators and SYSTEM
@@ -102,7 +103,7 @@ curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
   grep " $F\$" SHA256SUMS | shasum -a 256 -c - && mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
 ```
 
-Windows:
+Windows (on ARM64 put `windows-arm64.exe` in `$f`):
 
 ```powershell
 & {

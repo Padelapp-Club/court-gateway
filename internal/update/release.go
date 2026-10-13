@@ -16,7 +16,7 @@ import (
 )
 
 // Platforms are the release builds.
-var Platforms = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64", "windows-amd64"}
+var Platforms = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64", "windows-amd64", "windows-arm64"}
 
 // AssetName is the file name of a release build.
 func AssetName(ver, platform string) string {

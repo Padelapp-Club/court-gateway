@@ -484,7 +484,7 @@ func TestBuildManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, err := ParseManifest(data)
-	if err != nil || len(m.Assets) != len(Platforms) || !strings.HasSuffix(m.Assets["windows-amd64"].URL, ".exe") {
+	if err != nil || len(m.Assets) != len(Platforms) || !strings.HasSuffix(m.Assets["windows-amd64"].URL, ".exe") || !strings.HasSuffix(m.Assets["windows-arm64"].URL, ".exe") {
 		t.Fatalf("%+v %v", m, err)
 	}
 }

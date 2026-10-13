@@ -7,10 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
 // The install commands of README.md, AGENTS.md and deploy/cloud-init.yaml
@@ -279,5 +282,21 @@ func TestToolchainPinnedEverywhere(t *testing.T) {
 	ver := strings.Fields(mod[i+len("\ntoolchain go"):])[0]
 	if !strings.Contains(readDoc(t, "Dockerfile"), "FROM golang:"+ver+"-") || !strings.Contains(readDoc(t, "README.md"), "(сейчас "+ver+")") {
 		t.Fatalf("toolchain go%s is not the Dockerfile's and README's Go", ver)
+	}
+}
+
+// scripts/build.sh builds exactly the release platforms that manifests
+// list (update.Platforms), Windows on ARM64 included.
+func TestBuildTargetsAreTheReleasePlatforms(t *testing.T) {
+	script := readDoc(t, "scripts/build.sh")
+	i := strings.Index(script, `TARGETS="${TARGETS:-`)
+	if i < 0 {
+		t.Fatal("build.sh has no default TARGETS")
+	}
+	list := script[i+len(`TARGETS="${TARGETS:-`):]
+	list = list[:strings.Index(list, "}")]
+	got := strings.ReplaceAll(list, "/", "-")
+	if got != strings.Join(update.Platforms, " ") || !slices.Contains(update.Platforms, "windows-arm64") {
+		t.Fatalf("build.sh targets %q, release platforms %v", got, update.Platforms)
 	}
 }
