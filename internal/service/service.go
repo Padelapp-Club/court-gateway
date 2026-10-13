@@ -35,8 +35,14 @@ type Spec struct {
 
 func (s Spec) dir() string { return filepath.Dir(s.Config) }
 
-// LogFile is where the service writes its log on macOS and Windows.
+// LogFile is where the service writes its log on macOS and Windows; serve
+// rotates it at 10 MB (-log-file).
 func (s Spec) LogFile() string { return filepath.Join(s.dir(), "court-gateway.log") }
+
+// StartupLogFile receives what the process writes to stderr before its
+// logger exists (a config error) or outside it (a crash) on macOS; serve
+// truncates it at start when it has grown past 1 MB.
+func (s Spec) StartupLogFile() string { return filepath.Join(s.dir(), "court-gateway.stderr.log") }
 
 // SystemdPath is the unit file location.
 const SystemdPath = "/etc/systemd/system/court-gateway.service"
@@ -78,6 +84,8 @@ func PlistPath(s Spec) string {
 
 // LaunchdPlist renders the macOS job. KeepAlive restarts the gateway
 // whenever it exits; RunAtLoad starts it at boot (daemon) or login (agent).
+// The log goes to the rotating LogFile; launchd's own stdout/stderr file
+// only catches what is written outside the logger, and is bounded by serve.
 func LaunchdPlist(s Spec) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -91,13 +99,15 @@ func LaunchdPlist(s Spec) string {
     <string>serve</string>
     <string>-config</string>
     <string>` + xmlEscape(s.Config) + `</string>
+    <string>-log-file</string>
+    <string>` + xmlEscape(s.LogFile()) + `</string>
   </array>
   <key>WorkingDirectory</key><string>` + xmlEscape(s.dir()) + `</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>` + xmlEscape(s.LogFile()) + `</string>
-  <key>StandardErrorPath</key><string>` + xmlEscape(s.LogFile()) + `</string>
+  <key>StandardOutPath</key><string>` + xmlEscape(s.StartupLogFile()) + `</string>
+  <key>StandardErrorPath</key><string>` + xmlEscape(s.StartupLogFile()) + `</string>
 `)
 	if s.System && s.User != "" {
 		b.WriteString("  <key>UserName</key><string>" + xmlEscape(s.User) + "</string>\n")

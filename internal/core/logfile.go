@@ -63,3 +63,13 @@ func (r *RotatingFile) Close() error {
 	r.f = nil
 	return err
 }
+
+// TrimStartupLog empties f when it is a regular file larger than max. It is
+// meant for the stderr file a service manager appends to (launchd), which
+// nothing else rotates: it only receives a few lines per start, so cutting
+// it at start keeps it bounded.
+func TrimStartupLog(f *os.File, max int64) {
+	if info, err := f.Stat(); err == nil && info.Mode().IsRegular() && info.Size() > max {
+		_ = f.Truncate(0)
+	}
+}

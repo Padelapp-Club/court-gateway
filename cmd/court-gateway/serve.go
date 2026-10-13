@@ -46,6 +46,9 @@ func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defau
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	if *logFile != "" && stderr == io.Writer(os.Stderr) {
+		core.TrimStartupLog(os.Stderr, 1<<20)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return serve(ctx, *cfgPath, *logFile, stderr, getenv)
