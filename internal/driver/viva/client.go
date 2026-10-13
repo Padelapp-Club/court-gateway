@@ -103,7 +103,7 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.authURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", driver.Upstream(driver.UpstreamUnavailable, "build login request", nil)
+		return "", driver.Upstream(driver.UpstreamUnavailable, "build login request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.http.Do(req)
@@ -115,13 +115,13 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 	switch {
 	case resp.StatusCode == http.StatusOK:
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d", resp.StatusCode), nil)
+		return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d", resp.StatusCode))
 	default:
-		return "", driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("login answered HTTP %d", resp.StatusCode), nil)
+		return "", driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("login answered HTTP %d", resp.StatusCode))
 	}
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil || tr.AccessToken == "" || tr.ExpiresIn == nil {
-		return "", driver.Upstream(driver.UpstreamInvalid, "login response has no access_token/expires_in", nil)
+		return "", driver.Upstream(driver.UpstreamInvalid, "login response has no access_token/expires_in")
 	}
 	c.token = tr.AccessToken
 	c.expires = c.now().Add(time.Duration(*tr.ExpiresIn*float64(time.Second)) - tokenSafety)
@@ -138,7 +138,7 @@ func networkError(op string, err error) error {
 	}
 	// The url.Error text holds the request URL; it carries no secrets
 	// (credentials go in the body or a header), but keep only the op.
-	return driver.Upstream(driver.UpstreamUnavailable, op+": network error", nil)
+	return driver.Upstream(driver.UpstreamUnavailable, op+": network error")
 }
 
 // do sends an authenticated API request. A 401 drops the token, logs in
@@ -167,7 +167,7 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		req, err := http.NewRequestWithContext(ctx, method, u, body)
 		if err != nil {
-			return 0, nil, driver.Upstream(driver.UpstreamUnavailable, "build request", nil)
+			return 0, nil, driver.Upstream(driver.UpstreamUnavailable, "build request")
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("Accept", "application/json")
@@ -188,11 +188,11 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 			if attempt == 0 {
 				continue
 			}
-			return 0, nil, driver.Upstream(driver.UpstreamAuth, method+" "+pathTemplate(path)+": token rejected after re-login", nil)
+			return 0, nil, driver.Upstream(driver.UpstreamAuth, method+" "+pathTemplate(path)+": token rejected after re-login")
 		}
 		if resp.StatusCode >= 500 {
 			return 0, nil, driver.Upstream(driver.UpstreamUnavailable,
-				fmt.Sprintf("%s %s answered HTTP %d", method, pathTemplate(path), resp.StatusCode), nil)
+				fmt.Sprintf("%s %s answered HTTP %d", method, pathTemplate(path), resp.StatusCode))
 		}
 		return resp.StatusCode, data, nil
 	}

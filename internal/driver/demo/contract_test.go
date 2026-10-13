@@ -51,20 +51,10 @@ func TestContract(t *testing.T) {
 	})
 }
 
-// The same suite through the hub: partner -> hub -> outbound tunnel ->
-// gateway -> driver, over real TLS. Keys, scopes and rate limits live on
-// the hub here.
-func TestContractThroughHub(t *testing.T) {
-	contract.Run(t, func(t *testing.T) *contract.Env {
-		b := contract.Build(t, testkit.DemoCRM, demoClub, nil, "demo", demo.New, nil)
-		handler, logs := testkit.ThroughHub(t, b)
-		return demoEnv(handler, "demo-club", nil, b.Server, logs)
-	})
-}
-
-// The suite through the hub against one club of an installation that
-// serves two clubs configured on the hub (one CRM account, a club
-// network): the other club must not change anything a partner sees.
+// The suite through the hub (partner -> hub -> outbound tunnel -> gateway
+// -> driver, over real TLS) against one club of an installation that
+// serves two clubs configured on the hub: the other club must not change
+// anything a partner sees.
 func TestContractMultiClubThroughHub(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
 		h := testkit.StartHub(t, "poll_wait: 2s\n"+testkit.OperatorYAML+testkit.HubPartnersYAML, testkit.HubEnv(), hub.Options{})

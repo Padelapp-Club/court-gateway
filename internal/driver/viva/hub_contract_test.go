@@ -14,22 +14,10 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
-// The privacy suite (and the rest of the contract) through the hub: a club
-// booking full of personal data sits in the CRM stub, and nothing of it may
-// reach a partner or a log line on the gateway or the hub.
-func TestContractThroughHub(t *testing.T) {
-	contract.Run(t, func(t *testing.T) *contract.Env {
-		f := newFixture(t, fixtureOpts{services: bookingService})
-		env := f.env()
-		env.Handler, env.Logs = testkit.ThroughHub(t, f.built)
-		return env
-	})
-}
-
-// The same through the hub for an installation with two clubs configured
-// on the hub: the CRM login is the installation's, each club adds its own
-// studio, courts and services. The suite runs against one club while the
-// other is served by the same gateway.
+// The contract, privacy included, through the hub for an installation with
+// two clubs configured on the hub: the CRM login is the installation's,
+// each club adds its own studio, courts and services. The suite runs
+// against one club while the other is served by the same gateway.
 func TestContractMultiClubThroughHub(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
 		stub := vivastub.New(stubUser, stubPass, studio)

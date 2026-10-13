@@ -77,7 +77,7 @@ func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.
 		}
 	}
 	if st == nil {
-		return out, driver.Upstream(driver.UpstreamRejected, "no such studio in the account", nil)
+		return out, driver.Upstream(driver.UpstreamRejected, "no such studio in the account")
 	}
 	out.Studio, out.ClubName = st.ID, st.Name
 	out.CRM = driver.Params{"studio": st.ID}

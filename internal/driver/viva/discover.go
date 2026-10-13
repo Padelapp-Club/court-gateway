@@ -52,11 +52,11 @@ func listStudios(ctx context.Context, c *client) ([]vivaStudio, error) {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /studios answered HTTP %d", status), nil)
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /studios answered HTTP %d", status))
 	}
 	var list []vivaStudio
 	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /studios: response is not a JSON array of studios", nil)
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /studios: response is not a JSON array of studios")
 	}
 	out := list[:0]
 	for _, st := range list {
@@ -195,7 +195,7 @@ func readPriceLists(ctx context.Context, c *client, studio string) (priceLists, 
 			return out, err
 		}
 		if status != http.StatusOK {
-			return out, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing answered HTTP %d", status), nil)
+			return out, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing answered HTTP %d", status))
 		}
 		var page struct {
 			Content []struct {
@@ -206,7 +206,7 @@ func readPriceLists(ctx context.Context, c *client, studio string) (priceLists, 
 			TotalPages *int  `json:"totalPages"`
 		}
 		if err := json.Unmarshal(data, &page); err != nil {
-			return out, driver.Upstream(driver.UpstreamInvalid, "GET /pricing: malformed page", nil)
+			return out, driver.Upstream(driver.UpstreamInvalid, "GET /pricing: malformed page")
 		}
 		for _, p := range page.Content {
 			if err := out.add(ctx, c, p.ID, p.Name); err != nil {

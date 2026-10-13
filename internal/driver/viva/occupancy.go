@@ -92,15 +92,15 @@ func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, d
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", kind, status), nil)
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", kind, status))
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": response is not a JSON array", nil)
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": response is not a JSON array")
 	}
 	var out []slot
 	if err := json.Unmarshal(trimmed, &out); err != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": malformed item", nil)
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": malformed item")
 	}
 	return out, nil
 }
@@ -161,7 +161,7 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 // every court asked about; an exercise without one is invalid.
 func (d *Driver) intervals(kind, prefix string, it slot, rooms map[string]string) ([]driver.Interval, error) {
 	bad := func(what string) ([]driver.Interval, error) {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": item "+what, nil)
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": item "+what)
 	}
 	if !uuidRe.MatchString(it.ID) {
 		return bad("has no valid id")

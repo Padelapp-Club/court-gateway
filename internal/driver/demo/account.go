@@ -65,7 +65,7 @@ func (Account) Discover(_ context.Context, q driver.DiscoverQuery) (driver.Disco
 	}
 	st := studioByID(q.Studio)
 	if st == nil {
-		return out, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("no studio %q in the demo CRM", q.Studio), nil)
+		return out, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("no studio %q in the demo CRM", q.Studio))
 	}
 	out.Studio, out.ClubName = st.id, st.name
 	out.CRM = driver.Params{"studio": st.id}

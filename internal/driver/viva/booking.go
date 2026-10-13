@@ -108,13 +108,13 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	case status == http.StatusConflict:
 		return driver.Booking{}, fmt.Errorf("POST %s: %w", path, driver.ErrSlotUnavailable)
 	default:
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST %s answered HTTP %d", path, status), nil)
+		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST %s answered HTTP %d", path, status))
 	}
 	var cr createdResponse
 	if err := json.Unmarshal(data, &cr); err != nil || !uuidRe.MatchString(cr.ID) {
 		// The record may exist upstream without us knowing its id. The
 		// partner sees an error and must re-read occupancy before retrying.
-		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, "POST "+path+": response has no valid id", nil)
+		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, "POST "+path+": response has no valid id")
 	}
 	d.log.Info("record created", "kind", strings.TrimPrefix(path, "/"), "court", req.Court)
 	return driver.Booking{
@@ -134,11 +134,11 @@ func (d *Driver) read(ctx context.Context, kind, uuid string) (map[string]json.R
 	case http.StatusNotFound:
 		return nil, false, nil
 	default:
-		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s/{id} answered HTTP %d", kind, status), nil)
+		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s/{id} answered HTTP %d", kind, status))
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
-		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: response is not a JSON object", nil)
+		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: response is not a JSON object")
 	}
 	return raw, true, nil
 }
@@ -147,10 +147,10 @@ func (d *Driver) decodeSlot(kind, uuid string, raw map[string]json.RawMessage) (
 	b, _ := json.Marshal(raw)
 	var s slot
 	if err := json.Unmarshal(b, &s); err != nil {
-		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: malformed record", nil)
+		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: malformed record")
 	}
 	if s.ID != "" && !strings.EqualFold(s.ID, uuid) {
-		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record id does not match", nil)
+		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record id does not match")
 	}
 	s.ID = uuid
 	return s, nil
@@ -228,7 +228,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		return nil
 	}
 	if s.Room == nil {
-		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no room", nil)
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no room")
 	}
 	if _, ours := d.byRoom[strings.ToLower(s.Room.ID)]; !ours {
 		return driver.ErrNotOwned
@@ -237,7 +237,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		return err
 	}
 	if start, ok := parseTime(s.TimeFrom); !ok {
-		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no valid timeFrom", nil)
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no valid timeFrom")
 	} else if !start.After(d.now()) {
 		return driver.ErrStarted
 	}
@@ -250,7 +250,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		d.log.Info("record deleted", "kind", kind)
 		return nil
 	default:
-		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /%s/{id} answered HTTP %d", kind, status), nil)
+		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /%s/{id} answered HTTP %d", kind, status))
 	}
 }
 
@@ -258,7 +258,7 @@ func isNull(r json.RawMessage) bool { return len(r) == 0 || string(r) == "null" 
 
 func (d *Driver) checkOwnership(kind string, raw map[string]json.RawMessage, partner string) error {
 	invalid := func(what string) error {
-		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: "+what, nil)
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: "+what)
 	}
 	if kind == "exercises" {
 		if msb, ok := raw["masterServiceBooking"]; ok && !isNull(msb) {

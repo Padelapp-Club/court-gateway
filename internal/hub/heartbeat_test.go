@@ -276,7 +276,7 @@ func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 	}
 
 	// a failing CRM is reported by the same single check
-	w.crm.setErr(driver.Upstream(driver.UpstreamAuth, "test", nil))
+	w.crm.setErr(driver.Upstream(driver.UpstreamAuth, "test"))
 	for i := 0; i < 3; i++ {
 		w.clock.Advance(time.Minute)
 		hb, due := w.check.Step(ctx)

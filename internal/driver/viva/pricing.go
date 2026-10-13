@@ -63,14 +63,14 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 	case http.StatusNotFound:
 		return driver.PriceTable{}, fmt.Errorf("price list of court %q: %w", courtID, driver.ErrNotFound)
 	default:
-		return driver.PriceTable{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing/{id} answered HTTP %d", status), nil)
+		return driver.PriceTable{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing/{id} answered HTTP %d", status))
 	}
 	return parsePricing(data)
 }
 
 func parsePricing(data []byte) (driver.PriceTable, error) {
 	invalid := func(what string) (driver.PriceTable, error) {
-		return driver.PriceTable{}, driver.Upstream(driver.UpstreamInvalid, "GET /pricing/{id}: "+what, nil)
+		return driver.PriceTable{}, driver.Upstream(driver.UpstreamInvalid, "GET /pricing/{id}: "+what)
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {

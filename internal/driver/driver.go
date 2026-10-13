@@ -7,7 +7,6 @@ package driver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -60,22 +59,13 @@ const (
 type UpstreamError struct {
 	Kind   UpstreamKind
 	Detail string
-	Err    error
 }
 
-func (e *UpstreamError) Error() string {
-	if e.Err != nil {
-		return fmt.Sprintf("upstream: %s: %v", e.Detail, e.Err)
-	}
-	return "upstream: " + e.Detail
-}
-
-// Unwrap exposes the cause.
-func (e *UpstreamError) Unwrap() error { return e.Err }
+func (e *UpstreamError) Error() string { return "upstream: " + e.Detail }
 
 // Upstream builds an *UpstreamError.
-func Upstream(kind UpstreamKind, detail string, err error) error {
-	return &UpstreamError{Kind: kind, Detail: detail, Err: err}
+func Upstream(kind UpstreamKind, detail string) error {
+	return &UpstreamError{Kind: kind, Detail: detail}
 }
 
 // Capabilities are reported to partners as-is.

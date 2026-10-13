@@ -22,6 +22,14 @@ import (
 // OperatorKey is the operator key of hubs started with OperatorYAML.
 const OperatorKey = "test-operator-key-0123456789abcdef"
 
+// HubPartnersYAML gives the contract suite's three keys to a hub, with
+// access to every club.
+const HubPartnersYAML = `partners:
+  - { name: reader, key_env: TEST_READ_KEY, scopes: [read], clubs: ["*"] }
+  - { name: booker, key_env: TEST_BOOK_KEY, scopes: [read, book], clubs: ["*"] }
+  - { name: other, key_env: TEST_OTHER_KEY, scopes: [read, book], clubs: ["*"] }
+`
+
 // OperatorYAML enables the operator API with OperatorKey (put
 // HUB_OPERATOR_KEY into the hub env, see HubEnv).
 const OperatorYAML = "operator_key_env: HUB_OPERATOR_KEY\n"

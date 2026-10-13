@@ -113,14 +113,6 @@ func (d *Driver) Seed(court string, start, end time.Time) string {
 	return id
 }
 
-// Paid reports whether a booking was marked as paid (tests).
-func (d *Driver) Paid(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	r := d.records[id]
-	return r != nil && r.paid
-}
-
 // Occupancy implements driver.Driver. The demo store is always complete.
 func (d *Driver) Occupancy(_ context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
 	d.mu.Lock()
