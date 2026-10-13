@@ -48,16 +48,23 @@ func occupancyPath(from, to time.Time) string {
 	return "/v1/clubs/test-club/occupancy?from=" + q(from) + "&to=" + q(to)
 }
 
-func TestOccupancyUsesUTCDayMarginAndCutsOverlap(t *testing.T) {
+// futureMidnight is local (studio) midnight three days from now.
+func futureMidnight() time.Time {
+	msk, _ := time.LoadLocation("Europe/Moscow")
+	n := time.Now().In(msk).AddDate(0, 0, 3)
+	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, msk)
+}
+
+func TestOccupancyListsLocalDaysAndCutsOverlap(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
-	d := futureDay()
-	// Starts on the previous UTC day and runs past midnight.
+	d := futureMidnight()
+	// starts on the previous local day and runs past midnight
 	crossing := f.seedClubBooking(room1, d.Add(-time.Hour), d.Add(time.Hour))
-	// Inside the margin day but not overlapping the range.
+	// inside the margin day but not overlapping the range
 	early := f.seedClubBooking(room1, d.Add(-5*time.Hour), d.Add(-4*time.Hour))
-	// Next day, inside the dateTo margin, not overlapping.
+	// next day, inside the dateTo margin, not overlapping
 	late := f.seedClubBooking(room1, d.Add(26*time.Hour), d.Add(27*time.Hour))
-	// A room that is not a configured court.
+	// a room that is not a configured court
 	elsewhere := f.seedClubBooking(roomOther, d.Add(time.Hour), d.Add(2*time.Hour))
 
 	status, body, raw := call(t, f, http.MethodGet, occupancyPath(d.Add(30*time.Minute), d.Add(3*time.Hour)), contract.ReadKey, "")
@@ -65,23 +72,94 @@ func TestOccupancyUsesUTCDayMarginAndCutsOverlap(t *testing.T) {
 		t.Fatalf("status %d: %s", status, raw)
 	}
 	if !strings.Contains(raw, "e-"+crossing) {
-		t.Fatalf("booking crossing UTC midnight missing: %s", raw)
+		t.Fatalf("booking crossing midnight missing: %s", raw)
 	}
 	for _, id := range []string{early, late, elsewhere} {
 		if strings.Contains(raw, id) {
 			t.Fatalf("non-overlapping or foreign-room booking %s returned: %s", id, raw)
 		}
 	}
-	// The list call asked for whole days with a day of margin.
-	want := "dateFrom=" + d.AddDate(0, 0, -1).Format("2006-01-02")
-	found := false
-	for _, c := range f.stub.Calls() {
-		if strings.HasPrefix(c, "GET /exercises?") && strings.Contains(c, want) {
-			found = true
+	// exercises from the local day before, breaks with a week of look-back
+	want := map[string]string{"GET /exercises?": d.AddDate(0, 0, -1).Format("2006-01-02"), "GET /breaks?": d.AddDate(0, 0, -viva.DefaultBreakLookbackDays).Format("2006-01-02")}
+	for prefix, from := range want {
+		found := false
+		for _, c := range f.stub.Calls() {
+			if strings.HasPrefix(c, prefix) && strings.Contains(c, "dateFrom="+from) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no %s call with dateFrom=%s: %v", prefix, from, f.stub.Calls())
 		}
 	}
-	if !found {
-		t.Fatalf("no list call with %s: %v", want, f.stub.Calls())
+}
+
+// A booking that started before UTC midnight is on the same local day in
+// Moscow: seen after UTC midnight, it blocks the create.
+func TestBookingAcrossUTCMidnightIsSeen(t *testing.T) {
+	day := futureDay() // UTC midnight = 03:00 in Moscow
+	clock := func() time.Time { return day.Add(10 * time.Minute) }
+	f := newFixture(t, fixtureOpts{now: clock})
+	id := f.seedClubBooking(room1, day.Add(-time.Hour), day.Add(2*time.Hour)) // 02:00-05:00 local
+	from, to := day.Add(90*time.Minute), day.Add(150*time.Minute) // 04:30-05:30 local
+	st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to), contract.ReadKey, "")
+	if st != http.StatusOK || !strings.Contains(raw, "e-"+id) || m["complete"] != true {
+		t.Fatalf("occupancy: %d %s", st, raw)
+	}
+	body := `{"court":"court-1","start":"` + from.Format(time.RFC3339) + `","end":"` + to.Format(time.RFC3339) + `","kind":"game"}`
+	if st, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, body); st != http.StatusConflict || m["code"] != "SLOT_UNAVAILABLE" {
+		t.Fatalf("create over the booking: %d %s", st, raw)
+	}
+}
+
+// After local midnight the exercises of yesterday cannot be listed, so a
+// range in the first overnight_minutes of today is not reported complete
+// and is not booked, however empty the answer is.
+func TestEarlyMorningIsIncomplete(t *testing.T) {
+	d := futureMidnight()
+	clock := func() time.Time { return d.Add(10 * time.Minute) } // 00:10 local
+	f := newFixture(t, fixtureOpts{now: clock})
+	id := f.seedClubBooking(room1, d.Add(-time.Hour), d.Add(2*time.Hour)) // 23:00 yesterday to 02:00
+	from, to := d.Add(30*time.Minute), d.Add(90*time.Minute)
+	st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to), contract.ReadKey, "")
+	if st != http.StatusOK || m["complete"] != false || strings.Contains(raw, id) {
+		t.Fatalf("occupancy: %d %s", st, raw)
+	}
+	body := `{"court":"court-1","start":"` + from.Format(time.RFC3339) + `","end":"` + to.Format(time.RFC3339) + `","kind":"game"}`
+	if st, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, body); st != http.StatusConflict || m["code"] != "OCCUPANCY_UNKNOWN" {
+		t.Fatalf("create: %d %s", st, raw)
+	}
+	// from midnight plus overnight_minutes (default 240) on, it is complete
+	late := d.Add(4 * time.Hour)
+	if _, m, raw := call(t, f, http.MethodGet, occupancyPath(late, late.Add(time.Hour)), contract.ReadKey, ""); m["complete"] != true {
+		t.Fatalf("after the overnight window: %s", raw)
+	}
+	// and the window is configurable per club
+	g := newFixture(t, fixtureOpts{now: clock, extraCRM: "  overnight_minutes: 0\n"})
+	if _, m, raw := call(t, g, http.MethodGet, occupancyPath(from, to), contract.ReadKey, ""); m["complete"] != true {
+		t.Fatalf("overnight_minutes 0: %s", raw)
+	}
+}
+
+// A maintenance break that started days before the asked range and is
+// still running is seen, so the create is refused.
+func TestMultiDayBreakIsSeen(t *testing.T) {
+	d := futureMidnight()
+	for name, start := range map[string]time.Time{"started two days earlier": d.Add(-48 * time.Hour), "started yesterday before midnight": d.Add(-time.Hour)} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{})
+			id := f.stub.SeedBreak(map[string]any{"room": map[string]any{"id": room1}, "timeFrom": start.Format(time.RFC3339),
+				"timeTo": d.Add(12 * time.Hour).Format(time.RFC3339), "comment": "maintenance", "canceled": false})
+			from, to := d.Add(9*time.Hour), d.Add(10*time.Hour)
+			st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to), contract.ReadKey, "")
+			if st != http.StatusOK || m["complete"] != true || !strings.Contains(raw, "b-"+id) {
+				t.Fatalf("occupancy: %d %s", st, raw)
+			}
+			body := `{"court":"court-1","start":"` + from.Format(time.RFC3339) + `","end":"` + to.Format(time.RFC3339) + `","kind":"game"}`
+			if st, _, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, body); st != http.StatusConflict {
+				t.Fatalf("create over the break: %d %s", st, raw)
+			}
+		})
 	}
 }
 

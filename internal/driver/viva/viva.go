@@ -2,7 +2,7 @@
 //
 // Everything the driver knows about VivaCRM is what an existing production
 // integration already relied on: Keycloak password-grant login, list
-// endpoints for exercises and breaks filtered by whole UTC days, read by id,
+// endpoints for exercises and breaks selected by the studio's local dates, read by id,
 // create, delete and price lists. No webhooks exist, and the driver keeps no
 // state other than the access token.
 package viva
@@ -36,7 +36,13 @@ const (
 // ClubCRMKeys are the keys of the crm section that belong to one club: a
 // club configured on the hub may set these and nothing else (the login and
 // the endpoints stay in the installation's gateway.yaml).
-var ClubCRMKeys = []string{"studio"}
+var ClubCRMKeys = []string{"studio", "overnight_minutes", "break_lookback_days"}
+
+// Defaults of the club-level occupancy keys (see Occupancy).
+const (
+	DefaultOvernightMinutes  = 240
+	DefaultBreakLookbackDays = 7
+)
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -55,6 +61,9 @@ type court struct {
 type Driver struct {
 	c          *client
 	studio     string
+	loc        *time.Location // the studio's zone: lists select by its dates
+	overnight  time.Duration  // how far an exercise may run past midnight
+	lookback   int            // days of breaks listed before the asked day
 	breakTitle string
 	slot       int
 	courts     []court
@@ -75,7 +84,7 @@ func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 // when cfg has no HTTP client.
 func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	p := cfg.CRM
-	add(p.RejectUnknown("crm", "username", "studio", "auth_url", "api_url", "break_title"))
+	add(p.RejectUnknown("crm", append([]string{"username", "auth_url", "api_url", "break_title"}, ClubCRMKeys...)...))
 	username, err := p.String("crm", "username", true)
 	add(err)
 	endpoint := func(key, def string) string {
@@ -122,10 +131,19 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	if breakTitle == "" {
 		breakTitle = DefaultBreakTitle
 	}
+	overnight := optInt(p, "overnight_minutes", DefaultOvernightMinutes, 0, 1440, add)
+	lookback := optInt(p, "break_lookback_days", DefaultBreakLookbackDays, 0, 60, add)
+	loc := cfg.Timezone
+	if loc == nil {
+		loc = time.UTC
+	}
 
 	d := &Driver{
 		c:          c,
 		studio:     studio,
+		loc:        loc,
+		overnight:  time.Duration(overnight) * time.Minute,
+		lookback:   lookback,
 		breakTitle: breakTitle,
 		slot:       cfg.SlotMinutes,
 		byRoom:     map[string]string{},
@@ -187,6 +205,19 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
 	return d, nil
+}
+
+// optInt reads an optional whole number of the crm section within [min, max].
+func optInt(p driver.Params, key string, def, min, max int, add func(error)) int {
+	if _, ok := p[key]; !ok {
+		return def
+	}
+	n, err := p.Int("crm", key)
+	if err == nil && (n < min || n > max) {
+		err = fmt.Errorf("crm.%s: %d — от %d до %d", key, n, min, max)
+	}
+	add(err)
+	return n
 }
 
 // Resource implements driver.Resourcer: the Viva room behind the court.

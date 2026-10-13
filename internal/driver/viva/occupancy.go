@@ -41,34 +41,39 @@ func parseTime(s string) (time.Time, bool) {
 // formatTime writes UTC with milliseconds, like JavaScript toISOString().
 func formatTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-func utcDay(t time.Time) time.Time {
-	t = t.UTC()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+// day is local midnight of t in the studio's zone.
+func (d *Driver) day(t time.Time) time.Time {
+	t = t.In(d.loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, d.loc)
 }
 
-// listWindow computes the whole-UTC-day window to request for [from, to),
-// and whether the answer can be complete.
+// window computes the dates to list for [from, to) and whether the answer
+// can be complete. Observed on a live account: the list endpoints select
+// records by the START date in the studio's local day (dateFrom..dateTo,
+// both included), the exercise list is EMPTY for past days, and the
+// break list is not. So:
 //
-// The list endpoints filter by whole UTC days, so a booking that starts on
-// the previous UTC day may still overlap the range: we ask one extra day on
-// each side and cut the overlap ourselves. But the endpoints return an
-// EMPTY list for past dates. Two consequences:
-//   - a range that starts before today (UTC) is reported incomplete;
-//   - for a range that starts today or later, the margin day is never moved
-//     into the past: asking with a past dateFrom could empty the whole answer
-//     (only fully past ranges were observed), and an empty answer reads as
-//     "everything is free". The price is a documented residual: a booking that
-//     began yesterday (UTC) and runs past midnight is not seen by a query
-//     starting today.
-func listWindow(from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
-	today := utcDay(now)
-	complete = !from.Before(today)
-	dateFrom = utcDay(from).AddDate(0, 0, -1)
-	if complete && dateFrom.Before(today) {
+//   - exercises are listed from the day before the range (one that starts
+//     the evening before may still run into it), but never from a past
+//     day: an exercise that started yesterday cannot be seen today. A range
+//     that starts before today's midnight plus overnight_minutes may
+//     overlap such an exercise and is therefore reported incomplete (and
+//     cannot be booked);
+//   - breaks are listed from break_lookback_days before the range, so a
+//     multi-day break (a renovation) that started earlier is seen. A break
+//     that started even earlier is not: the look-back bounds what is
+//     assumed.
+func (d *Driver) window(kind string, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
+	dateTo = d.day(to).AddDate(0, 0, 1)
+	if kind == "breaks" {
+		return d.day(from).AddDate(0, 0, -d.lookback), dateTo, true
+	}
+	today := d.day(now)
+	dateFrom = d.day(from).AddDate(0, 0, -1)
+	if dateFrom.Before(today) {
 		dateFrom = today
 	}
-	dateTo = utcDay(to).AddDate(0, 0, 1)
-	return dateFrom, dateTo, complete
+	return dateFrom, dateTo, !from.Before(today.Add(d.overnight))
 }
 
 func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, dateTo time.Time) ([]slot, error) {
@@ -113,10 +118,10 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 	if len(q.Courts) == 1 {
 		roomFilter = d.byCourt[q.Courts[0]].room
 	}
-	dateFrom, dateTo, complete := listWindow(q.From, q.To, d.now())
-
-	occ := driver.Occupancy{Complete: complete}
+	occ := driver.Occupancy{Complete: true}
 	for _, kind := range []string{"exercises", "breaks"} {
+		dateFrom, dateTo, complete := d.window(kind, q.From, q.To, d.now())
+		occ.Complete = occ.Complete && complete
 		items, err := d.list(ctx, kind, roomFilter, dateFrom, dateTo)
 		if err != nil {
 			return driver.Occupancy{}, err

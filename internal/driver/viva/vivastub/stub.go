@@ -1,8 +1,10 @@
 // Package vivastub is a fake VivaCRM for tests: a Keycloak-like token
 // endpoint and the admin API endpoints the viva driver uses. It mimics the
-// behaviour the driver depends on, including the awkward parts: lists are
-// filtered by whole UTC days and come back EMPTY when dateFrom is in the
-// past, while reads by id always work.
+// behaviour the driver depends on, as observed on a live account: lists
+// select records by their START date in the studio's local day (dateFrom
+// and dateTo included), the exercise list comes back EMPTY when dateFrom
+// is a past day while the break list does not, and reads by id always
+// work.
 //
 // Serve it with httptest.NewServer(stub); then the driver's auth_url is
 // <server>/token and api_url is <server>/api/v1.
@@ -43,6 +45,9 @@ type Stub struct {
 	TokenTTL int
 	// Now is the stub's clock (defaults to time.Now).
 	Now func() time.Time
+	// Zone is the studio's time zone, whose dates the lists select by
+	// (defaults to UTC+3).
+	Zone *time.Location
 	// OmitCommentOnRead removes "comment" from reads by id.
 	OmitCommentOnRead bool
 	// StudioName, StudioOffset (hours from UTC) and WorkTime (weekday name
@@ -351,18 +356,29 @@ func roomID(rec map[string]any) string {
 	return ""
 }
 
+func (s *Stub) zone() *time.Location {
+	if s.Zone != nil {
+		return s.Zone
+	}
+	return time.FixedZone("UTC+3", 3*3600)
+}
+
+func localDay(t time.Time, loc *time.Location) time.Time {
+	t = t.In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+}
+
 func (s *Stub) handleList(w http.ResponseWriter, r *http.Request, kind string) {
 	q := r.URL.Query()
-	from, err1 := time.ParseInLocation("2006-01-02", q.Get("dateFrom"), time.UTC)
-	to, err2 := time.ParseInLocation("2006-01-02", q.Get("dateTo"), time.UTC)
+	loc := s.zone()
+	from, err1 := time.ParseInLocation("2006-01-02", q.Get("dateFrom"), loc)
+	to, err2 := time.ParseInLocation("2006-01-02", q.Get("dateTo"), loc)
 	if q.Get("studioId") == "" || err1 != nil || err2 != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "BAD_REQUEST"})
 		return
 	}
-	now := s.now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	if from.Before(today) || q.Get("studioId") != s.Studio {
-		writeJSON(w, http.StatusOK, []any{}) // past dates: an empty list
+	if (kind == "exercises" && from.Before(localDay(s.now(), loc))) || q.Get("studioId") != s.Studio {
+		writeJSON(w, http.StatusOK, []any{}) // exercises of past days: an empty list
 		return
 	}
 	includeCanceled := q.Get("includeCanceled") == "true"
@@ -380,8 +396,7 @@ func (s *Stub) handleList(w http.ResponseWriter, r *http.Request, kind string) {
 			out = append(out, copyMap(rec))
 			continue
 		}
-		day := time.Date(start.UTC().Year(), start.UTC().Month(), start.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		if day.Before(from) || day.After(to) {
+		if day := localDay(start, loc); day.Before(from) || day.After(to) {
 			continue
 		}
 		if room != "" && !strings.EqualFold(roomID(rec), room) {
