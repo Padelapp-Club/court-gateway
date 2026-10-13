@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,5 +111,32 @@ func TestClubsAnswer503UntilConfigured(t *testing.T) {
 	}
 	if code, _ := get("club-z"); code != http.StatusNotFound {
 		t.Fatalf("unknown club: %d", code)
+	}
+}
+
+// A newer hub may send club fields this version does not know: the club
+// is served without them and the fields are logged once, not refused.
+// (The hub's own PUT stays strict: hub/installation_test.go.)
+func TestUnknownClubFieldsAreIgnoredAndLoggedOnce(t *testing.T) {
+	s, err := core.Load([]byte("hub:\n  url: https://hub.example.test\ncrm:\n  type: demo\n"), func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	clubs := core.NewClubs(core.ClubsOptions{})
+	syn := remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	c := club("club-a", map[string]any{"studio": "demo-north"})
+	c["courts"] = []map[string]any{{"id": "court-1", "name": "C1"}}
+	c["future_field"] = map[string]any{"x": 1}
+	for v := int64(1); v <= 2; v++ {
+		if err := syn.Apply(context.Background(), config(t, v, c)); err != nil {
+			t.Fatalf("version %d: %v", v, err)
+		}
+	}
+	if st := syn.State(); len(st.Clubs) != 1 || len(st.ClubErrors) != 0 {
+		t.Fatalf("state %+v", st)
+	}
+	if n := strings.Count(logs.String(), "future_field"); n != 1 {
+		t.Fatalf("unknown field logged %d times:\n%s", n, logs.String())
 	}
 }

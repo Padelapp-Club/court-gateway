@@ -265,7 +265,7 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	if err != nil {
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов с хаба не получена"}), nil
 	}
-	servers, refused := remote.Build(s, o.Factories, o.DriverHook, rc)
+	servers, refused, _ := remote.Build(s, o.Factories, o.DriverHook, rc)
 	var problems, unchecked []string
 	for _, r := range refused {
 		problems = append(problems, r.Problems...)

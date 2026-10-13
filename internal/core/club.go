@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -89,6 +90,40 @@ func (c *ClubSpec) UnmarshalJSON(data []byte) error {
 	*c = ClubSpec(p)
 	return nil
 }
+
+// DecodeClubTolerant decodes a club as a gateway receives it from the
+// hub: top-level fields this version does not know (a newer hub) are left
+// out and returned by name, the rest is decoded as strictly as the hub's
+// PUT decodes it.
+func DecodeClubTolerant(data []byte) (ClubSpec, []string, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return ClubSpec{}, nil, err
+	}
+	var unknown []string
+	for k := range fields {
+		if !slices.Contains(clubFields, k) {
+			unknown = append(unknown, k)
+			delete(fields, k)
+		}
+	}
+	known, _ := json.Marshal(fields)
+	var c ClubSpec
+	err := json.Unmarshal(known, &c)
+	slices.Sort(unknown)
+	return c, unknown, err
+}
+
+// clubFields are the JSON names of ClubSpec's fields.
+var clubFields = func() []string {
+	var out []string
+	t := reflect.TypeFor[ClubSpec]()
+	for i := range t.NumField() {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		out = append(out, name)
+	}
+	return out
+}()
 
 func normalizeMap(m map[string]any) map[string]any {
 	for k, v := range m {

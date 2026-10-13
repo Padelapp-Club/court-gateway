@@ -46,6 +46,7 @@ type Syncer struct {
 	configured map[string]bool         // clubs of the applied config
 	waiting    map[string]*core.Server // built, not yet confirmed by the CRM
 	refused    map[string]string       // club -> why its config is not served
+	ignored    map[string]bool         // unknown club fields already logged
 }
 
 // Options configure New.
@@ -72,7 +73,7 @@ func New(o Options) *Syncer {
 		o.Retry = 5 * time.Second
 	}
 	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch,
-		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1, refused: map[string]string{}}
+		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1, refused: map[string]string{}, ignored: map[string]bool{}}
 }
 
 // SetFetch sets how the config is pulled (before Run).
@@ -177,8 +178,18 @@ const configCheckTimeout = 20 * time.Second
 func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	s.op.Lock()
 	defer s.op.Unlock()
-	servers, refused := Build(s.base, s.factories, s.hook, rc)
+	servers, refused, ignored := Build(s.base, s.factories, s.hook, rc)
 	s.mu.Lock()
+	var fresh []string
+	for _, f := range ignored {
+		if !s.ignored[f] {
+			s.ignored[f] = true
+			fresh = append(fresh, f)
+		}
+	}
+	if len(fresh) > 0 {
+		s.log.Warn("club config from the hub has fields this version does not know; they are ignored", "fields", strings.Join(fresh, ","))
+	}
 	s.applied = rc.Version
 	s.configured, s.waiting, s.refused = map[string]bool{}, map[string]*core.Server{}, map[string]string{}
 	var problems []string
@@ -293,16 +304,23 @@ type Refusal struct {
 }
 
 // Build builds the server of every club in rc with this installation's
-// driver. It returns the servers of the clubs that load and a refusal,
-// in Russian, for every one that does not. hook adjusts each driver
-// config before the driver is built (tests).
-func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), rc tunnel.RemoteConfig) ([]*core.Server, []Refusal) {
+// driver. It returns the servers of the clubs that load, a refusal, in
+// Russian, for every one that does not, and the top-level club fields
+// this version does not know and ignored (a newer hub). hook adjusts each
+// driver config before the driver is built (tests).
+func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), rc tunnel.RemoteConfig) ([]*core.Server, []Refusal, []string) {
 	var refused []Refusal
 	var servers []*core.Server
+	var ignored []string
 	seen := map[string]bool{}
 	for i, raw := range rc.Clubs {
-		var spec core.ClubSpec
-		if err := json.Unmarshal(raw, &spec); err != nil {
+		spec, unknown, err := core.DecodeClubTolerant(raw)
+		for _, f := range unknown {
+			if !slices.Contains(ignored, f) {
+				ignored = append(ignored, f)
+			}
+		}
+		if err != nil {
 			refused = append(refused, Refusal{Problems: []string{fmt.Sprintf("clubs[%d]: %v", i, err)}})
 			continue
 		}
@@ -323,7 +341,8 @@ func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*
 		}
 		servers = append(servers, srv)
 	}
-	return servers, refused
+	slices.Sort(ignored)
+	return servers, refused, ignored
 }
 
 func buildClub(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), spec core.ClubSpec) (*core.Server, error) {
