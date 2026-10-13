@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -37,6 +36,10 @@ var statusInterval = 60 * time.Second
 // confirmDeadline is how long a freshly updated binary has to become
 // ready (and connected to the hub) before it rolls itself back.
 const confirmDeadline = 3 * time.Minute
+
+// maxHandovers bounds how often one start of the installed binary hands
+// over in a row (Windows: a version that exits to be restarted).
+const maxHandovers = 10
 
 func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -79,22 +82,29 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	}
 	log := core.NewLogger(out, slog.LevelInfo, s.Secrets)
 
-	// A container ships a read-only binary; updates live in the state
-	// directory, and the shipped binary hands over to the newest verified
+	// The installed binary is never replaced: updates live in the state
+	// directory, and the installed binary hands over to the newest verified
 	// one here, before doing anything else.
-	exe, _ := os.Executable()
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	inst, canUpdate := update.ChooseInstaller(exe, s.StateDir)
-	if cache, ok := inst.(*update.CacheDir); ok {
-		if next := cache.Launch(version, time.Now()); next != "" {
-			log.Info("starting the updated binary", "path", next)
-			if err := update.Exec(next, os.Args[1:], update.LaunchedEnv+"=1", update.ShippedEnv+"="+cache.Shipped); err != nil {
-				log.Error("could not start the updated binary, staying on the shipped one", "error", err)
+	installed := update.InstalledPath()
+	vers := &update.Versions{Dir: s.StateDir, Installed: installed}
+	if os.Getenv(update.LaunchedEnv) == "" {
+		for range maxHandovers {
+			next := vers.Next(version, time.Now(), log)
+			if next == "" {
+				break
+			}
+			log.Info("starting the newest verified version", "path", next)
+			code, err := update.Handover(ctx, next, os.Args[1:], update.LaunchEnv(installed))
+			if err != nil {
+				log.Error("could not start it, running the installed binary", "error", err)
+				break
+			}
+			if code != exitRestart || ctx.Err() != nil {
+				return code
 			}
 		}
 	}
+	canUpdate := vers.Writable()
 
 	s.Driver.Logger = log
 	clubs, syncer, err := buildInstallation(s, log)
@@ -104,7 +114,14 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	restartTo := make(chan string, 1)
+	update.StopOnEOF(cancel)
+	restart := make(chan struct{}, 1)
+	askRestart := func() {
+		select {
+		case restart <- struct{}{}:
+		default:
+		}
+	}
 	gw := &gateway{connected: func() bool { return true }}
 	gw.reason.Store("STARTING")
 
@@ -206,14 +223,14 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	// a freshly updated binary confirms itself or rolls back
 	if canUpdate {
 		go func() {
-			target, err := update.Confirm(ctx, s.StateDir, version, inst, func(ctx context.Context) error {
+			again, err := update.Confirm(ctx, vers, version, func(ctx context.Context) error {
 				return waitHealthy(ctx, gw, s.Hub != nil, confirmDeadline)
 			}, log, nil)
 			if err != nil && ctx.Err() == nil {
 				log.Error("update confirmation", "error", err)
 			}
-			if target != "" {
-				restartTo <- target
+			if again {
+				askRestart()
 			}
 		}()
 	}
@@ -228,19 +245,19 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	case !s.Update.Enabled:
 		log.Info("automatic updates are off in the config", "version", version)
 	case !canUpdate:
-		log.Warn("the binary's folder is not writable; automatic updates are off", "path", exe)
+		log.Warn("the state directory is not writable; automatic updates are off", "path", s.StateDir)
 	default:
 		u := &update.Updater{
 			PublicKey: key, ManifestURL: s.Update.ManifestURL, Current: version, Client: &http.Client{Timeout: 5 * time.Minute},
-			StateDir: s.StateDir, Installer: inst, CheckBinary: update.ChildCheck(cfgPath), Log: log,
+			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log,
 		}
 		first := 5*time.Minute + time.Duration(time.Now().UnixNano()%int64(10*time.Minute))
-		go u.Loop(ctx, hint, first, 24*time.Hour, func(res update.Result) { restartTo <- res.Target })
+		go u.Loop(ctx, hint, first, 24*time.Hour, func(update.Result) { askRestart() })
 	}
 
 	log.Info("started", "version", version, "build", build(), "listen", s.Listen, "hub", s.Hub != nil, "crm", s.CRMType, "club", s.ClubID)
 	code := 0
-	var target string
+	restarting := false
 	select {
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {
@@ -249,8 +266,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		}
 	case <-ctx.Done():
 		log.Info("shutting down")
-	case target = <-restartTo:
-		log.Info("restarting into another binary", "path", target)
+	case <-restart:
+		restarting = true
+		log.Info("restarting to run the version that is current now")
 	}
 	cancel()
 	if httpSrv != nil {
@@ -258,17 +276,13 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		_ = httpSrv.Shutdown(shCtx)
 		shCancel()
 	}
-	if target != "" {
-		var env []string
-		if cache, ok := inst.(*update.CacheDir); ok {
-			// the next binary must keep using the cache, not replace itself
-			env = append(env, update.LaunchedEnv+"=1", update.ShippedEnv+"="+cache.Shipped)
+	if restarting {
+		// returns only where a process cannot replace itself (Windows) or
+		// on failure; then the restart code makes the installed binary or
+		// the service manager start again
+		if err := update.Restart(installed, os.Args[1:]); err != nil && !errors.Is(err, update.ErrRestartRequired) {
+			log.Error("restart failed; the service manager will start the binary again", "error", err)
 		}
-		err := update.Exec(target, os.Args[1:], env...)
-		if errors.Is(err, update.ErrRestartRequired) {
-			return exitRestart
-		}
-		log.Error("re-exec failed; the service manager will restart the binary", "error", err)
 		return exitRestart
 	}
 	return code

@@ -8,8 +8,9 @@
 // updates itself. An update is installed only if the signature verifies,
 // the version is strictly newer, the download matches the SHA-256 from the
 // signed manifest, and the new binary passes a self-check in a child
-// process. After the switch the new binary must become ready within a
-// deadline, or it puts the previous binary back.
+// process. Installed updates live in the state directory (see Versions):
+// the installed binary is never replaced. After the switch the new version
+// must become ready within a deadline, or the previous one is put back.
 package update
 
 import (
@@ -130,7 +131,6 @@ func ParseManifest(data []byte) (*Manifest, error) {
 type Result struct {
 	Latest    string
 	Installed string // version installed by this check, if any
-	Target    string // binary to run after installation
 }
 
 // Updater checks and installs releases.
@@ -142,8 +142,7 @@ type Updater struct {
 	Current      string
 	Platform     string
 	Client       *http.Client
-	StateDir     string
-	Installer    Installer
+	Versions     *Versions
 	// CheckBinary runs the downloaded binary's self-check before the
 	// switch. Nil skips it (tests only).
 	CheckBinary func(ctx context.Context, path, version string) error
@@ -250,15 +249,16 @@ func (u *Updater) Check(ctx context.Context) (Result, error) {
 			return res, err
 		}
 	}
-	target, err := u.Installer.Install(path, m.Version)
-	if err != nil {
+	// the marker first: a version that starts must find it, whenever the
+	// switch is interrupted
+	if err := writePending(u.Versions.Dir, Pending{Version: m.Version, From: u.Current, Installed: u.now().UTC()}); err != nil {
 		return res, fmt.Errorf("install: %w", err)
 	}
-	if err := writePending(u.StateDir, Pending{Version: m.Version, From: u.Current, Installed: u.now().UTC()}); err != nil {
-		_ = u.Installer.Rollback()
+	if err := u.Versions.Install(path, m.Version); err != nil {
+		_ = clearPending(u.Versions.Dir)
 		return res, fmt.Errorf("install: %w", err)
 	}
-	res.Installed, res.Target = m.Version, target
+	res.Installed = m.Version
 	u.log().Info("update installed", "from", u.Current, "to", m.Version)
 	return res, nil
 }
@@ -280,7 +280,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
-	dir := u.Installer.StagingDir()
+	dir := u.Versions.StagingDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -370,7 +370,7 @@ func clearPending(dir string) error {
 
 func (u *Updater) badList() map[string]time.Time {
 	out := map[string]time.Time{}
-	data, err := os.ReadFile(filepath.Join(u.StateDir, badFile))
+	data, err := os.ReadFile(filepath.Join(u.Versions.Dir, badFile))
 	if err == nil {
 		_ = json.Unmarshal(data, &out)
 	}
@@ -382,7 +382,7 @@ func (u *Updater) isBad(v string) bool {
 	return ok && u.now().Sub(t) < BadVersionTTL
 }
 
-func (u *Updater) markBad(v string) { markBad(u.StateDir, v, u.now()) }
+func (u *Updater) markBad(v string) { markBad(u.Versions.Dir, v, u.now()) }
 
 func markBad(dir, v string, now time.Time) {
 	m := map[string]time.Time{}
@@ -395,61 +395,87 @@ func markBad(dir, v string, now time.Time) {
 	_ = core.WriteFileAtomic(filepath.Join(dir, badFile), data, 0o600)
 }
 
-// BadVersions returns the versions that failed here (tests, doctor).
+// BadVersions returns the versions that failed here.
 func BadVersions(dir string) map[string]time.Time {
-	return (&Updater{StateDir: dir}).badList()
+	return (&Updater{Versions: &Versions{Dir: dir}}).badList()
 }
 
 // ---- confirmation after the switch ----
 
-// MaxStartAttempts: a pending update that has started this many times
-// without confirming itself is rolled back without further checks.
+// MaxStartAttempts: a pending update that has been started this many
+// times without confirming itself is rolled back by the installed binary
+// before the next start (see Versions.Next).
 const MaxStartAttempts = 3
 
-// Confirm runs in a freshly started binary. When the state directory says
-// this very version was just installed, it waits for check (the gateway
-// becoming ready) and either confirms the update or rolls it back. It
-// returns the binary to re-execute after a rollback, or "".
-func Confirm(ctx context.Context, stateDir, current string, inst Installer, check func(context.Context) error, log *slog.Logger, now func() time.Time) (string, error) {
+// Confirm runs in the version that was started. When the state directory
+// says this very version was just installed, it waits for check (the
+// gateway becoming ready) and either confirms the update or rolls it back.
+// restart is true after a rollback: the installed binary must be started
+// again and will run the version that is current then.
+func Confirm(ctx context.Context, v *Versions, current string, check func(context.Context) error, log *slog.Logger, now func() time.Time) (restart bool, err error) {
 	if now == nil {
 		now = time.Now
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	p, err := ReadPending(stateDir)
+	p, err := ReadPending(v.Dir)
 	if err != nil || p == nil {
-		return "", err
+		return false, err
 	}
 	if p.Version != current {
 		// we are not the binary the marker is about: the switch did not
 		// happen or was undone; nothing to confirm
-		return "", clearPending(stateDir)
+		return false, clearPending(v.Dir)
+	}
+	err = check(ctx)
+	switch {
+	case err == nil:
+		log.Info("update confirmed", "version", current, "from", p.From)
+		return false, clearPending(v.Dir)
+	case ctx.Err() != nil:
+		return false, ctx.Err() // shutting down: decide on the next start
+	}
+	log.Error("updated binary failed its start check, rolling back", "version", current, "error", err)
+	return true, v.rollBackPending(current, now())
+}
+
+func (v *Versions) rollBackPending(ver string, now time.Time) error {
+	markBad(v.Dir, ver, now)
+	if err := v.Rollback(); err != nil {
+		return fmt.Errorf("rollback: %w", err)
+	}
+	return clearPending(v.Dir)
+}
+
+// Next is what the installed binary (version own) runs at start: the
+// version to hand over to, or "" to run itself. A start of a pending
+// (unconfirmed) update is counted here, before the update runs, so an
+// update that dies before it can confirm or roll back itself is rolled
+// back after MaxStartAttempts starts.
+func (v *Versions) Next(own string, now time.Time, log *slog.Logger) string {
+	next := v.Launch(own, now)
+	p, err := ReadPending(v.Dir)
+	if next == "" || err != nil || p == nil {
+		return next
+	}
+	if cur, err := readPointer(v.file("current.json")); err != nil || cur.Path != next || cur.Version != p.Version {
+		return next
+	}
+	if p.Attempts >= MaxStartAttempts {
+		if log != nil {
+			log.Error("updated binary keeps failing to start, rolling back", "version", p.Version, "attempts", p.Attempts)
+		}
+		if err := v.rollBackPending(p.Version, now); err != nil {
+			return ""
+		}
+		return v.Launch(own, now)
 	}
 	p.Attempts++
-	if err := writePending(stateDir, *p); err != nil {
-		return "", err
+	if err := writePending(v.Dir, *p); err != nil {
+		return ""
 	}
-	if p.Attempts <= MaxStartAttempts {
-		if err := check(ctx); err == nil {
-			log.Info("update confirmed", "version", current, "from", p.From)
-			return "", clearPending(stateDir)
-		} else if ctx.Err() != nil {
-			return "", ctx.Err() // shutting down: decide on the next start
-		} else {
-			log.Error("updated binary failed its start check, rolling back", "version", current, "error", err)
-		}
-	} else {
-		log.Error("updated binary keeps restarting, rolling back", "version", current, "attempts", p.Attempts)
-	}
-	markBad(stateDir, current, now())
-	if err := inst.Rollback(); err != nil {
-		return "", fmt.Errorf("rollback: %w", err)
-	}
-	if err := clearPending(stateDir); err != nil {
-		return "", err
-	}
-	return inst.Current(), nil
+	return next
 }
 
 // Loop checks after first, then every interval (with up to an hour of

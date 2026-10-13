@@ -77,25 +77,32 @@ func (r *release) setManifest(t *testing.T, ver string, binary []byte) {
 }
 
 type rig struct {
-	dir   string
-	exe   string
-	state string
-	u     *Updater
+	dir       string
+	installed string
+	state     string
+	v         *Versions
+	u         *Updater
 }
 
+// newRig is an installation of version current: the installed binary and
+// an empty state directory.
 func newRig(t *testing.T, r *release, current string) *rig {
 	t.Helper()
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "court-gateway")
-	if err := os.WriteFile(exe, []byte("OLD BINARY "+current), 0o755); err != nil {
+	if err := os.WriteFile(exe, []byte("INSTALLED BINARY "+current), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	state := filepath.Join(dir, "state")
+	v := &Versions{Dir: state, Installed: exe}
+	if !v.Writable() {
+		t.Fatal("state not writable")
+	}
 	u := &Updater{
 		PublicKey: r.pub, ManifestURL: r.srv.URL + "/manifest.json", Current: current, Platform: "test-plat",
-		Client: r.srv.Client(), StateDir: state, Installer: &InPlace{Exe: exe},
+		Client: r.srv.Client(), Versions: v,
 	}
-	return &rig{dir: dir, exe: exe, state: state, u: u}
+	return &rig{dir: dir, installed: exe, state: state, v: v, u: u}
 }
 
 func read(t *testing.T, p string) string {
@@ -105,6 +112,24 @@ func read(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// untouched fails unless the installed binary is still there, unchanged.
+func (g *rig) untouched(t *testing.T) {
+	t.Helper()
+	if got := read(t, g.installed); !strings.HasPrefix(got, "INSTALLED BINARY ") {
+		t.Fatalf("the installed binary changed: %q", got)
+	}
+}
+
+// runs returns what a start of the installed binary (version own) runs:
+// the content of the version it hands over to, or of itself.
+func (g *rig) runs(t *testing.T, own string) string {
+	t.Helper()
+	if next := g.v.Launch(own, time.Now()); next != "" {
+		return read(t, next)
+	}
+	return read(t, g.installed)
 }
 
 func noStrays(t *testing.T, dir string) {
@@ -121,25 +146,23 @@ func TestValidSignatureInstalls(t *testing.T) {
 	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
 	g := newRig(t, r, "1.0.0")
 	res, err := g.u.Check(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || res.Installed != "1.1.0" {
+		t.Fatalf("result: %+v %v", res, err)
 	}
-	if res.Installed != "1.1.0" || res.Target != g.exe {
-		t.Fatalf("result: %+v", res)
-	}
-	if read(t, g.exe) != "NEW BINARY 1.1.0" || read(t, g.exe+".prev") != "OLD BINARY 1.0.0" {
-		t.Fatal("binary not switched, or previous not kept")
+	g.untouched(t)
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
+		t.Fatalf("the installed binary does not hand over: %q", got)
 	}
 	p, err := ReadPending(g.state)
 	if err != nil || p == nil || p.Version != "1.1.0" || p.From != "1.0.0" {
 		t.Fatalf("pending: %+v %v", p, err)
 	}
 	if runtime.GOOS != "windows" {
-		if info, _ := os.Stat(g.exe); info.Mode().Perm()&0o100 == 0 {
+		if info, _ := os.Stat(g.v.Launch("1.0.0", time.Now())); info.Mode().Perm()&0o100 == 0 {
 			t.Fatalf("new binary not executable: %v", info.Mode())
 		}
 	}
-	noStrays(t, g.dir)
+	noStrays(t, g.v.StagingDir())
 }
 
 func TestBadSignatureRejected(t *testing.T) {
@@ -157,8 +180,9 @@ func TestBadSignatureRejected(t *testing.T) {
 	if _, err := g.u.Check(context.Background()); !errors.Is(err, ErrBadSignature) {
 		t.Fatalf("foreign key: %v", err)
 	}
-	if read(t, g.exe) != "OLD BINARY 1.0.0" {
-		t.Fatal("binary changed despite a bad signature")
+	g.untouched(t)
+	if g.v.Launch("1.0.0", time.Now()) != "" {
+		t.Fatal("a version was installed despite a bad signature")
 	}
 	if p, _ := ReadPending(g.state); p != nil {
 		t.Fatal("pending marker written")
@@ -172,10 +196,11 @@ func TestBadChecksumRejected(t *testing.T) {
 	if _, err := g.u.Check(context.Background()); !errors.Is(err, ErrChecksum) {
 		t.Fatalf("swapped binary: %v", err)
 	}
-	if read(t, g.exe) != "OLD BINARY 1.0.0" {
-		t.Fatal("binary changed despite a checksum mismatch")
+	g.untouched(t)
+	if g.v.Launch("1.0.0", time.Now()) != "" {
+		t.Fatal("a version was installed despite a checksum mismatch")
 	}
-	noStrays(t, g.dir)
+	noStrays(t, g.v.StagingDir())
 }
 
 func TestNotNewerIsNoop(t *testing.T) {
@@ -183,11 +208,8 @@ func TestNotNewerIsNoop(t *testing.T) {
 		r := newRelease(t, ver, []byte("BIN"))
 		g := newRig(t, r, "1.0.0")
 		res, err := g.u.Check(context.Background())
-		if err != nil || res.Installed != "" {
+		if err != nil || res.Installed != "" || g.v.Launch("1.0.0", time.Now()) != "" {
 			t.Fatalf("%s: %+v %v", ver, res, err)
-		}
-		if read(t, g.exe) != "OLD BINARY 1.0.0" {
-			t.Fatalf("%s: downgraded", ver)
 		}
 	}
 }
@@ -202,9 +224,7 @@ func TestSelfBuiltNeverUpdates(t *testing.T) {
 	if n := r.hits.Load(); n != 0 {
 		t.Fatalf("a self-built binary contacted the release server %d times", n)
 	}
-	if read(t, g.exe) != "OLD BINARY 1.0.0" {
-		t.Fatal("self-built binary changed")
-	}
+	g.untouched(t)
 }
 
 func TestChildCheckRejectsBrokenBinary(t *testing.T) {
@@ -243,31 +263,31 @@ func TestChildCheckRejectsBrokenBinary(t *testing.T) {
 			if !errors.Is(err, c.wantErr) {
 				t.Fatalf("err = %v, want %v", err, c.wantErr)
 			}
-			if read(t, g.exe) != "OLD BINARY 1.0.0" {
+			g.untouched(t)
+			if g.v.Launch("1.0.0", time.Now()) != "" {
 				t.Fatal("a binary that failed its check was installed")
 			}
 			if _, bad := BadVersions(g.state)["1.1.0"]; bad != c.bad {
 				t.Fatalf("marked bad = %v, want %v", bad, c.bad)
 			}
-			noStrays(t, g.dir)
+			noStrays(t, g.v.StagingDir())
 		})
 	}
 }
 
-func TestRollbackWhenNewBinaryFailsOnStart(t *testing.T) {
+func TestRollbackWhenNewVersionFailsOnStart(t *testing.T) {
 	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
 	g := newRig(t, r, "1.0.0")
 	if _, err := g.u.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// the new binary starts and cannot become ready
-	target, err := Confirm(context.Background(), g.state, "1.1.0", g.u.Installer,
-		func(context.Context) error { return errors.New("not ready in time") }, nil, nil)
-	if err != nil {
-		t.Fatal(err)
+	// the new version starts and cannot become ready
+	restart, err := Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return errors.New("not ready in time") }, nil, nil)
+	if err != nil || !restart {
+		t.Fatalf("restart=%v %v", restart, err)
 	}
-	if target != g.exe || read(t, g.exe) != "OLD BINARY 1.0.0" {
-		t.Fatalf("not rolled back: target %q content %q", target, read(t, g.exe))
+	if got := g.runs(t, "1.0.0"); got != "INSTALLED BINARY 1.0.0" {
+		t.Fatalf("not rolled back to the installed binary: %q", got)
 	}
 	if _, bad := BadVersions(g.state)["1.1.0"]; !bad {
 		t.Fatal("failed version not marked bad")
@@ -276,8 +296,7 @@ func TestRollbackWhenNewBinaryFailsOnStart(t *testing.T) {
 		t.Fatal("pending marker left")
 	}
 	// and the next daily check does not reinstall it
-	res, err := g.u.Check(context.Background())
-	if err != nil || res.Installed != "" {
+	if res, err := g.u.Check(context.Background()); err != nil || res.Installed != "" {
 		t.Fatalf("reinstalled a bad version: %+v %v", res, err)
 	}
 	// once the bad mark is old, it is tried again
@@ -287,90 +306,173 @@ func TestRollbackWhenNewBinaryFailsOnStart(t *testing.T) {
 	}
 }
 
-func TestConfirmSuccessAndCrashLoop(t *testing.T) {
+// A failing update goes back to the version before it, not past it.
+func TestRollbackToThePreviousVersion(t *testing.T) {
+	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
+	g := newRig(t, r, "1.0.0")
+	ok := func(context.Context) error { return nil }
+	if _, err := g.u.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := Confirm(context.Background(), g.v, "1.1.0", ok, nil, nil); err != nil || again {
+		t.Fatalf("confirm 1.1.0: %v %v", again, err)
+	}
+	r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
+	r.binary = []byte("NEW BINARY 1.2.0")
+	g.u.Current = "1.1.0"
+	if res, err := g.u.Check(context.Background()); err != nil || res.Installed != "1.2.0" {
+		t.Fatalf("install 1.2.0: %+v %v", res, err)
+	}
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.2.0" {
+		t.Fatalf("runs %q", got)
+	}
+	if again, err := Confirm(context.Background(), g.v, "1.2.0", func(context.Context) error { return errors.New("down") }, nil, nil); err != nil || !again {
+		t.Fatalf("rollback 1.2.0: %v %v", again, err)
+	}
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
+		t.Fatalf("after rollback runs %q, want 1.1.0", got)
+	}
+	g.untouched(t)
+}
+
+// A pending update that dies before it can confirm or roll back itself is
+// rolled back by the installed binary, which counts its starts.
+func TestCrashLoopIsRolledBackByTheInstalledBinary(t *testing.T) {
 	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
 	g := newRig(t, r, "1.0.0")
 	if _, err := g.u.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	ok := func(context.Context) error { return nil }
 	// the old binary sees a marker that is not about itself: ignore it
-	if target, err := Confirm(context.Background(), g.state, "1.0.0", g.u.Installer, ok, nil, nil); err != nil || target != "" {
-		t.Fatalf("old binary: %q %v", target, err)
-	}
-	if read(t, g.exe) != "NEW BINARY 1.1.0" {
-		t.Fatal("old binary undid the update")
-	}
-	// crash loop: the new binary dies before confirming, three times
-	if err := writePending(g.state, Pending{Version: "1.1.0", From: "1.0.0", Attempts: MaxStartAttempts}); err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	target, err := Confirm(context.Background(), g.state, "1.1.0", g.u.Installer, func(context.Context) error { called = true; return nil }, nil, nil)
-	if err != nil || called || target != g.exe || read(t, g.exe) != "OLD BINARY 1.0.0" {
-		t.Fatalf("crash loop: called=%v target=%q %v", called, target, err)
-	}
-	// a healthy start confirms
-	if _, err := (&InPlace{Exe: g.exe}).Install(writeTemp(t, g.dir, "NEW BINARY 1.1.0"), "1.1.0"); err != nil {
-		t.Fatal(err)
+	ok := func(context.Context) error { return nil }
+	if again, err := Confirm(context.Background(), g.v, "1.0.0", ok, nil, nil); err != nil || again {
+		t.Fatalf("old binary: %v %v", again, err)
 	}
 	if err := writePending(g.state, Pending{Version: "1.1.0", From: "1.0.0"}); err != nil {
 		t.Fatal(err)
 	}
-	if target, err := Confirm(context.Background(), g.state, "1.1.0", g.u.Installer, ok, nil, nil); err != nil || target != "" {
-		t.Fatalf("confirm: %q %v", target, err)
+	for i := 1; i <= MaxStartAttempts; i++ {
+		if next := g.v.Next("1.0.0", time.Now(), nil); next == "" || read(t, next) != "NEW BINARY 1.1.0" {
+			t.Fatalf("start %d: %q", i, next)
+		}
+		// ... and the new version dies before Confirm
 	}
-	if p, _ := ReadPending(g.state); p != nil || read(t, g.exe) != "NEW BINARY 1.1.0" {
-		t.Fatal("not confirmed")
+	if next := g.v.Next("1.0.0", time.Now(), nil); next != "" {
+		t.Fatalf("a crash-looping update was started again: %q", next)
+	}
+	if _, bad := BadVersions(g.state)["1.1.0"]; !bad {
+		t.Fatal("not marked bad")
+	}
+	if p, _ := ReadPending(g.state); p != nil {
+		t.Fatal("pending marker left")
+	}
+	g.untouched(t)
+}
+
+// An update interrupted at any step (power loss, kill) leaves the
+// installed binary in place, and whatever a start then picks exists and is
+// verified. The installed binary is never renamed or replaced.
+func TestInterruptedUpdateLeavesARunnableBinary(t *testing.T) {
+	errCrash := errors.New("simulated crash")
+	for _, at := range []string{"download", "place", "previous", "current", "prune", "none"} {
+		t.Run(at, func(t *testing.T) {
+			r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
+			g := newRig(t, r, "1.0.0")
+			if _, err := g.u.Check(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if again, err := Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return nil }, nil, nil); err != nil || again {
+				t.Fatal(err)
+			}
+			r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
+			r.binary = []byte("NEW BINARY 1.2.0")
+			g.u.Current = "1.1.0"
+			if at == "download" {
+				r.binary = r.binary[:5] // the connection broke mid-download
+			}
+			step = func(s string) error {
+				if s == at {
+					return errCrash
+				}
+				return nil
+			}
+			defer func() { step = func(string) error { return nil } }()
+			_, _ = g.u.Check(context.Background())
+			step = func(string) error { return nil }
+
+			g.untouched(t)
+			next := g.v.Next("1.0.0", time.Now(), nil)
+			got := read(t, g.installed)
+			if next != "" {
+				got = read(t, next)
+			}
+			if got != "NEW BINARY 1.1.0" && got != "NEW BINARY 1.2.0" {
+				t.Fatalf("a start after the interruption runs %q", got)
+			}
+			// whichever version runs settles the marker
+			ver := strings.TrimPrefix(got, "NEW BINARY ")
+			if _, err := Confirm(context.Background(), g.v, ver, func(context.Context) error { return nil }, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if p, _ := ReadPending(g.state); p != nil {
+				t.Fatalf("marker left: %+v", p)
+			}
+			if at == "none" && ver != "1.2.0" {
+				t.Fatalf("an uninterrupted update runs %s", ver)
+			}
+		})
 	}
 }
 
-func writeTemp(t *testing.T, dir, content string) string {
-	t.Helper()
-	p := filepath.Join(dir, "staged")
-	if err := os.WriteFile(p, []byte(content), 0o755); err != nil {
+func TestLaunchSkipsChangedAndBadVersions(t *testing.T) {
+	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
+	g := newRig(t, r, "1.0.0")
+	if _, err := g.u.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return p
-}
-
-func TestCacheDirForReadOnlyImage(t *testing.T) {
-	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
-	dir := t.TempDir()
-	shipped := filepath.Join(dir, "image", "court-gateway")
-	_ = os.MkdirAll(filepath.Dir(shipped), 0o755)
-	_ = os.WriteFile(shipped, []byte("IMAGE BINARY 1.0.0"), 0o755)
-	state := filepath.Join(dir, "state")
-	cache := &CacheDir{Dir: state, Shipped: shipped}
-	u := &Updater{PublicKey: r.pub, ManifestURL: r.srv.URL + "/manifest.json", Current: "1.0.0", Platform: "test-plat",
-		Client: r.srv.Client(), StateDir: state, Installer: cache}
-	res, err := u.Check(context.Background())
-	if err != nil || res.Installed != "1.1.0" {
-		t.Fatalf("%+v %v", res, err)
-	}
-	if read(t, shipped) != "IMAGE BINARY 1.0.0" {
-		t.Fatal("the shipped binary was modified")
+	_, _ = Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return nil }, nil, nil)
+	r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
+	r.binary = []byte("NEW BINARY 1.2.0")
+	g.u.Current = "1.1.0"
+	if _, err := g.u.Check(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	now := time.Now()
-	got := cache.Launch("1.0.0", now)
-	if got == "" || read(t, got) != "NEW BINARY 1.1.0" {
-		t.Fatalf("launch: %q", got)
+	cur := g.v.Launch("1.0.0", now)
+	if g.v.Launch("1.2.0", now) != "" {
+		t.Fatal("launched a version that is not newer")
 	}
-	if cache.Launch("1.1.0", now) != "" {
-		t.Fatal("launched a binary that is not newer")
+	// a version file changed after verification is never run: the
+	// previous one is
+	_ = os.WriteFile(cur, []byte("TAMPERED"), 0o755)
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
+		t.Fatalf("with the current version changed: %q", got)
 	}
-	// a cached file changed after verification is never run
-	_ = os.WriteFile(got, []byte("TAMPERED"), 0o755)
-	if cache.Launch("1.0.0", now) != "" {
-		t.Fatal("launched a tampered cached binary")
+	_ = os.WriteFile(cur, []byte("NEW BINARY 1.2.0"), 0o755)
+	markBad(g.state, "1.2.0", now)
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
+		t.Fatalf("with the current version bad: %q", got)
 	}
-	_ = os.WriteFile(got, []byte("NEW BINARY 1.1.0"), 0o755)
-	// rollback returns to the shipped binary
-	if err := cache.Rollback(); err != nil {
-		t.Fatal(err)
+	markBad(g.state, "1.1.0", now)
+	if got := g.runs(t, "1.0.0"); got != "INSTALLED BINARY 1.0.0" {
+		t.Fatalf("with both bad: %q", got)
 	}
-	if cache.Launch("1.0.0", now) != "" || cache.Current() != shipped {
-		t.Fatal("rollback did not return to the shipped binary")
+}
+
+func TestLaunchAndRestartEnvironments(t *testing.T) {
+	t.Setenv(LaunchedEnv, "1")
+	t.Setenv(InstalledEnv, "/opt/example/court-gateway")
+	env := strings.Join(LaunchEnv("/opt/example/court-gateway"), "\n")
+	if strings.Count(env, LaunchedEnv+"=") != 1 || !strings.Contains(env, InstalledEnv+"=/opt/example/court-gateway") {
+		t.Fatalf("launch env: %s", env)
+	}
+	// a restart starts the installed binary as the service manager does:
+	// it must pick the version again
+	if env := strings.Join(RestartEnv(), "\n"); strings.Contains(env, LaunchedEnv+"=") || strings.Contains(env, InstalledEnv+"=") {
+		t.Fatalf("restart env: %s", env)
+	}
+	if InstalledPath() != "/opt/example/court-gateway" {
+		t.Fatalf("installed path: %s", InstalledPath())
 	}
 }
 
