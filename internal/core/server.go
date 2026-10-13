@@ -58,10 +58,8 @@ func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger) *Server {
 	return &Server{cfg: cfg, drv: drv, log: log, now: now, caps: drv.Capabilities()}
 }
 
-// Settings returns the club's settings.
 func (s *Server) Settings() *Settings { return s.cfg }
 
-// Driver returns the club's driver.
 func (s *Server) Driver() driver.Driver { return s.drv }
 
 // APIHandler returns the club's partner API without authentication. It
@@ -70,18 +68,27 @@ func (s *Server) Driver() driver.Driver { return s.drv }
 func (s *Server) APIHandler() http.Handler {
 	mux := http.NewServeMux()
 	const club = "/v1/clubs/{club}"
-	mux.HandleFunc("GET "+club, s.withClub(s.handleClub))
-	mux.HandleFunc("GET "+club+"/courts", s.withClub(s.handleCourts))
-	mux.HandleFunc("GET "+club+"/occupancy", s.withClub(s.handleOccupancy))
-	mux.HandleFunc("GET "+club+"/prices", s.withClub(s.handlePrices))
-	mux.HandleFunc("GET "+club+"/quote", s.withClub(s.handleQuote))
-	mux.HandleFunc("POST "+club+"/bookings", s.withClub(s.handleCreate))
-	mux.HandleFunc("GET "+club+"/bookings/{id}", s.withClub(s.handleGet))
-	mux.HandleFunc("DELETE "+club+"/bookings/{id}", s.withClub(s.handleCancel))
-	mux.HandleFunc("POST "+club+"/bookings/{id}/payment", s.withClub(s.handlePayment))
-	for _, p := range []string{club, club + "/courts", club + "/occupancy", club + "/prices",
-		club + "/quote", club + "/bookings", club + "/bookings/{id}", club + "/bookings/{id}/payment"} {
-		mux.Handle(p, methodNotAllowed())
+	routes := []struct {
+		method, path string
+		h            http.HandlerFunc
+	}{
+		{"GET", club, s.handleClub},
+		{"GET", club + "/courts", s.handleCourts},
+		{"GET", club + "/occupancy", s.handleOccupancy},
+		{"GET", club + "/prices", s.handlePrices},
+		{"GET", club + "/quote", s.handleQuote},
+		{"POST", club + "/bookings", s.handleCreate},
+		{"GET", club + "/bookings/{id}", s.handleGet},
+		{"DELETE", club + "/bookings/{id}", s.handleCancel},
+		{"POST", club + "/bookings/{id}/payment", s.handlePayment},
+	}
+	paths := map[string]bool{}
+	for _, r := range routes {
+		mux.HandleFunc(r.method+" "+r.path, s.withClub(r.h))
+		if !paths[r.path] {
+			paths[r.path] = true
+			mux.Handle(r.path, methodNotAllowed()) // any other method
+		}
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")

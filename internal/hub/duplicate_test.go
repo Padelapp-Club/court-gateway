@@ -53,7 +53,7 @@ func TestSecondCopyIsRefused(t *testing.T) {
 		!st.Gateways[0].Duplicate || st.Gateways[0].DuplicateSeenAt == "" {
 		t.Fatalf("/hub/status: %+v %v", st, err)
 	}
-	w.hub.Server().Monitor().Tick(context.Background())
+	w.hub.Server().Monitor().Tick()
 	metrics, _ := os.ReadFile(filepath.Join(w.status, hub.MetricsFile))
 	status, _ := os.ReadFile(filepath.Join(w.status, hub.StatusFile))
 	if !strings.Contains(string(metrics), "check_installation_demo_club_single=0\n") || !strings.Contains(string(status), "a second copy with the same secret") {

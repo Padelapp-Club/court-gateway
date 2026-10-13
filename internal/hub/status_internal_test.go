@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -77,11 +76,11 @@ func TestMonitorForgetsDeletedInstallations(t *testing.T) {
 	}
 	m := NewMonitor(st, NewBroker(time.Second, nil), MonitorConfig{OfflineAfter: time.Minute})
 	m.Heartbeat("gone-net", tunnel.Heartbeat{Ready: true})
-	m.Tick(context.Background())
+	m.Tick()
 	if err := st.DeleteInstallation("gone-net"); err != nil {
 		t.Fatal(err)
 	}
-	m.Tick(context.Background())
+	m.Tick()
 	m.mu.Lock()
 	n := len(m.state)
 	m.mu.Unlock()

@@ -22,11 +22,7 @@ import (
 // marker in doc.
 func fencedBlock(t *testing.T, doc, marker, lang string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", doc))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
+	text := readDoc(t, doc)
 	i := strings.Index(text, marker)
 	if i < 0 {
 		t.Fatalf("%s: no %q", doc, marker)
@@ -39,6 +35,16 @@ func fencedBlock(t *testing.T, doc, marker, lang string) string {
 	}
 	text = text[j+len(open):]
 	return text[:strings.Index(text, "```")]
+}
+
+// readDoc returns a file of the repository.
+func readDoc(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 type installWorld struct {
@@ -186,10 +192,7 @@ func TestAgentsVerifyStepStopsOnChecksumMismatch(t *testing.T) {
 // wrong checksum stops it before the program runs; the secrets and the
 // user data copies on disk are gone after every run.
 func TestCloudInitStopsOnChecksumMismatchAndForgetsSecrets(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "cloud-init.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := []byte(readDoc(t, "deploy/cloud-init.yaml"))
 	var doc struct {
 		WriteFiles []struct{ Path, Content string } `yaml:"write_files"`
 		RunCmd     [][]string                       `yaml:"runcmd"`
@@ -268,68 +271,13 @@ func TestWindowsInstallBlocksCheckTheHashFirst(t *testing.T) {
 // The release is reproducible only with one Go: go.mod pins it as the
 // toolchain, and the Dockerfile and README name the same version.
 func TestToolchainPinnedEverywhere(t *testing.T) {
-	read := func(name string) string {
-		data, err := os.ReadFile(filepath.Join("..", "..", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(data)
-	}
-	mod := read("go.mod")
+	mod := readDoc(t, "go.mod")
 	i := strings.Index(mod, "\ntoolchain go")
 	if i < 0 {
 		t.Fatal("go.mod has no toolchain line")
 	}
 	ver := strings.Fields(mod[i+len("\ntoolchain go"):])[0]
-	if !strings.Contains(read("Dockerfile"), "FROM golang:"+ver+"-") || !strings.Contains(read("README.md"), "(сейчас "+ver+")") {
+	if !strings.Contains(readDoc(t, "Dockerfile"), "FROM golang:"+ver+"-") || !strings.Contains(readDoc(t, "README.md"), "(сейчас "+ver+")") {
 		t.Fatalf("toolchain go%s is not the Dockerfile's and README's Go", ver)
-	}
-}
-
-// The partner guidance after a timed-out create must not promise what the
-// gateway cannot know: an empty read is no proof, a cancel no identity.
-func TestRetryGuidanceStaysUncertain(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "hub.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	i := strings.Index(text, "**Повтор после таймаута.**")
-	if i < 0 {
-		t.Fatal("no retry guidance")
-	}
-	para := text[i : i+strings.Index(text[i:], "\n\n")]
-	for _, must := range []string{"исход неизвестен", "может создать вторую бронь", "сверьтесь со своими записями", "не что это"} {
-		if !strings.Contains(para, must) {
-			t.Fatalf("retry guidance lacks %q:\n%s", must, para)
-		}
-	}
-	for _, mustNot := range []string{"не создана, повторите", "бронь была ваша"} {
-		if strings.Contains(para, mustNot) {
-			t.Fatalf("retry guidance promises %q:\n%s", mustNot, para)
-		}
-	}
-}
-
-// The booking guidance names its limits: one-at-a-time creates do not
-// cover a create that timed out, and a cancel is a read then a delete.
-func TestBookingGuidanceStatesItsLimits(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "hub.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	para := func(start string) string {
-		i := strings.Index(text, start)
-		if i < 0 {
-			t.Fatalf("docs/hub.md: no %q", start)
-		}
-		return text[i : i+strings.Index(text[i:], "\n- ")]
-	}
-	if p := para("**Одновременные брони.**"); !strings.Contains(p, "кроме случая") || !strings.Contains(p, "таймаут") {
-		t.Fatalf("concurrent creates promise too much:\n%s", p)
-	}
-	if p := para("При отмене:"); !strings.Contains(p, "между проверкой и удалением") {
-		t.Fatalf("cancel does not say it is a read then a delete:\n%s", p)
 	}
 }

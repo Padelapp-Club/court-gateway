@@ -436,7 +436,7 @@ func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
 	defer func() { cancel(); <-done }()
 	mon := s.hub.Server().Monitor()
 	readyCheck := func() (bool, string) {
-		mon.Tick(ctx)
+		mon.Tick()
 		var doc struct {
 			Checks []struct {
 				Check string `json:"check"`

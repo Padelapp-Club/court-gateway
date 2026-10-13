@@ -29,12 +29,11 @@ type record struct {
 
 // Driver is the demo driver.
 type Driver struct {
-	mu       sync.Mutex
-	courts   map[string]bool
-	studio   string
-	records  map[string]*record
-	readyErr error
-	now      func() time.Time
+	mu      sync.Mutex
+	courts  map[string]bool
+	studio  string
+	records map[string]*record
+	now     func() time.Time
 }
 
 var _ driver.Driver = (*Driver)(nil)
@@ -83,19 +82,8 @@ func (d *Driver) Studio() string { return d.studio }
 // Capabilities: the demo CRM supports payment marks.
 func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: true} }
 
-// SetReadyError makes Ready fail (tests).
-func (d *Driver) SetReadyError(err error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.readyErr = err
-}
-
-// Ready implements driver.Driver.
-func (d *Driver) Ready(context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.readyErr
-}
+// Ready implements driver.Driver: the demo CRM is always reachable.
+func (d *Driver) Ready(context.Context) error { return nil }
 
 func newID() string {
 	var b [16]byte

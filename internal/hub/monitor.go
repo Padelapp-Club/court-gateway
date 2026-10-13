@@ -127,7 +127,7 @@ func NewMonitor(store *Store, broker *Broker, cfg MonitorConfig) *Monitor {
 // Run evaluates once at start (so the status files exist at once) and
 // then every interval until ctx is done.
 func (m *Monitor) Run(ctx context.Context) {
-	m.Tick(ctx)
+	m.Tick()
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
 	for {
@@ -135,7 +135,7 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			m.Tick(ctx)
+			m.Tick()
 		}
 	}
 }
@@ -346,7 +346,7 @@ type installationView struct {
 
 // Tick evaluates every registered gateway, writes the status files and
 // logs state changes.
-func (m *Monitor) Tick(context.Context) {
+func (m *Monitor) Tick() {
 	now := m.now()
 	var views []installationView
 	gateways := m.store.Gateways()

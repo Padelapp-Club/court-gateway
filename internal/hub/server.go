@@ -109,7 +109,6 @@ func NewServer(cfg *Settings, store *Store, opts Options) (*Server, error) {
 // Monitor returns the heartbeat monitor (its Run is started by the caller).
 func (s *Server) Monitor() *Monitor { return s.monitor }
 
-// Store returns the hub's state.
 func (s *Server) Store() *Store { return s.store }
 
 // Broker returns the broker.

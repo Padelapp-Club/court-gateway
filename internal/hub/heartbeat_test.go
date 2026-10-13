@@ -139,26 +139,25 @@ func (w *beatWorld) state(t *testing.T) string {
 func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	w := newBeatWorld(t, "", nil, hub.Options{})
 	mon := w.hub.Server().Monitor()
-	ctx := context.Background()
 
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StatePending {
 		t.Fatalf("before the first heartbeat: %s", st)
 	}
 	w.beat(t, true, "")
-	mon.Tick(ctx)
+	mon.Tick()
 	if hl := mon.Health("demo-club"); hl.State != hub.StateOnline || !hl.Ready || hl.Version != "1.0.0" {
 		t.Fatalf("after a heartbeat: %+v", hl)
 	}
 
 	// heartbeats stop: offline only after MORE than offline_after (3m)
 	w.clock.Advance(3 * time.Minute)
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StateOnline || len(w.events()) != 0 {
 		t.Fatalf("at exactly 3m: %s %+v", st, w.events())
 	}
 	w.clock.Advance(time.Second)
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StateOffline {
 		t.Fatalf("after 3m1s: %s", st)
 	}
@@ -166,7 +165,7 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 		t.Fatalf("offline: %+v", got)
 	}
 	w.clock.Advance(time.Minute)
-	mon.Tick(ctx)
+	mon.Tick()
 	if n := len(w.events()); n != 1 {
 		t.Fatalf("offline logged again: %d", n)
 	}
@@ -177,7 +176,7 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 
 	// recovery
 	w.beat(t, true, "")
-	mon.Tick(ctx)
+	mon.Tick()
 	if got := w.events(); w.state(t) != hub.StateOnline || len(got) != 2 || got[1] != hub.EventOnline {
 		t.Fatalf("recovery: %s %+v", w.state(t), got)
 	}
@@ -186,21 +185,21 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		w.clock.Advance(time.Minute)
 		w.beat(t, false, "CRM_AUTH_FAILED")
-		mon.Tick(ctx)
+		mon.Tick()
 	}
 	if st := w.state(t); st != hub.StateOnline || len(w.events()) != 2 {
 		t.Fatalf("after 2 not-ready heartbeats: %s %d", st, len(w.events()))
 	}
 	w.clock.Advance(time.Minute)
 	w.beat(t, false, "CRM_AUTH_FAILED")
-	mon.Tick(ctx)
+	mon.Tick()
 	if got := w.events(); w.state(t) != hub.StateNotReady || len(got) != 3 || got[2] != hub.EventNotReady {
 		t.Fatalf("not ready: %s %+v", w.state(t), got)
 	}
 	// one good heartbeat resets the streak
 	w.clock.Advance(time.Minute)
 	w.beat(t, true, "")
-	mon.Tick(ctx)
+	mon.Tick()
 	if got := w.events(); w.state(t) != hub.StateOnline || len(got) != 4 || got[3] != hub.EventReady {
 		t.Fatalf("ready again: %s %+v", w.state(t), got)
 	}
@@ -208,7 +207,7 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	w.beat(t, false, "CRM_UNREACHABLE")
 	w.beat(t, true, "")
 	w.beat(t, false, "CRM_UNREACHABLE")
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StateOnline {
 		t.Fatalf("an interrupted streak counted as not ready: %s", st)
 	}
@@ -230,7 +229,7 @@ func TestHeartbeatSilenceCountsFromStartOrRegistration(t *testing.T) {
 	mon := w.hub.Server().Monitor()
 	w.clock.Advance(10 * time.Minute)
 	w.hub.Register("late-club", "Поздний клуб")
-	mon.Tick(context.Background())
+	mon.Tick()
 	if st := mon.Health("late-club").State; st != hub.StatePending {
 		t.Fatalf("a club registered a moment ago: %s", st)
 	}
@@ -260,7 +259,7 @@ func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 			beats++
 		}
 		if step%30 == 0 { // the hub's 60-second evaluation
-			mon.Tick(ctx)
+			mon.Tick()
 		}
 	}
 	calls := w.crm.Calls()
@@ -292,7 +291,7 @@ func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	mon.Tick(ctx)
+	mon.Tick()
 	if hl := mon.Health("demo-club"); hl.State != hub.StateNotReady || hl.Reason != "CRM_AUTH_FAILED" {
 		t.Fatalf("health: %+v", hl)
 	}
@@ -336,7 +335,7 @@ func TestHeartbeatEndpoint(t *testing.T) {
 	if hl := w.hub.Server().Monitor().Health("demo-club"); hl.Reason != "NOT_READY" || hl.Version != "" || hl.Build != "" {
 		t.Fatalf("unsanitised heartbeat: %+v", hl)
 	}
-	w.hub.Server().Monitor().Tick(context.Background())
+	w.hub.Server().Monitor().Tick()
 	for _, f := range []string{hub.StatusFile, hub.MetricsFile} {
 		data, err := os.ReadFile(filepath.Join(w.status, f))
 		if err != nil {
@@ -425,7 +424,7 @@ func TestStatusFilesFormat(t *testing.T) {
 	mon := w.hub.Server().Monitor()
 	w.hub.Register("club-2b", "Второй клуб") // never sends a heartbeat
 	w.beat(t, true, "")
-	mon.Tick(context.Background())
+	mon.Tick()
 
 	checks, metrics := validateStatusFiles(t, w.status)
 	for _, name := range []string{"installation_demo_club_online", "installation_demo_club_ready", "installation_club_2b_online", "installation_club_2b_ready"} {
@@ -453,7 +452,7 @@ func TestStatusFilesFormat(t *testing.T) {
 
 	// demo-club goes silent, club-2b stays silent: both offline, ok=false
 	w.clock.Advance(4 * time.Minute)
-	mon.Tick(context.Background())
+	mon.Tick()
 	checks, metrics = validateStatusFiles(t, w.status)
 	if checks["installation_demo_club_online"]["ok"] != false || metrics["installations_online"] != "0" || metrics["status_ok"] != "0" ||
 		metrics["installation_demo_club_last_seen_age_seconds"] != "240" {
@@ -486,7 +485,7 @@ func TestStatusFilesAtomic(t *testing.T) {
 		w.hub.Register("club-"+string(rune('a'+i%26))+string(rune('a'+i/26)), strings.Repeat("Клуб ", 20))
 	}
 	mon := w.hub.Server().Monitor()
-	mon.Tick(context.Background())
+	mon.Tick()
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -497,7 +496,7 @@ func TestStatusFilesAtomic(t *testing.T) {
 				return
 			default:
 				w.clock.Advance(time.Second)
-				mon.Tick(context.Background())
+				mon.Tick()
 			}
 		}
 	}()
@@ -530,7 +529,7 @@ func TestStatusFilesAtomic(t *testing.T) {
 func TestStatusAPI(t *testing.T) {
 	w := newBeatWorld(t, "latest_version: 1.1.0\n", nil, hub.Options{})
 	w.beat(t, true, "")
-	w.hub.Server().Monitor().Tick(context.Background())
+	w.hub.Server().Monitor().Tick()
 	if r := call(t, w.hub, http.MethodGet, "/hub/status", contract.ReadKey, ""); r.status != http.StatusUnauthorized {
 		t.Fatalf("status with a partner key: %d", r.status)
 	}

@@ -122,38 +122,29 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}, nil
 }
 
-// read fetches one record as raw fields, so the caller can tell an absent
-// field from an empty one. found=false means the CRM answered 404.
-func (d *Driver) read(ctx context.Context, kind, uuid string) (map[string]json.RawMessage, bool, error) {
+// read fetches one record, decoded and as raw fields (so the caller can
+// tell an absent field from an empty one). found=false means the CRM
+// answered 404.
+func (d *Driver) read(ctx context.Context, kind, uuid string) (s slot, raw map[string]json.RawMessage, found bool, err error) {
 	status, data, err := d.c.do(ctx, http.MethodGet, "/"+kind+"/"+uuid, nil, nil)
 	if err != nil {
-		return nil, false, err
+		return s, nil, false, err
 	}
 	switch status {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, false, nil
+		return s, nil, false, nil
 	default:
-		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s/{id} answered HTTP %d", kind, status))
+		return s, nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s/{id} answered HTTP %d", kind, status))
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
-		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: response is not a JSON object")
-	}
-	return raw, true, nil
-}
-
-func (d *Driver) decodeSlot(kind, uuid string, raw map[string]json.RawMessage) (slot, error) {
-	b, _ := json.Marshal(raw)
-	var s slot
-	if err := json.Unmarshal(b, &s); err != nil {
-		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: malformed record")
+	if json.Unmarshal(data, &raw) != nil || raw == nil || json.Unmarshal(data, &s) != nil {
+		return s, nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: response is not a record")
 	}
 	if s.ID != "" && !strings.EqualFold(s.ID, uuid) {
-		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record id does not match")
+		return s, nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record id does not match")
 	}
 	s.ID = uuid
-	return s, nil
+	return s, raw, true, nil
 }
 
 // Get implements driver.Driver.
@@ -162,16 +153,12 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	if !ok {
 		return driver.Booking{}, driver.ErrNotFound
 	}
-	raw, found, err := d.read(ctx, kind, uuid)
+	s, _, found, err := d.read(ctx, kind, uuid)
 	if err != nil {
 		return driver.Booking{}, err
 	}
 	if !found {
 		return driver.Booking{}, driver.ErrNotFound
-	}
-	s, err := d.decodeSlot(kind, uuid, raw)
-	if err != nil {
-		return driver.Booking{}, err
 	}
 	prefix := id[:2]
 	if s.Room == nil || s.Room.ID == "" {
@@ -203,7 +190,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	if !ok {
 		return driver.ErrNotFound
 	}
-	raw, found, err := d.read(ctx, kind, uuid)
+	s, raw, found, err := d.read(ctx, kind, uuid)
 	if err != nil {
 		return err
 	}
@@ -211,14 +198,10 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		// gone, unless the id names a record of the other kind (a wrong
 		// prefix): that one is not this booking
 		other := map[string]string{"exercises": "breaks", "breaks": "exercises"}[kind]
-		if _, exists, err := d.read(ctx, other, uuid); err != nil || exists {
+		if _, _, exists, err := d.read(ctx, other, uuid); err != nil || exists {
 			return cmp.Or(err, driver.ErrNotFound)
 		}
 		return nil
-	}
-	s, err := d.decodeSlot(kind, uuid, raw)
-	if err != nil {
-		return err
 	}
 	if s.Canceled != nil && *s.Canceled {
 		return nil
