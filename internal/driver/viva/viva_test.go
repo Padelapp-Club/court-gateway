@@ -729,8 +729,8 @@ func TestQuoteAcrossSkippedMidnight(t *testing.T) {
 // A break without a room closes the studio: it occupies every court
 // asked about, also when one court is asked (as every create does), so a
 // booking during it is refused. The break is seeded, not injected: the
-// stub's list filters by roomId like the CRM may, and the driver must not
-// ask for that filter on breaks.
+// stub's list filters by roomId like the CRM may, and the driver asks for
+// that filter on no list: rooms are filtered locally.
 func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 	d := futureMidnight()
 	f := newFixture(t, fixtureOpts{})
@@ -753,8 +753,8 @@ func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 		t.Fatalf("booking during a studio-wide break: %d %s, want 409 SLOT_UNAVAILABLE", status, raw)
 	}
 	for _, c := range f.stub.Calls() {
-		if strings.HasPrefix(c, "GET /breaks?") && strings.Contains(c, "roomId") {
-			t.Fatalf("breaks listed with a room filter: %s", c)
+		if strings.HasPrefix(c, "GET /") && strings.Contains(c, "roomId") {
+			t.Fatalf("listed with a room filter: %s", c)
 		}
 	}
 	// and an exercise without a room is still invalid

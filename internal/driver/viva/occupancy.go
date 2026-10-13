@@ -77,19 +77,15 @@ func (d *Driver) window(kind string, from, to, now time.Time) (dateFrom, dateTo 
 	return d.day(from).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
-// list reads one kind for the studio. Exercises may be narrowed to one
-// room; breaks never are: a break without a room closes the whole studio,
-// and a room filter on the CRM side may leave it out. Breaks are filtered
-// here (intervals), never upstream.
-func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, dateTo time.Time) ([]slot, error) {
+// list reads one kind for the whole studio. Rooms are filtered here
+// (intervals), never upstream: a break without a room closes the whole
+// studio, and what a room filter on the CRM side leaves out is not known.
+func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Time) ([]slot, error) {
 	q := url.Values{
 		"studioId":        {d.studio},
 		"dateFrom":        {dateFrom.Format("2006-01-02")},
 		"dateTo":          {dateTo.Format("2006-01-02")},
 		"includeCanceled": {"false"},
-	}
-	if room != "" && kind != "breaks" {
-		q.Set("roomId", room)
 	}
 	status, data, err := d.c.do(ctx, http.MethodGet, "/"+kind, q, nil)
 	if err != nil {
@@ -119,10 +115,6 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		rooms[c.room] = cid
 	}
-	roomFilter := ""
-	if len(q.Courts) == 1 {
-		roomFilter = d.byCourt[q.Courts[0]].room
-	}
 	occ := driver.Occupancy{Complete: true}
 	for _, kind := range []string{"exercises", "breaks"} {
 		dateFrom, dateTo, complete := d.window(kind, q.From, q.To, d.now())
@@ -133,7 +125,7 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		var items []slot
 		for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
-			part, err := d.list(ctx, kind, roomFilter, f, minTime(f.AddDate(0, 0, step-1), dateTo))
+			part, err := d.list(ctx, kind, f, minTime(f.AddDate(0, 0, step-1), dateTo))
 			if err != nil {
 				return driver.Occupancy{}, err
 			}
@@ -214,7 +206,7 @@ func (d *Driver) Ready(ctx context.Context) error {
 	today := d.day(d.now())
 	rooms := map[string]string{d.courts[0].room: ""}
 	for _, kind := range []string{"exercises", "breaks"} {
-		items, err := d.list(ctx, kind, d.courts[0].room, today, today)
+		items, err := d.list(ctx, kind, today, today)
 		if err != nil {
 			return err
 		}
