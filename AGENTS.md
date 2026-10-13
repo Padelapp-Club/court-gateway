@@ -185,6 +185,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed |
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
 | `HUB_CONFIG` | `fail`: the clubs configured on the hub do not load with this CRM — report to the operator (the service keeps the previous config); `warn`: the service has not applied the newest config yet |
+| `SECRETS_FILE` | Windows `fail`: the folder holding `.env` is open to other users — run the `hint` command in PowerShell as Administrator; `warn` elsewhere: `chmod 600 .env` |
 | `VERSION_CURRENT` | `warn` only: self-built binary, or an update is pending (installs itself) |
 
 ## Step 6 — report
