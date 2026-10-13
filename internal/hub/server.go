@@ -432,6 +432,9 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrTimeout):
 		core.WriteError(w, r, http.StatusGatewayTimeout, "CLUB_TIMEOUT", "the club's gateway did not answer in time")
 		return
+	case errors.Is(err, ErrReplaced):
+		core.WriteError(w, r, http.StatusBadGateway, "OUTCOME_UNKNOWN", "outcome unknown after gateway replacement")
+		return
 	case err != nil:
 		return // the partner went away
 	}

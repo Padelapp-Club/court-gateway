@@ -17,7 +17,8 @@ import (
 // authenticated or routed under, and the broker serves only the newest one:
 // once a registration is replaced or removed (Retire), its open polls end
 // empty, it can no longer pick up a request, and a request routed to it is
-// ErrOffline. A request it had already picked up still runs to its end.
+// ErrOffline. A request it had already picked up ends at once with
+// ErrReplaced: its reply could no longer be told from a stale one.
 type Broker struct {
 	now      func() time.Time
 	pollWait time.Duration
@@ -68,6 +69,9 @@ var (
 	// request; none picked this one up in time.
 	ErrBusy    = errors.New("club gateway is busy")
 	ErrTimeout = errors.New("club gateway did not answer in time")
+	// ErrReplaced: the registration that was running the request was
+	// replaced or removed; whether the request took effect is unknown.
+	ErrReplaced = errors.New("club gateway replaced while running the request")
 )
 
 // NewBroker builds a broker.
@@ -252,31 +256,31 @@ func (b *Broker) Do(ctx context.Context, club string, gen uint64, req tunnel.Req
 		delete(c.inflight, req.ID)
 		b.mu.Unlock()
 	}
-	dead := c.dead
-	for {
+	select {
+	case r := <-cl.resp:
+		return r, nil
+	case <-c.dead:
 		select {
-		case r := <-cl.resp:
+		case r := <-cl.resp: // answered just before the retirement
 			return r, nil
-		case <-dead:
+		default:
+		}
+		b.mu.Lock()
+		_, picked := c.inflight[req.ID]
+		b.mu.Unlock()
+		drop()
+		if !picked {
 			// retired between the handoff and the poll recording the call:
 			// the poll drops it, so it never ran
-			b.mu.Lock()
-			_, picked := c.inflight[req.ID]
-			if !picked {
-				cl.abandoned = true
-			}
-			b.mu.Unlock()
-			if !picked {
-				return tunnel.Response{}, ErrOffline
-			}
-			dead = nil // picked up before the retirement: it runs to its end
-			continue
-		case <-wt.C:
-			drop()
-			return tunnel.Response{}, ErrTimeout
-		case <-ctx.Done():
-			drop()
-			return tunnel.Response{}, ctx.Err()
+			return tunnel.Response{}, ErrOffline
 		}
+		// it runs on the replaced gateway, whose reply can no longer arrive
+		return tunnel.Response{}, ErrReplaced
+	case <-wt.C:
+		drop()
+		return tunnel.Response{}, ErrTimeout
+	case <-ctx.Done():
+		drop()
+		return tunnel.Response{}, ctx.Err()
 	}
 }

@@ -150,6 +150,38 @@ func TestRetiredBetweenHandoffAndPickup(t *testing.T) {
 	}
 }
 
+// A request the old registration had already picked up when it was
+// replaced ends at once with ErrReplaced (partners: 502 OUTCOME_UNKNOWN),
+// not after the full wait: its reply can no longer be delivered.
+func TestReplacedWhileRunningEndsAtOnce(t *testing.T) {
+	b := hub.NewBroker(time.Minute, nil)
+	picked := make(chan *tunnel.Request, 1)
+	go func() { picked <- b.Poll(context.Background(), "inst", 1, hub.ConnMeta{}) }()
+	for !b.Connected("inst") {
+		time.Sleep(time.Millisecond)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := b.Do(context.Background(), "inst", 1, tunnel.Request{ID: "running"}, time.Second, time.Minute)
+		result <- err
+	}()
+	if rq := <-picked; rq == nil {
+		t.Fatal("not picked up")
+	}
+	b.Retire("inst", 2)
+	select {
+	case err := <-result:
+		if !errors.Is(err, hub.ErrReplaced) {
+			t.Fatalf("Do = %v, want ErrReplaced", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the caller still waits for a reply that cannot arrive")
+	}
+	if b.Reply("inst", tunnel.Response{ID: "running", Status: http.StatusCreated}) {
+		t.Fatal("a reply for the replaced registration was taken")
+	}
+}
+
 // A state directory that cannot be read for a moment is not a removed
 // registration: the gateway gets 503 (and retries with the same secret),
 // not 401, and nothing is forgotten once the directory is readable again.

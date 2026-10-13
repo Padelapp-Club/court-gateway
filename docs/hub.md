@@ -179,7 +179,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at"}` |
 | `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки |
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
-| `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM |
+| `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN` |
 
 **Конфиг клуба** — `name`, `timezone`, `slot_minutes`, `hours`, `crm`, `courts` (`id`, `name`
 и ключи драйвера — для Viva `viva_room`, `price_list`), `services`. В `crm` клуб задаёт только
@@ -262,7 +262,9 @@ partners:
 не взял новый за 10 с;
 `503 CONFIG_PENDING` — шлюз только что запустился и ещё не получил конфигурацию клубов;
 `503 CLUB_UNAVAILABLE` — конфигурация клуба не подошла шлюзу; `504 CLUB_TIMEOUT` — шлюз не ответил
-вовремя; `502 SIGNATURE_REJECTED` — шлюз не принял подпись хаба (часы клуба или смена ключа хаба); `429 RATE_LIMITED` — слишком много запросов по ключу. Повторите запрос позже
+вовремя; `502 OUTCOME_UNKNOWN` — шлюз клуба заменили (новый код подключения), пока он выполнял
+запрос: исход неизвестен, как после таймаута; `502 SIGNATURE_REJECTED` — шлюз не принял подпись
+хаба (часы клуба или смена ключа хаба); `429 RATE_LIMITED` — слишком много запросов по ключу. Повторите запрос позже
 (`Retry-After`). При создании брони: `409 SLOT_UNAVAILABLE` — корт занят; `409 OCCUPANCY_UNKNOWN` —
 занятость интервала нельзя подтвердить; `503 BUSY` — бронь этого корта уже создаётся, повторите.
 При отмене: `204` — бронь отменена или её уже нет (неизвестный идентификатор CRM не отличает от

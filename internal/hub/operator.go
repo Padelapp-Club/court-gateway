@@ -280,6 +280,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrTimeout):
 		core.WriteError(w, r, http.StatusGatewayTimeout, "GATEWAY_TIMEOUT", "the gateway did not answer in time")
 		return
+	case errors.Is(err, ErrReplaced):
+		core.WriteError(w, r, http.StatusBadGateway, "OUTCOME_UNKNOWN", "outcome unknown after gateway replacement")
+		return
 	case err != nil:
 		return
 	}
