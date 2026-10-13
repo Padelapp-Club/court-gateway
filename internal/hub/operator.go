@@ -259,8 +259,9 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_OFFLINE", "the installation's gateway is not connected")
 		return
 	}
-	// within the HTTP server's write timeout (poll_wait + request_timeout + 30s)
-	timeout := s.cfg.RequestTimeout + s.cfg.PollWait
+	// discovery reads every studio, room and price list: it gets its own,
+	// longer time, within the HTTP server's write timeout
+	timeout := DiscoverTimeout
 	rq := tunnel.Request{
 		ID: newCallID(), RequestID: core.RequestID(r), Method: http.MethodPost, Path: tunnel.PathDiscover,
 		Header: map[string]string{"Content-Type": "application/json"}, Body: body, TimeoutMS: int(timeout / time.Millisecond),

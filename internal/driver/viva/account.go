@@ -124,6 +124,10 @@ func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.
 		out.Notices = append(out.Notices, driver.Notice{Code: "PRICE_LISTS_INCOMPLETE",
 			Message: fmt.Sprintf("в студии больше прайс-листов, чем шлюз читает за раз (%d): список неполный, недостающие впишите вручную", len(pl.lists))})
 	}
+	if pl.unread > 0 {
+		out.Notices = append(out.Notices, driver.Notice{Code: "PRICE_LISTS_PARTLY_READ",
+			Message: fmt.Sprintf("прочитаны первые %d прайс-листов, ещё %d только перечислены: часы по прайс-листам могут быть неполными", maxPriceListReads, pl.unread)})
+	}
 	if pl.failed > 0 {
 		out.Notices = append(out.Notices, driver.Notice{Code: "PRICE_LIST_UNREADABLE",
 			Message: fmt.Sprintf("не удалось разобрать прайс-листов: %d", pl.failed)})

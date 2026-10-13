@@ -92,6 +92,17 @@ func TestDiscoveryReadsEveryPriceListPage(t *testing.T) {
 	if len(d.PriceLists) != 201 || listCalls(stub) != 2 || slices.Contains(noticeCodes(d), "PRICE_LISTS_INCOMPLETE") {
 		t.Fatalf("%d price lists in %d pages, notices %v", len(d.PriceLists), listCalls(stub), noticeCodes(d))
 	}
+	// each list read costs a request: only the first 50 are read, and the
+	// draft says so
+	reads := 0
+	for _, c := range stub.Calls() {
+		if strings.HasPrefix(c, "GET /pricing/") {
+			reads++
+		}
+	}
+	if reads != 50 || !slices.Contains(noticeCodes(d), "PRICE_LISTS_PARTLY_READ") {
+		t.Fatalf("%d price lists read, notices %v", reads, noticeCodes(d))
+	}
 
 	// a CRM that always has another page: discovery stops and says so
 	stub = vivastub.New(stubUser, stubPass, studio)

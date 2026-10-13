@@ -581,6 +581,16 @@ func clientIP(r *http.Request, trusted []netip.Prefix) netip.Addr {
 	return addr
 }
 
+// DiscoverTimeout is how long the gateway may read its CRM for a
+// discovery (tunnel.MaxRequestTimeout allows it).
+const DiscoverTimeout = 3 * time.Minute
+
+// writeTimeout covers the longest answer: a partner request after a full
+// poll wait, or a discovery, plus the margin of the broker's wait.
+func writeTimeout(cfg *Settings) time.Duration {
+	return max(cfg.PollWait+cfg.RequestTimeout, DiscoverTimeout) + 30*time.Second
+}
+
 // Run serves the hub until ctx is done: the HTTP(S) listener and the
 // heartbeat monitor (which writes the status files).
 func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) error {
@@ -589,7 +599,7 @@ func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) erro
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      cfg.PollWait + cfg.RequestTimeout + 30*time.Second,
+		WriteTimeout:      writeTimeout(cfg),
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 	}

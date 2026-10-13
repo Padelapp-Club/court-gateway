@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,3 +93,49 @@ func TestCancelAtPickupLeavesNothingInFlight(t *testing.T) {
 
 // SetPickedUp is for the external tests.
 func SetPickedUp(b *Broker, f func()) { b.pickedUp = f }
+
+// Discovery reads a whole CRM account: the gateway is given
+// DiscoverTimeout for it, the gateway's cap allows it, and the HTTP
+// server's write timeout outlasts it.
+func TestDiscoverGetsItsOwnTimeout(t *testing.T) {
+	st, err := OpenStore(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateInstallation("disc-net", ""); err != nil {
+		t.Fatal(err)
+	}
+	code, err := st.CreateJoinCode("disc-net", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, _, err := st.Redeem(code.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Settings{PollWait: time.Second, RequestTimeout: time.Second, OfflineAfter: time.Minute, OperatorKey: "synthetic-operator-key-0123456789"}
+	srv, err := NewServer(cfg, st, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	polled := make(chan *tunnel.Request, 1)
+	go func() { polled <- srv.broker.Poll(context.Background(), "disc-net", g.gen, ConnMeta{}) }()
+	for !srv.broker.Connected("disc-net") {
+		time.Sleep(time.Millisecond)
+	}
+	req := httptest.NewRequest("POST", "/hub/installations/disc-net/discover", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+cfg.OperatorKey)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { rec := httptest.NewRecorder(); srv.Handler().ServeHTTP(rec, req); done <- rec }()
+	rq := <-polled
+	if rq == nil || time.Duration(rq.TimeoutMS)*time.Millisecond != DiscoverTimeout || DiscoverTimeout > tunnel.MaxRequestTimeout {
+		t.Fatalf("discover request %+v: want a timeout of %s within the gateway's cap %s", rq, DiscoverTimeout, tunnel.MaxRequestTimeout)
+	}
+	if writeTimeout(cfg) <= DiscoverTimeout+5*time.Second {
+		t.Fatalf("write timeout %s does not outlast the discovery", writeTimeout(cfg))
+	}
+	srv.broker.Reply("disc-net", tunnel.Response{ID: rq.ID, Status: 200, Body: []byte("{}")})
+	if rec := <-done; rec.Code != 200 {
+		t.Fatalf("discover: %d %s", rec.Code, rec.Body)
+	}
+}

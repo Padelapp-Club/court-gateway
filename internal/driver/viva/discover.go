@@ -169,12 +169,16 @@ type priceLists struct {
 	lists      []driver.PriceListInfo
 	hours      [7]*[2]int
 	failed     int
+	unread     int // listed, but past maxPriceListReads: hours not read
 	incomplete bool
 }
 
 // pricePageSize and maxPricePages bound how many price lists discovery
-// reads (each also costs a read of the list itself).
-const pricePageSize = 200
+// lists; maxPriceListReads how many of them it reads for their hours.
+const (
+	pricePageSize     = 200
+	maxPriceListReads = 50
+)
 
 var maxPricePages = 5
 
@@ -229,6 +233,10 @@ func (out *priceLists) add(ctx context.Context, c *client, id, name string) erro
 		return nil
 	}
 	out.lists = append(out.lists, driver.PriceListInfo{ID: strings.ToLower(id), Name: strings.TrimSpace(name)})
+	if len(out.lists) > maxPriceListReads {
+		out.unread++
+		return nil
+	}
 	status, body, err := c.do(ctx, http.MethodGet, "/pricing/"+id, nil, nil)
 	if err != nil {
 		return err

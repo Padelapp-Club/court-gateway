@@ -59,7 +59,7 @@ const (
 	MaxRequestBody = 1 << 20
 	// MaxRequestTimeout caps the time a gateway gives one request; a longer
 	// timeout from the hub is cut to it.
-	MaxRequestTimeout = 2 * time.Minute
+	MaxRequestTimeout = 3 * time.Minute
 	// MaxResponseBody caps a gateway response body.
 	MaxResponseBody = 4 << 20
 	// maxEnvelope bounds an encoded envelope: base64 grows the body by 4/3.
