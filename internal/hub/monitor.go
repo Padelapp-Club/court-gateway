@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"maps"
 	"regexp"
@@ -25,16 +24,15 @@ const (
 )
 
 // Monitor watches the heartbeats gateways send after each of their own
-// self-checks. It never calls a gateway: a club is offline when its
+// self-checks. It never calls a gateway: a gateway is offline when its
 // heartbeats stop for longer than offlineAfter, and not ready after
 // readyFailures heartbeats in a row that report ready=false. Every Tick it
-// re-evaluates every registered club, writes the status files for the
-// external checker and, when sinks are configured, sends transitions to
-// them.
+// re-evaluates every registered gateway, writes the status files for the
+// external checker (which decides whether and how to alert) and logs
+// state changes. The hub sends no alerts of its own.
 type Monitor struct {
 	store         *Store
 	broker        *Broker
-	sinks         []Sink
 	log           *slog.Logger
 	now           func() time.Time
 	interval      time.Duration
@@ -64,8 +62,7 @@ type clubHealth struct {
 	clubErrors    map[string]string
 	clubsServed   []string
 
-	state      string // as of the last Tick
-	stateSince time.Time
+	state string // as of the last Tick
 }
 
 // Health is the monitor's view of one club, for /hub/status.
@@ -107,7 +104,7 @@ type MonitorConfig struct {
 
 // NewMonitor builds a heartbeat monitor. broker may be nil; it only adds
 // the tunnel state to the status details.
-func NewMonitor(store *Store, broker *Broker, sinks []Sink, cfg MonitorConfig) *Monitor {
+func NewMonitor(store *Store, broker *Broker, cfg MonitorConfig) *Monitor {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -118,7 +115,7 @@ func NewMonitor(store *Store, broker *Broker, sinks []Sink, cfg MonitorConfig) *
 		cfg.ReadyFailures = DefaultReadyFailures
 	}
 	return &Monitor{
-		store: store, broker: broker, sinks: sinks, log: cfg.Logger, now: cfg.Now,
+		store: store, broker: broker, log: cfg.Logger, now: cfg.Now,
 		interval: cfg.Interval, offlineAfter: cfg.OfflineAfter, readyFailures: cfg.ReadyFailures,
 		latest: cfg.LatestVersion, version: cfg.Version, statusDir: cfg.StatusDir, started: cfg.Now(), state: map[string]*clubHealth{},
 	}
@@ -146,7 +143,7 @@ var (
 )
 
 // cleanReason accepts a gateway's reason only as a short upper-case code,
-// so a gateway cannot put arbitrary text into status files or alerts.
+// so a gateway cannot put arbitrary text into status files.
 func cleanReason(ready bool, r string) string {
 	switch {
 	case ready:
@@ -295,12 +292,11 @@ type clubView struct {
 	connected bool
 }
 
-// Tick evaluates every registered club, writes the status files and sends
-// state transitions to the sinks.
-func (m *Monitor) Tick(ctx context.Context) {
+// Tick evaluates every registered gateway, writes the status files and
+// logs state changes.
+func (m *Monitor) Tick(context.Context) {
 	now := m.now()
 	var views []clubView
-	var alerts []Alert
 	gateways := m.store.Gateways()
 	connected := map[string]bool{}
 	if m.broker != nil {
@@ -308,15 +304,16 @@ func (m *Monitor) Tick(ctx context.Context) {
 			connected[g.Installation] = m.broker.Connected(g.Installation)
 		}
 	}
+	type change struct{ installation, event string }
+	var changes []change
 	m.mu.Lock()
 	for _, g := range gateways {
 		h := m.health(g.Installation)
 		st := m.evaluate(h, g.RegisteredAt, now)
-		prev, prevSince := h.state, h.stateSince
-		if st != prev {
-			h.state, h.stateSince = st, now
-			if a, ok := m.transition(g, *h, prev, prevSince, now); ok {
-				alerts = append(alerts, a)
+		if prev := h.state; st != prev {
+			h.state = st
+			if ev := event(prev, st); ev != "" {
+				changes = append(changes, change{g.Installation, ev})
 			}
 		}
 		views = append(views, clubView{GatewayRecord: g, clubHealth: *h, connected: connected[g.Installation]})
@@ -333,61 +330,33 @@ func (m *Monitor) Tick(ctx context.Context) {
 			m.log.Error("cannot write the status files", "dir", m.statusDir, "error", err)
 		}
 	}
-	for _, a := range alerts {
-		m.send(ctx, a)
+	for _, c := range changes {
+		m.log.Warn("gateway state changed", "event", c.event, "installation", c.installation)
 	}
 }
 
-// transition builds the alert for a state change. The first evaluation of
-// a club (prev empty) alerts only when it is already bad; pending never
-// alerts.
-func (m *Monitor) transition(g GatewayRecord, h clubHealth, prev string, prevSince, now time.Time) (Alert, bool) {
-	a := Alert{Club: g.Installation, ClubName: g.Name, Time: now}
-	switch h.state {
-	case StateOffline:
-		since := m.silentSince(&h, g.RegisteredAt)
-		a.Event = EventOffline
-		a.Text = fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s): последний сигнал %s UTC, %s назад.",
-			g.Name, g.Installation, since.UTC().Format("02.01 15:04"), minutes(now.Sub(since)))
-		if h.lastBeat.IsZero() {
-			a.Text = fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s): ни одного сигнала за %s.",
-				g.Name, g.Installation, minutes(now.Sub(since)))
-		}
-		return a, true
-	case StateNotReady:
-		a.Event = EventNotReady
-		a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) на связи, но НЕ ГОТОВ: %s (%d проверки подряд).",
-			g.Name, g.Installation, h.reason, h.notReady)
-		return a, true
-	case StateOnline:
-		switch prev {
-		case StateOffline:
-			a.Event = EventOnline
-			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова на связи (не было связи %s).",
-				g.Name, g.Installation, minutes(now.Sub(prevSince)))
-			return a, true
-		case StateNotReady:
-			a.Event = EventReady
-			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова готов.", g.Name, g.Installation)
-			return a, true
-		}
+// Events of state changes, as logged.
+const (
+	EventOffline  = "offline"
+	EventOnline   = "online"
+	EventNotReady = "not_ready"
+	EventReady    = "ready"
+)
+
+// event names a state change worth a log line. The first evaluation of a
+// gateway (prev empty) counts only when it is already bad; pending never
+// does.
+func event(prev, next string) string {
+	switch {
+	case next == StateOffline:
+		return EventOffline
+	case next == StateNotReady:
+		return EventNotReady
+	case next == StateOnline && prev == StateOffline:
+		return EventOnline
+	case next == StateOnline && prev == StateNotReady:
+		return EventReady
 	}
-	return Alert{}, false
+	return ""
 }
 
-func (m *Monitor) send(ctx context.Context, a Alert) {
-	m.log.Warn("club state changed", "event", a.Event, "club", a.Club)
-	for _, s := range m.sinks {
-		sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := s.Send(sctx, a)
-		cancel()
-		if err != nil {
-			m.log.Error("alert delivery failed", "sink", s.Name(), "event", a.Event, "club", a.Club, "error", err)
-		}
-	}
-}
-
-func minutes(d time.Duration) string {
-	n := int(d.Round(time.Minute) / time.Minute)
-	return fmt.Sprintf("%d мин", n)
-}

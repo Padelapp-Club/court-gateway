@@ -59,9 +59,6 @@ type fileConfig struct {
 		OfflineAfter  string `yaml:"offline_after"`
 		ReadyFailures int    `yaml:"ready_failures"`
 	} `yaml:"heartbeat"`
-	Alerts struct {
-		WebhookURLEnv string `yaml:"webhook_url_env"`
-	} `yaml:"alerts"`
 }
 
 // Settings is a validated hub configuration.
@@ -84,8 +81,6 @@ type Settings struct {
 	Interval      time.Duration
 	OfflineAfter  time.Duration
 	ReadyFailures int
-	// WebhookURL is an optional alert sink; off when empty.
-	WebhookURL string
 	// Secrets must never appear in logs.
 	Secrets []string
 }
@@ -199,17 +194,6 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	partners, keys := core.ParsePartners(entries, getenv, add)
 	s.Partners, s.Secrets = partners, append(s.Secrets, keys...)
 
-	if env := strings.TrimSpace(fc.Alerts.WebhookURLEnv); env != "" {
-		s.WebhookURL = strings.TrimSpace(getenv(env))
-		if s.WebhookURL == "" {
-			add("alerts.webhook_url_env: переменная %s не задана", env)
-		} else if err := core.CheckHTTPSURL("alerts.webhook_url_env", s.WebhookURL); err != nil {
-			add("alerts.webhook_url_env: адрес в %s должен начинаться с https://", env)
-		} else {
-			// a webhook URL usually embeds its own token
-			s.Secrets = append(s.Secrets, s.WebhookURL)
-		}
-	}
 	if len(errs) > 0 {
 		return nil, &core.ConfigError{Problems: errs}
 	}

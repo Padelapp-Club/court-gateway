@@ -22,7 +22,3 @@ heartbeat:                                 # шлюзы сами присыла�
   interval: 60s                            # как часто хаб пересчитывает состояние клубов и пишет status_dir
   offline_after: 3m                        # «нет связи», если сигнала нет дольше
   ready_failures: 3                        # «не готов» после стольких сигналов подряд с ready=false
-
-# Необязательно — для операторов без своей системы проверок. По умолчанию выключено.
-# alerts:
-#   webhook_url_env: ALERT_WEBHOOK_URL     # POST JSON {event, club, club_name, text, time}

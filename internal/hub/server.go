@@ -40,10 +40,6 @@ type Server struct {
 type Options struct {
 	Now    func() time.Time
 	Logger *slog.Logger
-	// Sinks override the sinks built from the settings (tests).
-	Sinks []Sink
-	// SinkClient is the HTTP client for alert sinks.
-	SinkClient *http.Client
 	// Version is the hub's own version, reported in status.json.
 	Version string
 }
@@ -58,11 +54,7 @@ func NewServer(cfg *Settings, store *Store, opts Options) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, store: store, log: opts.Logger, now: opts.Now, regLim: newFailLimiter(20, time.Minute)}
 	s.broker = NewBroker(cfg.PollWait, opts.Now)
-	sinks := opts.Sinks
-	if sinks == nil {
-		sinks = SinksFromSettings(cfg, opts.SinkClient)
-	}
-	s.monitor = NewMonitor(store, s.broker, sinks, MonitorConfig{
+	s.monitor = NewMonitor(store, s.broker, MonitorConfig{
 		Interval: cfg.Interval, OfflineAfter: cfg.OfflineAfter, ReadyFailures: cfg.ReadyFailures,
 		LatestVersion: cfg.LatestVersion, Version: opts.Version, StatusDir: cfg.StatusDir,
 		Now: opts.Now, Logger: opts.Logger,

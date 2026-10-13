@@ -116,8 +116,8 @@ func TestHubBehindPathPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.TLSCertFile != "" || settings.WebhookURL != "" {
-		t.Fatalf("expected a plain-HTTP hub with no alert sink: %+v", settings)
+	if settings.TLSCertFile != "" {
+		t.Fatalf("expected a plain-HTTP hub: %+v", settings)
 	}
 	store, err := hub.OpenStore(settings.StateDir, nil)
 	if err != nil {

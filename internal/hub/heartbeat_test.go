@@ -5,9 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,28 +67,19 @@ func (d *countingDriver) Calls() []time.Time {
 	return append([]time.Time(nil), d.calls...)
 }
 
-type recorded struct {
-	path string
-	body string
-}
-
-// fakeWebhook records what the optional webhook sink posts.
-func fakeWebhook(t *testing.T) (*httptest.Server, func() []recorded) {
-	var mu sync.Mutex
-	var got []recorded
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		got = append(got, recorded{r.URL.Path, string(b)})
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
-	return srv, func() []recorded {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]recorded(nil), got...)
+// events returns the state changes the hub logged, in order.
+func (w *beatWorld) events() []string {
+	var out []string
+	for _, line := range strings.Split(w.hub.Logs.String(), "\n") {
+		var rec struct {
+			Msg   string `json:"msg"`
+			Event string `json:"event"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "gateway state changed" {
+			out = append(out, rec.Event)
+		}
 	}
+	return out
 }
 
 // beatWorld is a hub on a fake clock with one registered gateway whose
@@ -143,10 +132,7 @@ func (w *beatWorld) state(t *testing.T) string {
 }
 
 func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
-	hook, alerts := fakeWebhook(t)
-	env := hubEnv()
-	env["HOOK_URL"] = hook.URL + "/hook?token=webhook-secret-value"
-	w := newBeatWorld(t, "alerts: { webhook_url_env: HOOK_URL }\n", env, hub.Options{SinkClient: hook.Client()})
+	w := newBeatWorld(t, "", nil, hub.Options{})
 	mon := w.hub.Server().Monitor()
 	ctx := context.Background()
 
@@ -163,21 +149,21 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	// heartbeats stop: offline only after MORE than offline_after (3m)
 	w.clock.Advance(3 * time.Minute)
 	mon.Tick(ctx)
-	if st := w.state(t); st != hub.StateOnline || len(alerts()) != 0 {
-		t.Fatalf("at exactly 3m: %s %+v", st, alerts())
+	if st := w.state(t); st != hub.StateOnline || len(w.events()) != 0 {
+		t.Fatalf("at exactly 3m: %s %+v", st, w.events())
 	}
 	w.clock.Advance(time.Second)
 	mon.Tick(ctx)
 	if st := w.state(t); st != hub.StateOffline {
 		t.Fatalf("after 3m1s: %s", st)
 	}
-	if got := alerts(); len(got) != 1 || !strings.Contains(got[0].body, "НЕТ СВЯЗИ") || !strings.Contains(got[0].body, `"event":"offline"`) {
-		t.Fatalf("offline alert: %+v", got)
+	if got := w.events(); len(got) != 1 || got[0] != hub.EventOffline {
+		t.Fatalf("offline: %+v", got)
 	}
 	w.clock.Advance(time.Minute)
 	mon.Tick(ctx)
-	if n := len(alerts()); n != 1 {
-		t.Fatalf("offline alert repeated: %d", n)
+	if n := len(w.events()); n != 1 {
+		t.Fatalf("offline logged again: %d", n)
 	}
 	// the tunnel alone does not make a club online: only heartbeats do
 	if !w.hub.Server().Broker().Connected("demo-club") || w.state(t) != hub.StateOffline {
@@ -187,7 +173,7 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	// recovery
 	w.beat(t, true, "")
 	mon.Tick(ctx)
-	if got := alerts(); w.state(t) != hub.StateOnline || len(got) != 2 || !strings.Contains(got[1].body, "снова на связи") {
+	if got := w.events(); w.state(t) != hub.StateOnline || len(got) != 2 || got[1] != hub.EventOnline {
 		t.Fatalf("recovery: %s %+v", w.state(t), got)
 	}
 
@@ -197,20 +183,20 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 		w.beat(t, false, "CRM_AUTH_FAILED")
 		mon.Tick(ctx)
 	}
-	if st := w.state(t); st != hub.StateOnline || len(alerts()) != 2 {
-		t.Fatalf("after 2 not-ready heartbeats: %s %d", st, len(alerts()))
+	if st := w.state(t); st != hub.StateOnline || len(w.events()) != 2 {
+		t.Fatalf("after 2 not-ready heartbeats: %s %d", st, len(w.events()))
 	}
 	w.clock.Advance(time.Minute)
 	w.beat(t, false, "CRM_AUTH_FAILED")
 	mon.Tick(ctx)
-	if got := alerts(); w.state(t) != hub.StateNotReady || len(got) != 3 || !strings.Contains(got[2].body, "НЕ ГОТОВ: CRM_AUTH_FAILED") {
+	if got := w.events(); w.state(t) != hub.StateNotReady || len(got) != 3 || got[2] != hub.EventNotReady {
 		t.Fatalf("not ready: %s %+v", w.state(t), got)
 	}
 	// one good heartbeat resets the streak
 	w.clock.Advance(time.Minute)
 	w.beat(t, true, "")
 	mon.Tick(ctx)
-	if got := alerts(); w.state(t) != hub.StateOnline || len(got) != 4 || !strings.Contains(got[3].body, "снова готов") {
+	if got := w.events(); w.state(t) != hub.StateOnline || len(got) != 4 || got[3] != hub.EventReady {
 		t.Fatalf("ready again: %s %+v", w.state(t), got)
 	}
 	w.beat(t, false, "CRM_UNREACHABLE")
@@ -222,14 +208,11 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 		t.Fatalf("an interrupted streak counted as not ready: %s", st)
 	}
 
-	// nothing secret in alerts or the hub log
+	// nothing secret in the hub log
 	all := w.hub.Logs.String()
-	for _, a := range alerts() {
-		all += a.body
-	}
-	for _, s := range []string{"webhook-secret-value", w.secret, operatorKey, contract.ReadKey, contract.BookKey} {
+	for _, s := range []string{w.secret, operatorKey, contract.ReadKey, contract.BookKey} {
 		if strings.Contains(all, s) {
-			t.Fatalf("secret %q leaked into alerts or logs", s[:8])
+			t.Fatalf("secret %q leaked into the log", s[:8])
 		}
 	}
 }
@@ -567,24 +550,13 @@ func TestStatusAPI(t *testing.T) {
 	}
 }
 
-func TestWebhookErrorsDoNotLeakURL(t *testing.T) {
-	sink := &hub.WebhookSink{URL: "http://127.0.0.1:1/hook?token=webhook-secret-value", Client: &http.Client{Timeout: time.Second}}
-	err := sink.Send(context.Background(), hub.Alert{Text: "x"})
-	if err == nil || strings.Contains(err.Error(), "webhook-secret-value") || strings.Contains(err.Error(), "127.0.0.1") {
-		t.Fatalf("error: %v", err)
-	}
-}
-
-func TestHubConfigAlerts(t *testing.T) {
+func TestHubSendsNoAlertsOfItsOwn(t *testing.T) {
 	env := func(k string) string { return hubEnv()[k] }
-	// no sink unless a webhook is configured
-	s, err := hub.Load([]byte("state_dir: /tmp/x\n"), env)
-	if err != nil || s.WebhookURL != "" || len(hub.SinksFromSettings(s, nil)) != 0 {
-		t.Fatalf("default sinks: %v %v", s, err)
-	}
-	// there is no built-in chat sender: any such section is an unknown key
-	if _, err := hub.Load([]byte("state_dir: /tmp/x\nalerts:\n  chat_bot: { token_env: X, chat_env: Y }\n"), env); err == nil {
-		t.Fatal("a removed alert section was accepted silently")
+	// the hub only writes status files; any alert section is an unknown key
+	for _, section := range []string{"alerts:\n  webhook_url_env: X\n", "alerts:\n  chat_bot: { token_env: X, chat_env: Y }\n"} {
+		if _, err := hub.Load([]byte("state_dir: /tmp/x\n"+section), env); err == nil {
+			t.Fatalf("an alert section was accepted: %q", section)
+		}
 	}
 	if _, err := hub.Load([]byte("state_dir: /tmp/x\nstatus_dir: /tmp/x/\n"), env); err == nil {
 		t.Fatal("status_dir equal to state_dir was accepted")
