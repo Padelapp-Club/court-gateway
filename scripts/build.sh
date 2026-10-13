@@ -3,12 +3,14 @@
 # byte-identical binaries, so anyone can rebuild a release and compare its
 # SHA-256 with ours.
 #
-#   VERSION      version to embed (default: contents of VERSION)
-#   RELEASE_KEY  base64 ed25519 public key of release manifests; empty
-#                makes a self-built binary that never updates itself.
-#                Official releases embed the key published in release.pub.
-#   OUT          output directory (default: dist)
-#   TARGETS      space-separated os/arch list (default: all release targets)
+#   VERSION           version to embed (default: contents of VERSION)
+#   RELEASE_KEY       base64 ed25519 public key of release manifests, or
+#   RELEASE_KEY_FILE  a file with it, outside the source tree (the release
+#                     page publishes it as release.pub). Neither: a
+#                     self-built binary that never updates itself. The key
+#                     is never read from the source tree implicitly.
+#   OUT               output directory (default: dist)
+#   TARGETS           space-separated os/arch list (default: all release targets)
 #
 # Usage: scripts/build.sh            then compare dist/SHA256SUMS
 set -eu
@@ -16,8 +18,14 @@ set -eu
 cd "$(dirname "$0")/.."
 VERSION="${VERSION:-$(cat VERSION)}"
 RELEASE_KEY="${RELEASE_KEY:-}"
-if [ -z "$RELEASE_KEY" ] && [ -f release.pub ]; then
-	RELEASE_KEY="$(tr -d ' \n' < release.pub)"
+if [ -n "${RELEASE_KEY_FILE:-}" ]; then
+	case "$(cd "$(dirname "$RELEASE_KEY_FILE")" && pwd)/" in
+	"$(pwd)"/*)
+		echo "build.sh: RELEASE_KEY_FILE must be outside the source tree" >&2
+		exit 2
+		;;
+	esac
+	RELEASE_KEY="$(tr -d ' \n' < "$RELEASE_KEY_FILE")"
 fi
 OUT="${OUT:-dist}"
 TARGETS="${TARGETS:-linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64}"

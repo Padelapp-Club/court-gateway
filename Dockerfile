@@ -8,6 +8,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=
+# the release key comes only as this build argument (the release page
+# publishes it as release.pub); without it the image is self-built and
+# never updates itself
 ARG RELEASE_KEY=
 # set by BuildKit (docker buildx build --platform ...); the legacy builder
 # leaves them empty and the build stage's own platform is used
@@ -24,9 +27,10 @@ RUN V="${VERSION:-$(cat VERSION)}" && \
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/court-gateway /court-gateway
 # Config is mounted at /config; secrets come as environment variables
-# (compose env_file). The state directory holds the health status file and
-# verified updates; it lives in the container layer on purpose: no volume,
-# no CRM data, and a recreated container simply starts from the image.
+# (compose env_file). /court-gateway is never replaced: it starts the newest
+# verified update kept in the state directory (versions/), or itself. The
+# state directory lives in the container layer on purpose: no volume, no
+# CRM data, and a recreated container simply starts from the image.
 ENV GATEWAY_CONFIG=/config/gateway.yaml \
     GATEWAY_STATE_DIR=/home/nonroot/state
 USER nonroot:nonroot

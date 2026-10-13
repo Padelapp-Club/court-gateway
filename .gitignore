@@ -15,3 +15,6 @@
 *.key
 /hub.yaml
 /state/
+
+# The release public key is published with each release, not kept here
+/release.pub

@@ -6,3 +6,4 @@ dist
 gateway.yaml
 hub.yaml
 state
+release.pub
