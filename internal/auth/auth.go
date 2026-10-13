@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -45,19 +44,16 @@ type Partner struct {
 // refusal so the protected API keeps one error format.
 type ErrorWriter func(w http.ResponseWriter, r *http.Request, status int, code, message string)
 
-// DefaultMaxInFlight is how many requests one key may have in flight at
-// once when Options.MaxInFlight is not set.
-const DefaultMaxInFlight = 16
+// maxInFlight caps the requests of one key being served at once, reads
+// included, over all its clubs together. It bounds the load one key puts
+// on the server; a club's gateway is guarded by the hub's own per-gateway
+// cap.
+const maxInFlight = 16
 
-// Options tune the middleware.
+// Options tune the middleware. WriteError is required.
 type Options struct {
 	WriteError ErrorWriter
 	Now        func() time.Time
-	// MaxInFlight caps the requests of one key being served at once, reads
-	// included, over all its clubs together. It bounds the load one key
-	// puts on the server; a club's gateway is guarded by the hub's own
-	// per-gateway cap.
-	MaxInFlight int
 }
 
 type partner struct {
@@ -78,16 +74,10 @@ type Authenticator struct {
 
 // New validates the partner list and builds an Authenticator.
 func New(partners []Partner, opts Options) (*Authenticator, error) {
-	if len(partners) == 0 {
-		return nil, errors.New("auth: at least one partner is required")
+	if len(partners) == 0 || opts.WriteError == nil {
+		return nil, errors.New("auth: at least one partner and an error writer are required")
 	}
 	a := &Authenticator{writeErr: opts.WriteError, now: opts.Now}
-	if opts.MaxInFlight <= 0 {
-		opts.MaxInFlight = DefaultMaxInFlight
-	}
-	if a.writeErr == nil {
-		a.writeErr = defaultWriteError
-	}
 	if a.now == nil {
 		a.now = time.Now
 	}
@@ -106,7 +96,7 @@ func New(partners []Partner, opts Options) (*Authenticator, error) {
 			return nil, fmt.Errorf("auth: partners %q and %q share a key", other, p.Name)
 		}
 		seen[d] = p.Name
-		ip := &partner{name: p.Name, digest: d, slots: make(chan struct{}, opts.MaxInFlight)}
+		ip := &partner{name: p.Name, digest: d, slots: make(chan struct{}, maxInFlight)}
 		for _, s := range p.Scopes {
 			switch s {
 			case ScopeRead:
@@ -239,10 +229,4 @@ func (b *bucket) take(now time.Time) (time.Duration, bool) {
 		return 0, true
 	}
 	return time.Duration((1 - b.tokens) / b.perSec * float64(time.Second)), false
-}
-
-func defaultWriteError(w http.ResponseWriter, _ *http.Request, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
 }

@@ -25,12 +25,17 @@ const (
 	bookKey = "book-key-0123456789abcdef"
 )
 
+func writeStatus(w http.ResponseWriter, _ *http.Request, status int, code, _ string) {
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(code))
+}
+
 func setup(t *testing.T, clk *fakeClock) http.Handler {
 	t.Helper()
 	a, err := New([]Partner{
 		{Name: "reader", Key: readKey, Scopes: []Scope{ScopeRead}},
 		{Name: "booker", Key: bookKey, Scopes: []Scope{ScopeRead, ScopeBook}, WritesPerMinute: 3},
-	}, Options{Now: clk.now})
+	}, Options{Now: clk.now, WriteError: writeStatus})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +126,7 @@ func TestNewRejectsBadPartners(t *testing.T) {
 		{{Name: "a", Key: "k"}, {Name: "b", Key: "k"}},
 	}
 	for i, ps := range bad {
-		if _, err := New(ps, Options{}); err == nil {
+		if _, err := New(ps, Options{WriteError: writeStatus}); err == nil {
 			t.Fatalf("case %d accepted", i)
 		}
 	}
@@ -136,7 +141,7 @@ func TestRequestsInFlightPerKey(t *testing.T) {
 	a, err := New([]Partner{
 		{Name: "reader", Key: readKey, Scopes: []Scope{ScopeRead}},
 		{Name: "booker", Key: bookKey, Scopes: []Scope{ScopeRead, ScopeBook}},
-	}, Options{MaxInFlight: 3})
+	}, Options{WriteError: writeStatus})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,13 +159,13 @@ func TestRequestsInFlightPerKey(t *testing.T) {
 		return w.Code
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
+	for i := 0; i < maxInFlight; i++ {
 		wg.Add(1)
 		go func() { defer wg.Done(); get(readKey, "/slow") }()
 		<-entered
 	}
 	if code := get(readKey, "/fast"); code != http.StatusTooManyRequests {
-		t.Fatalf("a fourth request of the same key: %d", code)
+		t.Fatalf("one request of the same key too many: %d", code)
 	}
 	if code := get(bookKey, "/fast"); code != http.StatusOK {
 		t.Fatalf("another key: %d", code)

@@ -121,7 +121,7 @@ func Build(t *testing.T, crmYAML string, spec core.ClubSpec, env map[string]stri
 		t.Fatalf("driver: %v", err)
 	}
 	srv := core.NewServer(s, d, log)
-	clubs := core.NewClubs(core.ClubsOptions{Logger: log, Now: s.Driver.Now})
+	clubs := core.NewClubs(core.ClubsOptions{Logger: log})
 	clubs.Set([]*core.Server{srv})
 	return &Built{Settings: s, Driver: d, Server: srv, Clubs: clubs, Logs: logs}
 }

@@ -128,12 +128,6 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
-// Result of a check.
-type Result struct {
-	Latest    string
-	Installed string // version installed by this check, if any
-}
-
 // Updater checks and installs releases.
 type Updater struct {
 	PublicKey   ed25519.PublicKey
@@ -210,19 +204,19 @@ func (u *Updater) Fetch(ctx context.Context) (*Manifest, error) {
 	return ParseManifest(data)
 }
 
-// Check fetches the manifest and installs a newer release if there is one.
-func (u *Updater) Check(ctx context.Context) (Result, error) {
+// Check fetches the manifest and installs a newer release if there is
+// one; installed is the version it installed ("" for none).
+func (u *Updater) Check(ctx context.Context) (installed string, err error) {
 	m, err := u.Fetch(ctx)
 	if err != nil {
-		return Result{}, err
+		return "", err
 	}
-	res := Result{Latest: m.Version}
 	if !version.Newer(m.Version, u.Current) {
-		return res, nil
+		return "", nil
 	}
 	if isBad(u.Versions.Dir, m.Version, u.now()) {
 		u.log().Info("skipping a release that failed here recently", "version", m.Version)
-		return res, nil
+		return "", nil
 	}
 	plat := u.Platform
 	if plat == "" {
@@ -230,11 +224,11 @@ func (u *Updater) Check(ctx context.Context) (Result, error) {
 	}
 	a, ok := m.Assets[plat]
 	if !ok {
-		return res, fmt.Errorf("release %s has no build for %s", m.Version, plat)
+		return "", fmt.Errorf("release %s has no build for %s", m.Version, plat)
 	}
 	path, err := u.download(ctx, a)
 	if err != nil {
-		return res, err
+		return "", err
 	}
 	defer os.Remove(path) // no-op once installed (renamed away)
 	if u.CheckBinary != nil {
@@ -242,21 +236,20 @@ func (u *Updater) Check(ctx context.Context) (Result, error) {
 			if errors.Is(err, ErrBroken) {
 				markBad(u.Versions.Dir, m.Version, u.now())
 			}
-			return res, err
+			return "", err
 		}
 	}
 	// the marker first: a version that starts must find it, whenever the
 	// switch is interrupted
 	if err := writePending(u.Versions.Dir, Pending{Version: m.Version, From: u.Current, Installed: u.now().UTC()}); err != nil {
-		return res, fmt.Errorf("install: %w", err)
+		return "", fmt.Errorf("install: %w", err)
 	}
 	if err := u.Versions.Install(path, m.Version); err != nil {
 		_ = clearPending(u.Versions.Dir)
-		return res, fmt.Errorf("install: %w", err)
+		return "", fmt.Errorf("install: %w", err)
 	}
-	res.Installed = m.Version
 	u.log().Info("update installed", "from", u.Current, "to", m.Version)
-	return res, nil
+	return m.Version, nil
 }
 
 func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
@@ -459,7 +452,7 @@ func (v *Versions) Next(own string, now time.Time, log *slog.Logger) string {
 // trigger fires — the hub's hint — at most once an hour. onInstalled is
 // called after a successful installation; the caller restarts into the
 // new binary.
-func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, interval time.Duration, onInstalled func(Result)) {
+func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, interval time.Duration, onInstalled func()) {
 	timer := time.NewTimer(first)
 	defer timer.Stop()
 	var lastHint time.Time
@@ -476,13 +469,13 @@ func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, inte
 			timer.Reset(interval + jitter(time.Hour))
 		}
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		res, err := u.Check(cctx)
+		installed, err := u.Check(cctx)
 		cancel()
 		switch {
 		case err != nil:
 			u.log().Warn("update check failed", "error", err)
-		case res.Installed != "":
-			onInstalled(res)
+		case installed != "":
+			onInstalled()
 			return
 		}
 	}

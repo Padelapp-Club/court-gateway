@@ -29,7 +29,8 @@ func (d slowDriver) Ready(ctx context.Context) error {
 
 func clubsOf(t *testing.T, drivers ...driver.Driver) *Clubs {
 	t.Helper()
-	c := NewClubs(ClubsOptions{ClubTimeout: 200 * time.Millisecond})
+	c := NewClubs(ClubsOptions{})
+	c.clubTimeout = 200 * time.Millisecond
 	var servers []*Server
 	for i, d := range drivers {
 		servers = append(servers, NewServer(&Settings{ClubID: string(rune('a' + i))}, d, nil))

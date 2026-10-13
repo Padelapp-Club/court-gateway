@@ -30,6 +30,10 @@ type Heartbeat struct {
 	Clubs         []string          `json:"clubs,omitempty"`
 }
 
+// selfCheckTimeout bounds one self-check: every club's readiness, each
+// within its own limit.
+const selfCheckTimeout = time.Minute
+
 // MaxHeartbeatBody bounds an encoded heartbeat.
 const MaxHeartbeatBody = 64 << 10
 
@@ -43,10 +47,9 @@ type SelfCheck struct {
 	Ready func(context.Context) error
 	// Reason maps a readiness error to a short code with no secrets.
 	Reason func(error) string
-	// Interval between checks (default 60s).
+	// Interval between checks (default 60s); each is bounded by
+	// selfCheckTimeout.
 	Interval time.Duration
-	// Timeout bounds one check (default 5s).
-	Timeout time.Duration
 	// Now is the clock (default time.Now).
 	Now            func() time.Time
 	Version, Build string
@@ -65,11 +68,7 @@ func (s *SelfCheck) Step(ctx context.Context) (Heartbeat, bool) {
 	if !s.last.IsZero() && now.Sub(s.last) < interval {
 		return Heartbeat{}, false
 	}
-	timeout := s.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
+	cctx, cancel := context.WithTimeout(ctx, selfCheckTimeout)
 	err := s.Ready(cctx)
 	cancel()
 	if ctx.Err() != nil {

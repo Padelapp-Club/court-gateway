@@ -151,7 +151,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		// each club has its own time limit (core.ReadyTimeout); this only
 		// bounds the whole round
 		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Interval: statusInterval,
-			Timeout: time.Minute, Version: version, Build: build()}
+			Version: version, Build: build()}
 		var st core.HealthStatus
 		var crm tunnel.Heartbeat
 		lastSeen := time.Now() // the hub, or the start
@@ -224,7 +224,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log,
 		}
 		first := 5*time.Minute + time.Duration(time.Now().UnixNano()%int64(10*time.Minute))
-		go u.Loop(ctx, hint, first, 24*time.Hour, func(update.Result) { askRestart() })
+		go u.Loop(ctx, hint, first, 24*time.Hour, askRestart)
 	}
 
 	log.Info("started", "version", version, "build", build(), "crm", s.CRMType)

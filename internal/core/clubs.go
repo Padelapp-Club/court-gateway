@@ -1,7 +1,6 @@
 package core
 
 import (
-	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -21,7 +20,6 @@ import (
 // served by the set that was current when it arrived.
 type Clubs struct {
 	log *slog.Logger
-	now func() time.Time
 	cur atomic.Pointer[clubTable]
 	// readyNoClubs answers readiness while no club is configured (the
 	// CRM login of the account); nil means ready.
@@ -49,12 +47,8 @@ type clubTable struct {
 // ClubsOptions configure NewClubs.
 type ClubsOptions struct {
 	Logger *slog.Logger
-	Now    func() time.Time
 	// ReadyNoClubs is the readiness check while no club is configured.
 	ReadyNoClubs func(context.Context) error
-	// ClubTimeout bounds the readiness check of one club (default
-	// ReadyTimeout).
-	ClubTimeout time.Duration
 }
 
 // NewClubs builds an empty set.
@@ -62,10 +56,7 @@ func NewClubs(o ClubsOptions) *Clubs {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
-	if o.Now == nil {
-		o.Now = time.Now
-	}
-	c := &Clubs{log: o.Logger, now: o.Now, readyNoClubs: o.ReadyNoClubs, clubTimeout: cmp.Or(o.ClubTimeout, ReadyTimeout)}
+	c := &Clubs{log: o.Logger, readyNoClubs: o.ReadyNoClubs, clubTimeout: ReadyTimeout}
 	c.cur.Store(&clubTable{byID: map[string]clubEntry{}})
 	return c
 }
@@ -106,7 +97,7 @@ func (c *Clubs) Server(id string) (*Server, bool) {
 const readyParallel = 4
 
 // Ready checks every club's CRM access, a few clubs at a time, each within
-// its own ClubTimeout (and ctx); with no club it checks the account. The
+// its own ReadyTimeout (and ctx); with no club it checks the account. The
 // error is the first club's, in id order. A club found not to match its
 // CRM (driver.MisconfigError) is blocked until a later check passes.
 func (c *Clubs) Ready(ctx context.Context) error {
@@ -201,5 +192,5 @@ func (c *Clubs) TunnelHandler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	})
-	return Observe(c.log, c.now, mux)
+	return Observe(c.log, time.Now, mux)
 }

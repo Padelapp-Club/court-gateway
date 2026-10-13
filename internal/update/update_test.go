@@ -147,9 +147,9 @@ func noStrays(t *testing.T, dir string) {
 func TestValidSignatureInstalls(t *testing.T) {
 	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
 	g := newRig(t, r, "1.0.0")
-	res, err := g.u.Check(context.Background())
-	if err != nil || res.Installed != "1.1.0" {
-		t.Fatalf("result: %+v %v", res, err)
+	installed, err := g.u.Check(context.Background())
+	if err != nil || installed != "1.1.0" {
+		t.Fatalf("result: %q %v", installed, err)
 	}
 	g.untouched(t)
 	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
@@ -209,9 +209,9 @@ func TestNotNewerIsNoop(t *testing.T) {
 	for _, ver := range []string{"1.0.0", "0.9.9"} {
 		r := newRelease(t, ver, []byte("BIN"))
 		g := newRig(t, r, "1.0.0")
-		res, err := g.u.Check(context.Background())
-		if err != nil || res.Installed != "" || g.v.Launch("1.0.0", time.Now()) != "" {
-			t.Fatalf("%s: %+v %v", ver, res, err)
+		installed, err := g.u.Check(context.Background())
+		if err != nil || installed != "" || g.v.Launch("1.0.0", time.Now()) != "" {
+			t.Fatalf("%s: %q %v", ver, installed, err)
 		}
 	}
 }
@@ -255,10 +255,10 @@ func TestChildCheckRejectsBrokenBinary(t *testing.T) {
 			r := newRelease(t, "1.1.0", c.bin)
 			g := newRig(t, r, "1.0.0")
 			g.u.CheckBinary = ChildCheck(cfg)
-			res, err := g.u.Check(context.Background())
+			installed, err := g.u.Check(context.Background())
 			if c.wantErr == nil {
-				if err != nil || res.Installed != "1.1.0" {
-					t.Fatalf("%+v %v", res, err)
+				if err != nil || installed != "1.1.0" {
+					t.Fatalf("%q %v", installed, err)
 				}
 				return
 			}
@@ -298,13 +298,13 @@ func TestRollbackWhenNewVersionFailsOnStart(t *testing.T) {
 		t.Fatal("pending marker left")
 	}
 	// and the next daily check does not reinstall it
-	if res, err := g.u.Check(context.Background()); err != nil || res.Installed != "" {
-		t.Fatalf("reinstalled a bad version: %+v %v", res, err)
+	if installed, err := g.u.Check(context.Background()); err != nil || installed != "" {
+		t.Fatalf("reinstalled a bad version: %q %v", installed, err)
 	}
 	// once the bad mark is old, it is tried again
 	g.u.Now = func() time.Time { return time.Now().Add(BadVersionTTL + time.Hour) }
-	if res, err := g.u.Check(context.Background()); err != nil || res.Installed != "1.1.0" {
-		t.Fatalf("after the bad mark expired: %+v %v", res, err)
+	if installed, err := g.u.Check(context.Background()); err != nil || installed != "1.1.0" {
+		t.Fatalf("after the bad mark expired: %q %v", installed, err)
 	}
 }
 
@@ -322,8 +322,8 @@ func TestRollbackToThePreviousVersion(t *testing.T) {
 	r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
 	r.binary = []byte("NEW BINARY 1.2.0")
 	g.u.Current = "1.1.0"
-	if res, err := g.u.Check(context.Background()); err != nil || res.Installed != "1.2.0" {
-		t.Fatalf("install 1.2.0: %+v %v", res, err)
+	if installed, err := g.u.Check(context.Background()); err != nil || installed != "1.2.0" {
+		t.Fatalf("install 1.2.0: %q %v", installed, err)
 	}
 	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.2.0" {
 		t.Fatalf("runs %q", got)

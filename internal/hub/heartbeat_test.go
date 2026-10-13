@@ -238,10 +238,8 @@ func TestHeartbeatSilenceCountsFromStartOrRegistration(t *testing.T) {
 	}
 }
 
-// The regression for the old design, where the hub probed /health/ready
-// through the tunnel on top of the gateway's own check: over ten simulated
-// minutes the CRM sees at most one readiness check per minute per gateway,
-// all of them from the gateway's own self-check.
+// Over ten simulated minutes the CRM sees at most one readiness check per
+// minute per gateway: the gateway's own self-check, nothing else.
 func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 	w := newBeatWorld(t, "", nil, hub.Options{})
 	mon := w.hub.Server().Monitor()
