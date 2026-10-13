@@ -69,7 +69,7 @@ const listDays = 7
 //     that started even earlier is not: the look-back bounds what is
 //     assumed (the partner API documents the limit).
 func (d *Driver) window(kind string, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
-	dateTo = d.day(to).AddDate(0, 0, 1)
+	dateTo = d.day(to) // a record that starts after to's day cannot overlap
 	if kind == "breaks" {
 		return d.day(from).AddDate(0, 0, -d.lookback), dateTo, true
 	}

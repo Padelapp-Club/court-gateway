@@ -63,7 +63,7 @@ func TestOccupancyListsLocalDaysAndCutsOverlap(t *testing.T) {
 	crossing := f.seedClubBooking(room1, d.Add(-time.Hour), d.Add(time.Hour))
 	// inside the margin day but not overlapping the range
 	early := f.seedClubBooking(room1, d.Add(-5*time.Hour), d.Add(-4*time.Hour))
-	// next day, inside the dateTo margin, not overlapping
+	// next day, not overlapping
 	late := f.seedClubBooking(room1, d.Add(26*time.Hour), d.Add(27*time.Hour))
 	// a room that is not a configured court
 	elsewhere := f.seedClubBooking(roomOther, d.Add(time.Hour), d.Add(2*time.Hour))
@@ -81,11 +81,12 @@ func TestOccupancyListsLocalDaysAndCutsOverlap(t *testing.T) {
 		}
 	}
 	// exercises from the local day before, breaks with a week of look-back
+	// and to the range's last day
 	want := map[string]string{"GET /exercises?": d.AddDate(0, 0, -1).Format("2006-01-02"), "GET /breaks?": d.AddDate(0, 0, -viva.DefaultBreakLookbackDays).Format("2006-01-02")}
 	for prefix, from := range want {
 		found := false
 		for _, c := range f.stub.Calls() {
-			if strings.HasPrefix(c, prefix) && strings.Contains(c, "dateFrom="+from) {
+			if strings.HasPrefix(c, prefix) && strings.Contains(c, "dateFrom="+from) && strings.Contains(c, "dateTo="+d.Format("2006-01-02")) {
 				found = true
 			}
 		}
