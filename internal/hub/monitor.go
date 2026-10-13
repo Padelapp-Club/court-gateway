@@ -359,4 +359,3 @@ func event(prev, next string) string {
 	}
 	return ""
 }
-
