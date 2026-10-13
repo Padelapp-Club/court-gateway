@@ -1,10 +1,7 @@
-// Package viva is the gateway driver for VivaCRM.
-//
-// Everything the driver knows about VivaCRM is what an existing production
-// integration already relied on: Keycloak password-grant login, list
-// endpoints for exercises and breaks selected by the studio's local dates, read by id,
-// create, delete and price lists. No webhooks exist, and the driver keeps no
-// state other than the access token.
+// Package viva is the gateway driver for VivaCRM: Keycloak password-grant
+// login, list endpoints for exercises and breaks (selected by the studio's
+// local dates), read by id, create, delete and price lists. The driver
+// keeps no state other than the access token.
 package viva
 
 import (

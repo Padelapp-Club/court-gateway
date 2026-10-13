@@ -26,8 +26,7 @@ type slot struct {
 }
 
 // parseTime accepts RFC3339 and, as an assumption, a zone-less ISO
-// timestamp, which is taken as UTC (what the API returned to the previous
-// integration, whose host ran in UTC).
+// timestamp, which is taken as UTC.
 func parseTime(s string) (time.Time, bool) {
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return t, true

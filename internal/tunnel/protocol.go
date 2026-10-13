@@ -3,12 +3,8 @@
 // few HTTPS long-poll requests open to the hub, the hub answers a poll with
 // a queued partner request, and the gateway posts the response back.
 //
-// Why long-polling over plain HTTPS rather than WebSocket: it needs nothing
-// but the standard library, it passes every corporate proxy and middlebox
-// that passes ordinary HTTPS, HTTP/2 multiplexes all polls over one TCP
-// connection, and every exchange is a self-contained request with its own
-// timeout, so a broken network path is noticed by the next request instead
-// of by a keep-alive protocol layered on top.
+// Plain HTTPS requests pass every proxy that passes HTTPS, and each one has
+// its own timeout, so a broken path is noticed by the next request.
 //
 // Trust: the gateway authenticates the hub by its TLS certificate (system
 // roots, or a CA file for self-hosted hubs and tests) and the hub

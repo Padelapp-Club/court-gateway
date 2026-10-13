@@ -16,12 +16,8 @@ import (
 // Price list model, as far as the driver reads it.
 //
 // [ASSUMPTION] valueFrom of a base price and value of a FIXED time impact
-// are rubles PER HOUR. Basis: the existing daily price reconciliation
-// compares valueFrom, for every 30-minute cell, directly against the
-// club's hourly price in the booking app and against hourly service
-// prices of another CRM, and reports equality when they match. A
-// per-slot or per-booking price would never match an hourly price.
-// Fractional values are kept to the kopeck.
+// are rubles PER HOUR (they match clubs' hourly prices; a per-slot or
+// per-booking price would not). Fractional values are kept to the kopeck.
 type pricing struct {
 	BasePrices   []basePrice `json:"basePrices"`
 	PriceImpacts *struct {
@@ -119,8 +115,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 			if !ok || im.Condition == nil {
 				return invalid("time impact without value or condition")
 			}
-			// [ASSUMPTION] DISCOUNT subtracts; any other direction adds,
-			// as in the existing reconciliation.
+			// [ASSUMPTION] DISCOUNT subtracts; any other direction adds.
 			if im.ImpactDirection == "DISCOUNT" {
 				v = -v
 			}

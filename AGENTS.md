@@ -111,8 +111,7 @@ binary without the release key: it works but never updates itself — tell the h
 
 (`CRM_PASSWORD` and `GATEWAY_JOIN_CODE` are read from the environment; `--crm viva` is the
 default. Windows: `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
-continuation with a backtick. Older flags `--club-id`, `--club-name`, `--crm-studio`, `--timezone`,
-`--slot-minutes` are accepted and ignored with an `INPUT_IGNORED` warning — do not pass them.)
+continuation with a backtick. There are no flags for a club id, studio, time zone or grid.)
 
 Then remove the secrets from your shell: `unset CRM_PASSWORD GATEWAY_JOIN_CODE`
 (PowerShell: `Remove-Item Env:CRM_PASSWORD, Env:GATEWAY_JOIN_CODE`).
@@ -132,6 +131,7 @@ If `"ok": false`, act on `error.code`:
 | `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later |
 | `JOIN_CODE_REJECTED` | code wrong, used or expired — ask the human for a new code |
 | `HUB_UNREACHABLE` | check the hub URL and outbound HTTPS; never open inbound ports |
+| `HUB_RATE_LIMITED` | too many wrong codes from this address — wait a minute, then retry once with a code the human re-checks |
 | `CONFIG_EXISTS` | a previous install exists — ask the human before re-running with `--force` |
 
 ## Step 4 — install the service
@@ -143,7 +143,8 @@ If `"ok": false`, act on `error.code`:
 | Windows | `.\court-gateway.exe install-service` (Administrator) | `sc.exe query court-gateway` | `STATE : 4 RUNNING` |
 
 On a cloud VM without a regular user, add `--run-as <user>` with a dedicated user that owns the
-folder (the folder must stay writable by that user so updates can be installed).
+folder (the folder must stay writable by that user: updates are kept in its `state/versions/`;
+the installed binary itself is never replaced).
 
 ## Step 5 — doctor
 
@@ -174,7 +175,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 
 Tell the human: installed version, installation id, the clubs it serves (if the operator has
 added any already), that nothing else is needed on their side, where the log is (Linux `journalctl -u court-gateway`, macOS/Windows `court-gateway.log` next
-to `gateway.yaml`), and that the operator can confirm the installation is connected in the hub. Do not
+to `gateway.yaml`; on macOS, messages from before the log starts are in `court-gateway.stderr.log`), and that the operator can confirm the installation is connected in the hub. Do not
 include any secret in the report.
 
 ## Uninstall
