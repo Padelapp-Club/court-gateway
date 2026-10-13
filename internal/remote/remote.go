@@ -163,15 +163,21 @@ func (s *Syncer) Run(ctx context.Context) {
 			}()
 			continue
 		}
-		_ = s.Apply(rc)
+		_ = s.Apply(ctx, rc)
 	}
 }
 
-// Apply serves the clubs of rc that load with the driver. A club that does
-// not load keeps its previous config if it had one; otherwise partners get
-// 503 for it. It returns the problems found (nil when every club loaded).
-func (s *Syncer) Apply(rc tunnel.RemoteConfig) error {
+// configCheckTimeout bounds the check of one club against the CRM.
+const configCheckTimeout = 20 * time.Second
+
+// Apply serves the clubs of rc that load with the driver and match the
+// CRM (driver.ConfigChecker). A club that does not keeps its previous
+// config if it had one; otherwise partners get 503 for it. A club the CRM
+// could not be asked about is served: its readiness check repeats the
+// question. Apply returns the problems found (nil when every club loaded).
+func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	servers, refused := Build(s.base, s.factories, s.hook, rc)
+	servers, refused = checkClubs(ctx, servers, refused, s.log)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var unavailable, problems []string
@@ -198,6 +204,37 @@ func (s *Syncer) Apply(rc tunnel.RemoteConfig) error {
 	}
 	s.log.Info("club config applied", "version", rc.Version, "clubs", strings.Join(s.clubs.IDs(), ","))
 	return nil
+}
+
+// checkClubs asks the CRM about every built club that can be checked and
+// moves the ones that do not match it to the refusals.
+func checkClubs(ctx context.Context, servers []*core.Server, refused []Refusal, log *slog.Logger) ([]*core.Server, []Refusal) {
+	kept := servers[:0:0]
+	for _, srv := range servers {
+		cc, ok := srv.Driver().(driver.ConfigChecker)
+		if !ok {
+			kept = append(kept, srv)
+			continue
+		}
+		cctx, cancel := context.WithTimeout(ctx, configCheckTimeout)
+		err := cc.CheckConfig(cctx)
+		cancel()
+		id := srv.Settings().ClubID
+		var me *driver.MisconfigError
+		switch {
+		case errors.As(err, &me):
+			r := Refusal{Club: id}
+			for _, p := range me.Problems {
+				r.Problems = append(r.Problems, "клуб «"+id+"»: "+p)
+			}
+			refused = append(refused, r)
+			continue
+		case err != nil:
+			log.Warn("club config not checked against the CRM, serving it", "club", id, "reason", core.ReadyReason(err))
+		}
+		kept = append(kept, srv)
+	}
+	return kept, refused
 }
 
 // Refusal is a club of a hub config that does not load. Club is empty
@@ -331,8 +368,8 @@ func DiscoverHandler(acct driver.Account, clubs *core.Clubs, log *slog.Logger) h
 		served := map[string]string{} // studio -> club
 		for _, id := range clubs.IDs() {
 			if srv, ok := clubs.Server(id); ok {
-				if st, _ := srv.Settings().Driver.CRM.String("crm", "studio", false); st != "" {
-					served[strings.ToLower(st)] = id
+				if ac, ok := srv.Driver().(driver.AccountClub); ok && ac.Studio() != "" {
+					served[strings.ToLower(ac.Studio())] = id
 				}
 			}
 		}

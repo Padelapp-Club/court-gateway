@@ -46,33 +46,40 @@ func (d *Driver) day(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, d.loc)
 }
 
+// clockSkew is how far the CRM's clock may run ahead of the gateway's:
+// near midnight the CRM's "today" may already be the gateway's tomorrow.
+const clockSkew = 5 * time.Minute
+
+// listDays is the longest date range asked in one list request: a club's
+// month of exercises in one answer would be large, so long ranges are
+// asked a week at a time.
+const listDays = 7
+
 // window computes the dates to list for [from, to) and whether the answer
 // can be complete. Observed on a live account: the list endpoints select
 // records by the START date in the studio's local day (dateFrom..dateTo,
-// both included), the exercise list is EMPTY for past days, and the
-// break list is not. So:
+// both included); the exercise list leaves out every exercise of a day
+// that is already past for the CRM (it keeps today and later), the break
+// list leaves out nothing. So:
 //
 //   - exercises are listed from the day before the range (one that starts
-//     the evening before may still run into it), but never from a past
-//     day: an exercise that started yesterday cannot be seen today. A range
-//     that starts before today's midnight plus overnight_minutes may
-//     overlap such an exercise and is therefore reported incomplete (and
-//     cannot be booked);
+//     the evening before may still run into it). One that started on a
+//     past day is not returned: a range that starts before the CRM's
+//     today plus overnight_minutes may overlap such an exercise and is
+//     reported incomplete (and cannot be booked). The CRM's today is taken
+//     clockSkew ahead of ours, so a CRM clock slightly ahead cannot make an
+//     incomplete answer look complete;
 //   - breaks are listed from break_lookback_days before the range, so a
 //     multi-day break (a renovation) that started earlier is seen. A break
 //     that started even earlier is not: the look-back bounds what is
-//     assumed.
+//     assumed (the partner API documents the limit).
 func (d *Driver) window(kind string, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
 	dateTo = d.day(to).AddDate(0, 0, 1)
 	if kind == "breaks" {
 		return d.day(from).AddDate(0, 0, -d.lookback), dateTo, true
 	}
-	today := d.day(now)
-	dateFrom = d.day(from).AddDate(0, 0, -1)
-	if dateFrom.Before(today) {
-		dateFrom = today
-	}
-	return dateFrom, dateTo, !from.Before(today.Add(d.overnight))
+	today := d.day(now.Add(clockSkew))
+	return d.day(from).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
 func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, dateTo time.Time) ([]slot, error) {
@@ -121,9 +128,17 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 	for _, kind := range []string{"exercises", "breaks"} {
 		dateFrom, dateTo, complete := d.window(kind, q.From, q.To, d.now())
 		occ.Complete = occ.Complete && complete
-		items, err := d.list(ctx, kind, roomFilter, dateFrom, dateTo)
-		if err != nil {
-			return driver.Occupancy{}, err
+		step := listDays
+		if kind == "breaks" {
+			step = 1 << 20 // breaks are few: one request, however long the look-back
+		}
+		var items []slot
+		for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
+			part, err := d.list(ctx, kind, roomFilter, f, minTime(f.AddDate(0, 0, step-1), dateTo))
+			if err != nil {
+				return driver.Occupancy{}, err
+			}
+			items = append(items, part...)
 		}
 		prefix := "e-"
 		if kind == "breaks" {
@@ -173,17 +188,24 @@ func (d *Driver) interval(kind, prefix string, it slot, rooms map[string]string)
 	return driver.Interval{ID: prefix + strings.ToLower(it.ID), Court: court, Start: start, End: end}, true, nil
 }
 
-// Ready logs in (or reuses the cached token) and makes a narrow occupancy
-// read on the first court.
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// Ready checks the club's config against the account (CheckConfig, which
+// logs in) and reads today's exercises and breaks of the first court.
 func (d *Driver) Ready(ctx context.Context) error {
-	if _, err := d.c.accessToken(ctx); err != nil {
+	if err := d.CheckConfig(ctx); err != nil {
 		return err
 	}
-	now := d.now()
-	_, err := d.Occupancy(ctx, driver.OccupancyQuery{
-		Courts: []string{d.courts[0].id},
-		From:   now,
-		To:     now.Add(time.Duration(d.slot) * time.Minute),
-	})
-	return err
+	today := d.day(d.now())
+	for _, kind := range []string{"exercises", "breaks"} {
+		if _, err := d.list(ctx, kind, d.courts[0].room, today, today); err != nil {
+			return err
+		}
+	}
+	return nil
 }

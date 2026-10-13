@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,15 @@ var (
 	// *UpstreamError to say how exactly.
 	ErrUpstream = errors.New("upstream CRM error")
 )
+
+// MisconfigError says, in Russian, what in a club's config does not match
+// the CRM (a studio or a room that is not in the account, another time
+// zone). Unlike an UpstreamError it does not pass by itself.
+type MisconfigError struct {
+	Problems []string
+}
+
+func (e *MisconfigError) Error() string { return strings.Join(e.Problems, "; ") }
 
 // UpstreamKind classifies an upstream failure.
 type UpstreamKind int
@@ -182,6 +192,10 @@ type Config struct {
 	HTTPClient *http.Client
 	// Now is optional; drivers use time.Now when nil.
 	Now func() time.Time
+	// Account is the installation's CRM account, when there is one: a
+	// club's driver may share its CRM session, so the account and all its
+	// clubs log in once.
+	Account Account
 }
 
 // Factory builds a driver or returns a config error with a message for the
@@ -197,4 +211,18 @@ type Factory func(Config) (Driver, error)
 // driver and court.
 type Resourcer interface {
 	Resource(court string) string
+}
+
+// ConfigChecker is implemented by drivers that can check a club's config
+// against the CRM: CheckConfig returns a *MisconfigError when it does not
+// match, any other error when the check could not be made.
+type ConfigChecker interface {
+	CheckConfig(ctx context.Context) error
+}
+
+// AccountClub is implemented by drivers of CRMs whose account holds
+// several clubs (see Account): Studio is the club's own id in the account,
+// as Studio.ID names it.
+type AccountClub interface {
+	Studio() string
 }

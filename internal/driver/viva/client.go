@@ -16,15 +16,28 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-// tokenSafety is subtracted from the token lifetime so a token is never
-// used in its last seconds.
-const tokenSafety = 30 * time.Second
+const (
+	// tokenSafety is subtracted from the token lifetime so a token is
+	// never used in its last seconds.
+	tokenSafety = 30 * time.Second
+	// loginRetry: after a failed login the next attempt waits this long;
+	// until then every call fails fast with the same error.
+	loginRetry = time.Minute
+	// authFailureTTL: a rejected login (wrong password) is not retried for
+	// this long, so a wrong password cannot get the account locked.
+	authFailureTTL = 10 * time.Minute
+	// studiosTTL: how long the account's studio list is reused, so the
+	// readiness checks of every club cost one request per installation.
+	studiosTTL = 30 * time.Second
+)
 
 // maxBody caps how much of an upstream response is read.
 const maxBody = 8 << 20
 
-// client talks HTTP to VivaCRM. The access token is the only thing it
-// keeps, and only in memory until shortly before it expires.
+// client talks HTTP to VivaCRM. One client serves the installation's
+// account and all its clubs. It keeps the access token (in memory, until
+// shortly before it expires), the last login failure and, briefly, the
+// account's studio list.
 type client struct {
 	authURL  string
 	apiURL   string
@@ -33,9 +46,15 @@ type client struct {
 	http     *http.Client
 	now      func() time.Time
 
-	mu      sync.Mutex
-	token   string
-	expires time.Time
+	mu       sync.Mutex
+	token    string
+	expires  time.Time
+	loginErr error     // the last failed login
+	retryAt  time.Time // no login before this
+
+	smu       sync.Mutex
+	studios   []vivaStudio
+	studiosAt time.Time
 }
 
 type tokenResponse struct {
@@ -43,14 +62,44 @@ type tokenResponse struct {
 	ExpiresIn   *float64 `json:"expires_in"`
 }
 
-// accessToken returns a cached token or logs in.
+// accessToken returns a cached token or logs in. A failed login is not
+// repeated before retryAt: the error is returned at once instead.
 func (c *client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.token != "" && c.now().Before(c.expires) {
+	now := c.now()
+	if c.token != "" && now.Before(c.expires) {
 		return c.token, nil
 	}
-	return c.loginLocked(ctx)
+	if now.Before(c.retryAt) {
+		return "", c.loginErr
+	}
+	tok, err := c.loginLocked(ctx)
+	if err != nil && ctx.Err() == nil {
+		wait := loginRetry
+		var ue *driver.UpstreamError
+		if errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth {
+			wait = authFailureTTL
+		}
+		c.loginErr, c.retryAt = err, now.Add(wait)
+	}
+	return tok, err
+}
+
+// studioList returns the account's studios, read at most once per
+// studiosTTL.
+func (c *client) studioList(ctx context.Context) ([]vivaStudio, error) {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	if c.studios != nil && c.now().Sub(c.studiosAt) < studiosTTL {
+		return c.studios, nil
+	}
+	list, err := listStudios(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	c.studios, c.studiosAt = list, c.now()
+	return list, nil
 }
 
 // invalidate drops the cached token if it is still the one that failed.

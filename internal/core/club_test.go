@@ -136,6 +136,15 @@ func TestDraftClub(t *testing.T) {
 	if !strings.Contains(codes, "HOURS_ROUNDED") || !strings.Contains(codes, "TIMEZONE_FROM_CRM") {
 		t.Fatalf("notices: %s", codes)
 	}
+	// the CRM's zone is the club's: an asked zone keeps its name only when
+	// it is as far from UTC
+	if spec, _ := DraftClub(d, "Europe/Moscow", 30); spec.Timezone != "Europe/Moscow" {
+		t.Fatalf("a zone with the studio's offset: %s", spec.Timezone)
+	}
+	other, notes := DraftClub(d, "Asia/Yekaterinburg", 30)
+	if other.Timezone != "Etc/GMT-3" || len(notes) == 0 || !strings.Contains(notes[0].Message, "Asia/Yekaterinburg не подходит") {
+		t.Fatalf("a zone with another offset: %s %+v", other.Timezone, notes)
+	}
 	// with an id the draft is a valid club
 	spec.ID = "club-x"
 	if err := ValidateClubSpec(spec, []string{"studio"}); err != nil {

@@ -31,6 +31,7 @@ type record struct {
 type Driver struct {
 	mu       sync.Mutex
 	courts   map[string]bool
+	studio   string
 	records  map[string]*record
 	readyErr error
 }
@@ -50,12 +51,13 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	if err := cfg.CRM.RejectUnknown("crm", "studio"); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if st, err := cfg.CRM.String("crm", "studio", false); err != nil {
+	st, err := cfg.CRM.String("crm", "studio", false)
+	if err != nil {
 		errs = append(errs, err.Error())
 	} else if st != "" && studioByID(st) == nil {
 		errs = append(errs, fmt.Sprintf("crm.studio: «%s» — в учебной CRM есть студии %s", st, studioIDs()))
 	}
-	d := &Driver{courts: map[string]bool{}, records: map[string]*record{}}
+	d := &Driver{courts: map[string]bool{}, studio: st, records: map[string]*record{}}
 	for i, c := range cfg.Courts {
 		if err := c.Params.RejectUnknown(fmt.Sprintf("courts[%d]", i)); err != nil {
 			errs = append(errs, err.Error())
@@ -70,6 +72,9 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	}
 	return d, nil
 }
+
+// Studio implements driver.AccountClub.
+func (d *Driver) Studio() string { return d.studio }
 
 // Capabilities: the demo CRM supports payment marks.
 func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: true} }

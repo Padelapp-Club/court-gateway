@@ -274,6 +274,7 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	if err != nil {
 		return nil, nil, &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
 	}
+	s.Driver.Account = acct // one CRM session for the account and its clubs
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil

@@ -64,7 +64,7 @@ func TestHubClubCannotRedirectTheCRMLogin(t *testing.T) {
 	gw := "hub:\n  url: https://hub.example.test\ncrm:\n  type: viva\n  username: admin@club.test\n"
 	clubs, syn := installation(t, gw, map[string]string{"CRM_PASSWORD": "local-only-password-42", "GATEWAY_HUB_SECRET": "cgs_x"})
 	for _, key := range []string{"auth_url", "api_url", "username"} {
-		err := syn.Apply(config(t, 1, club("club-a", map[string]any{"studio": studio, key: capture.URL + "/token"})))
+		err := syn.Apply(context.Background(), config(t, 1, club("club-a", map[string]any{"studio": studio, key: capture.URL + "/token"})))
 		if err == nil || !strings.Contains(err.Error(), "crm."+key) {
 			t.Fatalf("crm.%s: applied: %v", key, err)
 		}
@@ -99,7 +99,7 @@ func TestClubsAnswer503UntilConfigured(t *testing.T) {
 		c["courts"] = []map[string]any{{"id": "court-1", "name": "C1"}}
 		return c
 	}
-	if err := syn.Apply(config(t, 1, demo("club-a", "demo-north"), demo("club-b", "no-such-studio"))); err == nil {
+	if err := syn.Apply(context.Background(), config(t, 1, demo("club-a", "demo-north"), demo("club-b", "no-such-studio"))); err == nil {
 		t.Fatal("a refused club was not reported")
 	}
 	if code, body := get("club-a"); code != http.StatusOK {

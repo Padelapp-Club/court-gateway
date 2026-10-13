@@ -254,7 +254,10 @@ func classify(err error) (int, string, string) {
 // ReadyReason maps a readiness failure to a short code with no secrets.
 func ReadyReason(err error) string {
 	var ue *driver.UpstreamError
+	var me *driver.MisconfigError
 	switch {
+	case errors.As(err, &me):
+		return "CONFIG_MISMATCH"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "CRM_TIMEOUT"
 	case errors.As(err, &ue):

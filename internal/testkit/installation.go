@@ -143,6 +143,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 		if acct, err = o.Account(base.Driver); err != nil {
 			t.Fatalf("account: %v", err)
 		}
+		base.Driver.Account = acct
 	}
 	co := core.ClubsOptions{Logger: log}
 	if acct != nil {

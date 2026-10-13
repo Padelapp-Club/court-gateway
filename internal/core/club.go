@@ -264,18 +264,23 @@ type Notice struct {
 }
 
 // DraftClub turns discovered CRM material into a club spec draft. It is a
-// draft: the id is left to the operator, the time zone and the grid are
-// defaults, and every guess comes with a notice.
+// draft: the id is left to the operator, the grid may be a default, and
+// every guess comes with a notice. When the CRM tells the time zone it is
+// the club's: an asked zone with another offset from UTC is replaced, with
+// a notice (the gateway would refuse such a club).
 func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []Notice) {
 	var notes []Notice
 	for _, n := range d.Notices {
 		notes = append(notes, Notice{Code: n.Code, Message: n.Message})
 	}
 	switch {
+	case d.Timezone != "" && timezone != "" && !sameOffsetNow(timezone, d.Timezone):
+		notes = append(notes, Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s не подходит: CRM считает дни студии по %s — он и подставлен", timezone, d.Timezone)})
+		timezone = d.Timezone
 	case timezone != "":
 	case d.Timezone != "":
 		timezone = d.Timezone
-		notes = append(notes, Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s выведен из смещения студии от UTC — при желании замените на зону города (например Europe/Moscow)", timezone)})
+		notes = append(notes, Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s выведен из смещения студии от UTC — при желании замените на зону города с тем же смещением (например Europe/Moscow)", timezone)})
 	default:
 		timezone = "Europe/Moscow"
 		notes = append(notes, Notice{Code: "TIMEZONE_DEFAULTED", Message: "часовой пояс Europe/Moscow подставлен по умолчанию — проверьте"})
@@ -316,6 +321,19 @@ func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []Notic
 	}
 	spec.Hours = HoursMap(hours)
 	return spec, notes
+}
+
+// sameOffsetNow reports whether two zones are as far from UTC right now.
+func sameOffsetNow(a, b string) bool {
+	la, err1 := time.LoadLocation(a)
+	lb, err2 := time.LoadLocation(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	now := time.Now()
+	_, oa := now.In(la).Zone()
+	_, ob := now.In(lb).Zone()
+	return oa == ob
 }
 
 // roundHours widens the hours to the slot grid; true if anything changed.

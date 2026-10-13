@@ -143,10 +143,12 @@ func TestEarlyMorningIsIncomplete(t *testing.T) {
 }
 
 // A maintenance break that started days before the asked range and is
-// still running is seen, so the create is refused.
+// still running is seen, so the create is refused: by default up to
+// break_lookback_days (31) before the range.
 func TestMultiDayBreakIsSeen(t *testing.T) {
 	d := futureMidnight()
-	for name, start := range map[string]time.Time{"started two days earlier": d.Add(-48 * time.Hour), "started yesterday before midnight": d.Add(-time.Hour)} {
+	for name, start := range map[string]time.Time{"started two days earlier": d.Add(-48 * time.Hour), "started yesterday before midnight": d.Add(-time.Hour),
+		"started thirty days earlier": d.AddDate(0, 0, -30)} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, fixtureOpts{})
 			id := f.stub.SeedBreak(map[string]any{"room": map[string]any{"id": room1}, "timeFrom": start.Format(time.RFC3339),

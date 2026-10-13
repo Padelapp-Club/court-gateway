@@ -45,17 +45,15 @@ type Stub struct {
 	TokenTTL int
 	// Now is the stub's clock (defaults to time.Now).
 	Now func() time.Time
-	// Zone is the studio's time zone, whose dates the lists select by
-	// (defaults to UTC+3).
+	// Zone is the studio's time zone, whose dates the lists select by and
+	// whose offset GET /studios reports (defaults to UTC+3).
 	Zone *time.Location
 	// OmitCommentOnRead removes "comment" from reads by id.
 	OmitCommentOnRead bool
-	// StudioName, StudioOffset (hours from UTC) and WorkTime (weekday name
-	// -> {from, to} as "HH:MM+03:00"; nil omits workTime) describe Studio
-	// in GET /studios.
-	StudioName   string
-	StudioOffset float64
-	WorkTime     map[string][2]string
+	// StudioName and WorkTime (weekday name -> {from, to} as
+	// "HH:MM+03:00"; nil omits workTime) describe Studio in GET /studios.
+	StudioName string
+	WorkTime   map[string][2]string
 
 	mu        sync.Mutex
 	others    []map[string]any  // more studios of the account (listed only)
@@ -66,6 +64,7 @@ type Stub struct {
 	pricing   map[string]json.RawMessage
 	overrides []override
 	logins    int
+	attempts  int
 	calls     []string
 }
 
@@ -109,6 +108,13 @@ func (s *Stub) AddRoom(id, name string) {
 	s.rooms[strings.ToLower(id)] = name
 }
 
+// RemoveRoom takes a room out of the studio.
+func (s *Stub) RemoveRoom(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rooms, strings.ToLower(id))
+}
+
 // AddStudio lists one more studio of the account in GET /studios, with
 // rooms (id -> name). Its rooms are not bookable in the stub.
 func (s *Stub) AddStudio(id, name string, rooms map[string]string) {
@@ -149,7 +155,8 @@ func (s *Stub) studios() []map[string]any {
 	if name == "" {
 		name = "Studio"
 	}
-	out := []map[string]any{studioObject(s.Studio, name, s.StudioOffset, s.WorkTime, s.rooms)}
+	_, off := s.now().In(s.zone()).Zone()
+	out := []map[string]any{studioObject(s.Studio, name, float64(off)/3600, s.WorkTime, s.rooms)}
 	return append(out, s.others...)
 }
 
@@ -211,6 +218,13 @@ func (s *Stub) RevokeTokens() {
 	s.tokens = map[string]bool{}
 }
 
+// LoginAttempts returns how many logins were tried, failed ones included.
+func (s *Stub) LoginAttempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
 // Logins returns how many successful logins happened.
 func (s *Stub) Logins() int {
 	s.mu.Lock()
@@ -249,6 +263,8 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if path != TokenPath {
 		s.calls = append(s.calls, r.Method+" "+rel+"?"+r.URL.RawQuery)
+	} else {
+		s.attempts++
 	}
 	for i, o := range s.overrides {
 		if o.method == r.Method && (strings.HasPrefix(rel, o.prefix) || (path == TokenPath && o.prefix == TokenPath)) {
@@ -377,10 +393,11 @@ func (s *Stub) handleList(w http.ResponseWriter, r *http.Request, kind string) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "BAD_REQUEST"})
 		return
 	}
-	if (kind == "exercises" && from.Before(localDay(s.now(), loc))) || q.Get("studioId") != s.Studio {
-		writeJSON(w, http.StatusOK, []any{}) // exercises of past days: an empty list
+	if q.Get("studioId") != s.Studio {
+		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
+	today := localDay(s.now(), loc)
 	includeCanceled := q.Get("includeCanceled") == "true"
 	room := q.Get("roomId")
 	s.mu.Lock()
@@ -396,8 +413,9 @@ func (s *Stub) handleList(w http.ResponseWriter, r *http.Request, kind string) {
 			out = append(out, copyMap(rec))
 			continue
 		}
-		if day := localDay(start, loc); day.Before(from) || day.After(to) {
-			continue
+		day := localDay(start, loc)
+		if day.Before(from) || day.After(to) || (kind == "exercises" && day.Before(today)) {
+			continue // exercises of past days are left out
 		}
 		if room != "" && !strings.EqualFold(roomID(rec), room) {
 			continue

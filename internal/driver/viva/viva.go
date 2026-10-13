@@ -5,6 +5,7 @@
 package viva
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,7 +38,7 @@ var ClubCRMKeys = []string{"studio", "overnight_minutes", "break_lookback_days"}
 // Defaults of the club-level occupancy keys (see Occupancy).
 const (
 	DefaultOvernightMinutes  = 240
-	DefaultBreakLookbackDays = 7
+	DefaultBreakLookbackDays = 31
 )
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -61,7 +62,6 @@ type Driver struct {
 	overnight  time.Duration  // how far an exercise may run past midnight
 	lookback   int            // days of breaks listed before the asked day
 	breakTitle string
-	slot       int
 	courts     []court
 	byRoom     map[string]string // room id (lower case) -> court id
 	byCourt    map[string]court
@@ -108,6 +108,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 }
 
 // NewDriver validates the driver-specific config and builds the driver.
+// With the installation's account in cfg it shares the account's session.
 func NewDriver(cfg driver.Config) (*Driver, error) {
 	var errs []string
 	add := func(err error) {
@@ -116,9 +117,13 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		}
 	}
 	c := login(cfg, 20*time.Second, add)
+	if a, ok := cfg.Account.(*Account); ok {
+		c = a.c
+	}
 	p := cfg.CRM
 	studio, err := p.String("crm", "studio", true)
 	add(err)
+	studio = strings.ToLower(studio)
 	if studio != "" && !uuidRe.MatchString(studio) {
 		add(fmt.Errorf("crm.studio: «%s» — ожидается идентификатор студии Viva (UUID)", studio))
 	}
@@ -141,7 +146,6 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		overnight:  time.Duration(overnight) * time.Minute,
 		lookback:   lookback,
 		breakTitle: breakTitle,
-		slot:       cfg.SlotMinutes,
 		byRoom:     map[string]string{},
 		byCourt:    map[string]court{},
 		services:   map[driver.Kind]*service{},
@@ -150,9 +154,6 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	}
 	if d.log == nil {
 		d.log = slog.New(slog.DiscardHandler)
-	}
-	if d.slot <= 0 {
-		d.slot = 30
 	}
 
 	if len(cfg.Courts) == 0 {
@@ -219,6 +220,50 @@ func optInt(p driver.Params, key string, def, min, max int, add func(error)) int
 // Resource implements driver.Resourcer: the Viva room behind the court.
 func (d *Driver) Resource(court string) string {
 	return "viva " + d.c.apiURL + " " + d.byCourt[court].room
+}
+
+// Studio implements driver.AccountClub.
+func (d *Driver) Studio() string { return d.studio }
+
+// CheckConfig implements driver.ConfigChecker: the studio is in the
+// account, every room is the studio's, and the club's time zone has the
+// studio's offset from UTC (Viva selects list records by the studio's
+// dates, so a club in another zone would read the wrong days). The
+// account's studio list is shared by its clubs (studiosTTL).
+func (d *Driver) CheckConfig(ctx context.Context) error {
+	list, err := d.c.studioList(ctx)
+	if err != nil {
+		return err
+	}
+	var st *vivaStudio
+	for i := range list {
+		if list[i].ID == d.studio {
+			st = &list[i]
+		}
+	}
+	if st == nil {
+		return &driver.MisconfigError{Problems: []string{fmt.Sprintf("crm.studio: студии %s нет в учётной записи Viva", d.studio)}}
+	}
+	rooms := map[string]bool{}
+	for _, r := range st.Rooms {
+		rooms[strings.ToLower(r.ID)] = true
+	}
+	var problems []string
+	for i, c := range d.courts {
+		if !rooms[c.room] {
+			problems = append(problems, fmt.Sprintf("courts[%d].viva_room: комната %s не из студии %s", i, c.room, d.studio))
+		}
+	}
+	if st.Offset != nil {
+		if _, off := d.now().In(d.loc).Zone(); float64(off) != *st.Offset*3600 {
+			problems = append(problems, fmt.Sprintf("timezone: студия Viva живёт по UTC%+g, а %s сейчас UTC%+g — часовой пояс клуба берётся из студии (его подставляет черновик discover: %s)",
+				*st.Offset, d.loc, float64(off)/3600, zoneForOffset(st.Offset)))
+		}
+	}
+	if len(problems) > 0 {
+		return &driver.MisconfigError{Problems: problems}
+	}
+	return nil
 }
 
 // Capabilities: VivaCRM has no payment mark the gateway can set.

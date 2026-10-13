@@ -119,6 +119,7 @@ func Run(ctx context.Context, o Options) Report {
 			if acct, err = f(cfg); err != nil {
 				err = &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
 			}
+			s.Driver.Account = acct
 		} else {
 			err = &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
 		}

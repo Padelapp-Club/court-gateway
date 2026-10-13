@@ -37,7 +37,7 @@ func newAccount(t *testing.T, stub *vivastub.Stub, password string) driver.Accou
 // studio's workTime and offset; price lists from GET /pricing.
 func TestAccountDiscoverStudios(t *testing.T) {
 	stub := vivastub.New(stubUser, stubPass, studio)
-	stub.StudioName, stub.StudioOffset = "Студия Север", 3
+	stub.StudioName = "Студия Север"
 	stub.WorkTime = map[string][2]string{
 		"MONDAY": {"07:00+03:00", "23:00+03:00"}, "TUESDAY": {"07:00+03:00", "23:00+03:00"}, "WEDNESDAY": {"07:00+03:00", "23:00+03:00"},
 		"THURSDAY": {"07:00+03:00", "23:00+03:00"}, "FRIDAY": {"07:00+03:00", "23:00+03:00"},

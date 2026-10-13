@@ -22,23 +22,25 @@ func TestWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Driver{loc: msk, overnight: 4 * time.Hour, lookback: 7}
-	now := ts("2030-03-10T09:00:00+03:00")
 	cases := []struct {
-		name, kind, from, to string
-		wantFrom, wantTo     string
-		complete             bool
+		name, kind, now, from, to string
+		wantFrom, wantTo          string
+		complete                  bool
 	}{
-		{"exercises: the day before a future range", "exercises", "2030-03-12T09:00:00+03:00", "2030-03-12T18:00:00+03:00", "2030-03-11", "2030-03-13", true},
-		{"exercises: never a past day", "exercises", "2030-03-10T13:00:00+03:00", "2030-03-10T15:00:00+03:00", "2030-03-10", "2030-03-11", true},
-		{"exercises: local, not UTC dates", "exercises", "2030-03-11T00:30:00+03:00", "2030-03-11T01:30:00+03:00", "2030-03-10", "2030-03-12", true},
-		{"exercises: today before midnight plus overnight is incomplete", "exercises", "2030-03-10T03:30:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-10", "2030-03-11", false},
-		{"exercises: today after midnight plus overnight is complete", "exercises", "2030-03-10T04:00:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-10", "2030-03-11", true},
-		{"exercises: a past range is incomplete", "exercises", "2030-03-01T10:00:00+03:00", "2030-03-01T11:00:00+03:00", "2030-03-10", "2030-03-02", false},
-		{"breaks: a week of look-back, past days too", "breaks", "2030-03-10T03:30:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-03", "2030-03-11", true},
+		{"exercises: the day before a future range", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-12T09:00:00+03:00", "2030-03-12T18:00:00+03:00", "2030-03-11", "2030-03-13", true},
+		{"exercises: the day before, past or not (the CRM leaves past days out)", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-10T13:00:00+03:00", "2030-03-10T15:00:00+03:00", "2030-03-09", "2030-03-11", true},
+		{"exercises: local, not UTC dates", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-11T00:30:00+03:00", "2030-03-11T01:30:00+03:00", "2030-03-10", "2030-03-12", true},
+		{"exercises: today before midnight plus overnight is incomplete", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-10T03:30:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-09", "2030-03-11", false},
+		{"exercises: today after midnight plus overnight is complete", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-10T04:00:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-09", "2030-03-11", true},
+		{"exercises: a past range is incomplete", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-01T10:00:00+03:00", "2030-03-01T11:00:00+03:00", "2030-02-28", "2030-03-02", false},
+		// a CRM clock a little ahead is already past midnight: yesterday's
+		// exercise running into tomorrow's early hours cannot be listed
+		{"exercises: our clock just before midnight", "exercises", "2030-03-09T23:57:00+03:00", "2030-03-10T01:00:00+03:00", "2030-03-10T02:00:00+03:00", "2030-03-09", "2030-03-11", false},
+		{"breaks: the look-back, past days too", "breaks", "2030-03-10T09:00:00+03:00", "2030-03-10T03:30:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-03", "2030-03-11", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f, to, complete := d.window(c.kind, ts(c.from), ts(c.to), now)
+			f, to, complete := d.window(c.kind, ts(c.from), ts(c.to), ts(c.now))
 			if f.Format("2006-01-02") != c.wantFrom || to.Format("2006-01-02") != c.wantTo || complete != c.complete {
 				t.Fatalf("got %s..%s complete=%v, want %s..%s complete=%v",
 					f.Format("2006-01-02"), to.Format("2006-01-02"), complete, c.wantFrom, c.wantTo, c.complete)
