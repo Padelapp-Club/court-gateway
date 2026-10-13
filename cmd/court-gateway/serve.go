@@ -25,8 +25,10 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
-// statusInterval is how often serve checks readiness for the health
-// status file (and so for the container healthcheck). A variable for tests.
+// statusInterval is how often serve runs its self-check (CRM login and a
+// narrow occupancy request). The one result feeds the health status file
+// (and so the container healthcheck) and the heartbeat to the hub; there
+// is no other scheduled CRM call. A variable for tests.
 var statusInterval = 60 * time.Second
 
 // confirmDeadline is how long a freshly updated binary has to become
@@ -124,13 +126,14 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 
 	// the outbound tunnel to the hub
 	hint := make(chan struct{}, 1)
+	var client *tunnel.Client
 	if s.Hub != nil {
 		roots, err := tunnel.LoadRoots(s.Hub.CAFile)
 		if err != nil {
 			fmt.Fprintf(stderr, "court-gateway: %v\n", err)
 			return 2
 		}
-		client, err := tunnel.NewClient(tunnel.ClientConfig{
+		client, err = tunnel.NewClient(tunnel.ClientConfig{
 			HubURL: s.Hub.URL, Secret: s.Hub.Secret, Polls: s.Hub.Polls, Handler: srv.TunnelHandler(),
 			Version: version, Build: build(), Platform: platform(), Logger: log,
 			Transport: tunnel.NewTransport(roots),
@@ -149,15 +152,17 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		go client.Run(ctx)
 	}
 
-	// readiness -> health status file (read by `healthcheck`): the CRM is
-	// checked every statusInterval, the hub connection every 2 seconds, and
-	// the file is rewritten after each CRM check and whenever the hub
-	// connection changes
+	// self-check -> health status file (read by `healthcheck`) and heartbeat
+	// to the hub: the CRM is checked every statusInterval, the hub
+	// connection every 2 seconds; the file is rewritten after each CRM check
+	// and whenever the hub connection changes, and each CRM check is sent to
+	// the hub as a heartbeat over the gateway's own connection
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
+		check := &tunnel.SelfCheck{Ready: drv.Ready, Reason: core.ReadyReason, Interval: statusInterval,
+			Timeout: core.ReadyTimeout, Version: version, Build: build()}
 		var st core.HealthStatus
-		var lastCheck time.Time
 		lastHub := ""
 		for {
 			hubState := ""
@@ -167,21 +172,17 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 					hubState = "connected"
 				}
 			}
-			due := time.Since(lastCheck) >= statusInterval
+			hb, due := check.Step(ctx)
+			if ctx.Err() != nil {
+				return
+			}
 			if due {
-				rctx, rcancel := context.WithTimeout(ctx, core.ReadyTimeout)
-				err := drv.Ready(rctx)
-				rcancel()
-				if ctx.Err() != nil {
-					return
-				}
-				lastCheck = time.Now()
-				st = core.HealthStatus{Version: version, Ready: err == nil}
-				if err != nil {
-					st.Reason = core.ReadyReason(err)
-				}
+				st = core.HealthStatus{Version: version, Ready: hb.Ready, Reason: hb.Reason}
 				gw.ready.Store(st.Ready)
 				gw.reason.Store(st.Reason)
+				if client != nil {
+					go sendHeartbeat(ctx, client, hb, log)
+				}
 			}
 			if due || hubState != lastHub {
 				st.Time, st.Hub, lastHub = time.Now().UTC(), hubState, hubState
@@ -266,6 +267,17 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		return exitRestart
 	}
 	return code
+}
+
+// sendHeartbeat reports one self-check to the hub. A failed heartbeat is
+// only logged at debug level: the hub notices missing heartbeats itself,
+// and a broken connection is already logged by the tunnel client.
+func sendHeartbeat(ctx context.Context, c *tunnel.Client, hb tunnel.Heartbeat, log *slog.Logger) {
+	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := c.SendHeartbeat(hctx, hb); err != nil && ctx.Err() == nil {
+		log.Debug("heartbeat not delivered", "error", err)
+	}
 }
 
 // waitHealthy waits until the gateway is ready and, with a hub, connected.

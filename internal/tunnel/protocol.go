@@ -19,10 +19,11 @@ package tunnel
 
 // Endpoints on the hub.
 const (
-	PathRegister = "/tunnel/register"
-	PathPoll     = "/tunnel/poll"
-	PathReply    = "/tunnel/reply"
-	PathWhoami   = "/tunnel/whoami"
+	PathRegister  = "/tunnel/register"
+	PathPoll      = "/tunnel/poll"
+	PathReply     = "/tunnel/reply"
+	PathWhoami    = "/tunnel/whoami"
+	PathHeartbeat = "/tunnel/heartbeat"
 )
 
 // Headers a gateway sends with every poll, and the hub's update hint.
@@ -60,8 +61,7 @@ type Request struct {
 	Query     string            `json:"query,omitempty"`
 	Header    map[string]string `json:"header,omitempty"`
 	Body      []byte            `json:"body,omitempty"`
-	// Partner is the partner the hub authenticated; empty for the hub's own
-	// health probes.
+	// Partner is the partner the hub authenticated.
 	Partner   string `json:"partner,omitempty"`
 	TimeoutMS int    `json:"timeout_ms"`
 }

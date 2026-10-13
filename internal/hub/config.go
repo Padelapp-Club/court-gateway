@@ -2,7 +2,8 @@
 // connect to it from the clubs (outbound only), and it watches every
 // gateway with a heartbeat. The hub keeps a little state on disk — the
 // gateways it has registered and the pending join codes — and nothing
-// about any club's bookings.
+// about any club's bookings. Gateways report their own health with a
+// heartbeat; the hub turns that into status files for an external checker.
 package hub
 
 import (
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,7 +34,6 @@ const (
 	DefaultInterval       = 60 * time.Second
 	DefaultOfflineAfter   = 3 * time.Minute
 	DefaultReadyFailures  = 3
-	DefaultTelegramAPI    = "https://api.telegram.org"
 	minKeyLength          = 24
 )
 
@@ -44,6 +45,7 @@ type fileConfig struct {
 		KeyFile  string `yaml:"key_file"`
 	} `yaml:"tls"`
 	StateDir       string `yaml:"state_dir"`
+	StatusDir      string `yaml:"status_dir"`
 	OperatorKeyEnv string `yaml:"operator_key_env"`
 	LatestVersion  string `yaml:"latest_version"`
 	RequestTimeout string `yaml:"request_timeout"`
@@ -61,29 +63,20 @@ type fileConfig struct {
 		ReadyFailures int    `yaml:"ready_failures"`
 	} `yaml:"heartbeat"`
 	Alerts struct {
-		Telegram *struct {
-			BotTokenEnv string `yaml:"bot_token_env"`
-			ChatIDEnv   string `yaml:"chat_id_env"`
-			APIURL      string `yaml:"api_url"`
-		} `yaml:"telegram"`
 		WebhookURLEnv string `yaml:"webhook_url_env"`
 	} `yaml:"alerts"`
 }
 
-// TelegramSettings configure the Telegram alert sink.
-type TelegramSettings struct {
-	Token  string
-	ChatID string
-	APIURL string
-}
-
 // Settings is a validated hub configuration.
 type Settings struct {
-	Listen         string
-	PublicURL      string
-	TLSCertFile    string
-	TLSKeyFile     string
-	StateDir       string
+	Listen      string
+	PublicURL   string
+	TLSCertFile string
+	TLSKeyFile  string
+	StateDir    string
+	// StatusDir receives status.json and metrics for an external checker;
+	// empty means the files are not written.
+	StatusDir      string
 	OperatorKey    string
 	LatestVersion  string
 	RequestTimeout time.Duration
@@ -94,8 +87,8 @@ type Settings struct {
 	Interval      time.Duration
 	OfflineAfter  time.Duration
 	ReadyFailures int
-	Telegram      *TelegramSettings
-	WebhookURL    string
+	// WebhookURL is an optional alert sink; off when empty.
+	WebhookURL string
 	// Secrets must never appear in logs.
 	Secrets []string
 }
@@ -156,6 +149,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	s.StateDir = strings.TrimSpace(fc.StateDir)
 	if s.StateDir == "" {
 		add("state_dir: параметр обязателен (каталог, где хаб хранит зарегистрированные шлюзы и коды подключения)")
+	}
+	s.StatusDir = strings.TrimSpace(fc.StatusDir)
+	if s.StatusDir != "" && s.StateDir != "" && filepath.Clean(s.StatusDir) == filepath.Clean(s.StateDir) {
+		add("status_dir: должен отличаться от state_dir (файлы состояния читает внешняя проверка, а state_dir закрыт)")
 	}
 	if env := strings.TrimSpace(fc.OperatorKeyEnv); env != "" {
 		s.OperatorKey = strings.TrimSpace(getenv(env))
@@ -246,25 +243,6 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		s.PartnerClubs[name] = append([]string(nil), p.Clubs...)
 	}
 
-	if tg := fc.Alerts.Telegram; tg != nil {
-		t := &TelegramSettings{APIURL: strings.TrimRight(strings.TrimSpace(tg.APIURL), "/")}
-		if t.APIURL == "" {
-			t.APIURL = DefaultTelegramAPI
-		} else if err := core.CheckHTTPSURL("alerts.telegram.api_url", t.APIURL); err != nil {
-			add("%s", err.Error())
-		}
-		t.Token = strings.TrimSpace(getenv(strings.TrimSpace(tg.BotTokenEnv)))
-		t.ChatID = strings.TrimSpace(getenv(strings.TrimSpace(tg.ChatIDEnv)))
-		if !envNameRe.MatchString(strings.TrimSpace(tg.BotTokenEnv)) || t.Token == "" {
-			add("alerts.telegram.bot_token_env: переменная с токеном бота не задана")
-		} else {
-			s.Secrets = append(s.Secrets, t.Token)
-		}
-		if !envNameRe.MatchString(strings.TrimSpace(tg.ChatIDEnv)) || t.ChatID == "" {
-			add("alerts.telegram.chat_id_env: переменная с идентификатором чата не задана")
-		}
-		s.Telegram = t
-	}
 	if env := strings.TrimSpace(fc.Alerts.WebhookURLEnv); env != "" {
 		s.WebhookURL = strings.TrimSpace(getenv(env))
 		if s.WebhookURL == "" {

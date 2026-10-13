@@ -297,12 +297,22 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 		var b bytes.Buffer
 		return run([]string{"healthcheck", "-config", cfg}, &b, io.Discard, env{}.get) == 0 && strings.Contains(b.String(), "hub=connected")
 	})
+	// the same self-check reaches the hub as a heartbeat
+	mon := s.hub.Server().Monitor()
+	testkit.WaitFor(t, "hub got a ready heartbeat", 10*time.Second, func() bool {
+		h := mon.Health("club-one")
+		return h.Checked && h.Ready && h.Version != ""
+	})
 	// the CRM goes away: unhealthy, and doctor fails with a code
 	s.crm.Close()
 	s.stub.RevokeTokens()
 	testkit.WaitFor(t, "unhealthy because of the CRM", 10*time.Second, func() bool {
 		var b bytes.Buffer
 		return run([]string{"healthcheck", "-config", cfg}, &b, io.Discard, env{}.get) == 1 && strings.Contains(b.String(), "reason=CRM_UNREACHABLE")
+	})
+	testkit.WaitFor(t, "hub got a not-ready heartbeat", 10*time.Second, func() bool {
+		h := mon.Health("club-one")
+		return !h.Ready && h.Reason == "CRM_UNREACHABLE"
 	})
 	out.Reset()
 	if rc := run([]string{"healthcheck", "-config", cfg}, &out, &errb, env{}.get); rc != 1 || !strings.Contains(out.String(), "CRM_UNREACHABLE") {

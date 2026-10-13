@@ -21,7 +21,7 @@ const (
 	EventSinkSelfTest = "test"
 )
 
-// Alert is one message to the operators. Text is built from the club id,
+// Alert is one state change of a club, sent to the optional sinks. Text is built from the club id,
 // the club name given to the join code, times and fixed reason codes only:
 // it never contains a secret.
 type Alert struct {
@@ -38,8 +38,8 @@ type Sink interface {
 	Send(ctx context.Context, a Alert) error
 }
 
-// transportError strips the request URL from a client error: a Telegram
-// URL carries the bot token and a webhook URL usually carries its own.
+// transportError strips the request URL from a client error: a webhook
+// URL usually carries its own token.
 func transportError(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
@@ -69,26 +69,6 @@ func post(ctx context.Context, client *http.Client, u, contentType string, body 
 	return nil
 }
 
-// TelegramSink posts to a chat through the Bot API.
-type TelegramSink struct {
-	APIURL string
-	Token  string
-	ChatID string
-	Client *http.Client
-}
-
-// Name implements Sink.
-func (t *TelegramSink) Name() string { return "telegram" }
-
-// Send implements Sink.
-func (t *TelegramSink) Send(ctx context.Context, a Alert) error {
-	body, _ := json.Marshal(map[string]any{"chat_id": t.ChatID, "text": a.Text, "disable_web_page_preview": true})
-	if err := post(ctx, t.Client, t.APIURL+"/bot"+t.Token+"/sendMessage", "application/json", body); err != nil {
-		return fmt.Errorf("telegram: %w", err)
-	}
-	return nil
-}
-
 // WebhookSink posts the alert as JSON to a URL.
 type WebhookSink struct {
 	URL    string
@@ -107,15 +87,14 @@ func (w *WebhookSink) Send(ctx context.Context, a Alert) error {
 	return nil
 }
 
-// SinksFromSettings builds the configured sinks.
+// SinksFromSettings builds the configured sinks: none unless a webhook is
+// set. Alerting normally belongs to the external checker that reads the
+// status files; the webhook is for operators without one.
 func SinksFromSettings(s *Settings, client *http.Client) []Sink {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	var out []Sink
-	if s.Telegram != nil {
-		out = append(out, &TelegramSink{APIURL: s.Telegram.APIURL, Token: s.Telegram.Token, ChatID: s.Telegram.ChatID, Client: client})
-	}
 	if s.WebhookURL != "" {
 		out = append(out, &WebhookSink{URL: s.WebhookURL, Client: client})
 	}

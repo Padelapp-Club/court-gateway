@@ -47,7 +47,7 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
 	}
-	srv, err := hub.NewServer(s, store, hub.Options{Logger: log})
+	srv, err := hub.NewServer(s, store, hub.Options{Logger: log, Version: version})
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2

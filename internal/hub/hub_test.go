@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
-	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
@@ -341,178 +339,6 @@ func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
 	r = c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"})
 	if r.Status != http.StatusOK {
 		t.Fatalf("partner request: %d %s", r.Status, r.Body)
-	}
-}
-
-// ---- heartbeat ----
-
-type recorded struct {
-	path string
-	body string
-}
-
-// fakeAlertServer stands in for both the Telegram Bot API and a webhook.
-func fakeAlertServer(t *testing.T) (*httptest.Server, func() []recorded) {
-	var mu sync.Mutex
-	var got []recorded
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		got = append(got, recorded{r.URL.Path, string(b)})
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	t.Cleanup(srv.Close)
-	return srv, func() []recorded {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]recorded(nil), got...)
-	}
-}
-
-const botToken = "123456:TEST-bot-token-secret-value"
-
-func TestHeartbeatAlertsAndRecovery(t *testing.T) {
-	alertSrv, alerts := fakeAlertServer(t)
-	now := time.Date(2030, 1, 7, 12, 0, 0, 0, time.UTC)
-	var mu sync.Mutex
-	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
-	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
-
-	env := hubEnv()
-	env["TG_TOKEN"], env["TG_CHAT"], env["HOOK_URL"] = botToken, "-100500", alertSrv.URL+"/hook?token=webhook-secret-value"
-	h := testkit.StartHub(t, hubYAML+`alerts:
-  telegram: { bot_token_env: TG_TOKEN, chat_id_env: TG_CHAT, api_url: `+alertSrv.URL+` }
-  webhook_url_env: HOOK_URL
-`, env, hub.Options{Now: clock, SinkClient: alertSrv.Client()})
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	d := b.Driver.(*demo.Driver)
-	secret := h.Register("demo-club", "Демо-клуб")
-	gw := testkit.StartGateway(t, h.URL(), h.Transport(), secret, b.Server.TunnelHandler(), nil)
-	testkit.WaitFor(t, "connected", 10*time.Second, func() bool { return h.Server().Broker().Connected("demo-club") })
-	mon := h.Server().Monitor()
-	ctx := context.Background()
-
-	mon.Tick(ctx)
-	if hl := mon.Health("demo-club"); !hl.Checked || !hl.Ready {
-		t.Fatalf("health after first tick: %+v", hl)
-	}
-	if n := len(alerts()); n != 0 {
-		t.Fatalf("alerts while healthy: %d", n)
-	}
-
-	// the club machine is switched off
-	gw.Stop()
-	testkit.WaitFor(t, "hub sees the gateway gone", 10*time.Second, func() bool { return !h.Server().Broker().Connected("demo-club") })
-	mon.Tick(ctx) // offline noticed at T
-	advance(time.Minute)
-	mon.Tick(ctx)
-	advance(time.Minute)
-	mon.Tick(ctx)
-	if n := len(alerts()); n != 0 {
-		t.Fatalf("alerted before the offline threshold: %+v", alerts())
-	}
-	advance(time.Minute) // 3 minutes offline
-	mon.Tick(ctx)
-	got := alerts()
-	if len(got) != 2 {
-		t.Fatalf("want one telegram and one webhook alert, got %+v", got)
-	}
-	for _, a := range got {
-		if !strings.Contains(a.body, "НЕТ СВЯЗИ") || !strings.Contains(a.body, "demo-club") {
-			t.Fatalf("offline alert: %s", a.body)
-		}
-	}
-	if got[0].path != "/bot"+botToken+"/sendMessage" && got[1].path != "/bot"+botToken+"/sendMessage" {
-		t.Fatalf("telegram not called: %+v", got)
-	}
-	advance(time.Minute)
-	mon.Tick(ctx)
-	if n := len(alerts()); n != 2 {
-		t.Fatalf("offline alert repeated: %d", n)
-	}
-
-	// back on
-	gw = testkit.StartGateway(t, h.URL(), h.Transport(), secret, b.Server.TunnelHandler(), nil)
-	testkit.WaitFor(t, "reconnected", 10*time.Second, func() bool { return h.Server().Broker().Connected("demo-club") })
-	advance(time.Minute)
-	mon.Tick(ctx)
-	got = alerts()
-	if len(got) != 4 || !strings.Contains(got[2].body+got[3].body, "снова на связи") {
-		t.Fatalf("recovery: %+v", got)
-	}
-
-	// connected but the CRM fails: three probes in a row
-	d.SetReadyError(driver.Upstream(driver.UpstreamAuth, "test", nil))
-	for i := 0; i < 2; i++ {
-		advance(time.Minute)
-		mon.Tick(ctx)
-	}
-	if n := len(alerts()); n != 4 {
-		t.Fatalf("alerted before 3 failures: %d", n)
-	}
-	advance(time.Minute)
-	mon.Tick(ctx)
-	got = alerts()
-	if len(got) != 6 || !strings.Contains(got[4].body+got[5].body, "НЕ ГОТОВ: CRM_AUTH_FAILED") {
-		t.Fatalf("not-ready alert: %+v", got)
-	}
-	if hl := mon.Health("demo-club"); hl.Ready || hl.Reason != "CRM_AUTH_FAILED" {
-		t.Fatalf("health: %+v", hl)
-	}
-	d.SetReadyError(nil)
-	advance(time.Minute)
-	mon.Tick(ctx)
-	got = alerts()
-	if len(got) != 8 || !strings.Contains(got[6].body+got[7].body, "снова готов") {
-		t.Fatalf("ready recovery: %+v", got)
-	}
-
-	// no secret in any alert or hub log line
-	all := h.Logs.String()
-	for _, a := range got {
-		all += a.body
-	}
-	for _, s := range []string{botToken, "webhook-secret-value", secret, operatorKey, contract.ReadKey, contract.BookKey} {
-		if strings.Contains(all, s) {
-			t.Fatalf("secret %q leaked into alerts or logs", s[:8])
-		}
-	}
-}
-
-func TestAlertSinkErrorsDoNotLeakToken(t *testing.T) {
-	sink := &hub.TelegramSink{APIURL: "http://127.0.0.1:1", Token: botToken, ChatID: "1", Client: &http.Client{Timeout: time.Second}}
-	err := sink.Send(context.Background(), hub.Alert{Text: "x"})
-	if err == nil || strings.Contains(err.Error(), botToken) || strings.Contains(err.Error(), "TEST-bot") {
-		t.Fatalf("error: %v", err)
-	}
-}
-
-func TestStatus(t *testing.T) {
-	w := newWorld(t, hub.Options{}, "latest_version: 1.1.0\n")
-	w.connect(t, w.hub.URL())
-	w.hub.Server().Monitor().Tick(context.Background())
-	if r := call(t, w.hub, http.MethodGet, "/hub/status", contract.ReadKey, ""); r.status != http.StatusUnauthorized {
-		t.Fatalf("status with a partner key: %d", r.status)
-	}
-	r := call(t, w.hub, http.MethodGet, "/hub/status", operatorKey, "")
-	if r.status != http.StatusOK {
-		t.Fatalf("status: %d %s", r.status, r.body)
-	}
-	var st struct {
-		Clubs []hub.ClubStatus `json:"clubs"`
-	}
-	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Clubs) != 1 {
-		t.Fatalf("status body: %s", r.body)
-	}
-	c := st.Clubs[0]
-	if c.Club != "demo-club" || !c.Connected || c.Version != "1.0.0" || c.Build != "release" || !c.Outdated ||
-		c.Ready == nil || !*c.Ready || c.LastSeen == "" {
-		t.Fatalf("row: %+v", c)
-	}
-	if bytes.Contains(r.body, []byte("cgs_")) || bytes.Contains(r.body, []byte("secret")) {
-		t.Fatalf("status leaks a secret: %s", r.body)
 	}
 }
 

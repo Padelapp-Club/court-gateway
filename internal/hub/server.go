@@ -43,6 +43,8 @@ type Options struct {
 	Sinks []Sink
 	// SinkClient is the HTTP client for alert sinks.
 	SinkClient *http.Client
+	// Version is the hub's own version, reported in status.json.
+	Version string
 }
 
 // NewServer wires the store, broker, monitor and partner auth together.
@@ -61,6 +63,7 @@ func NewServer(cfg *Settings, store *Store, opts Options) (*Server, error) {
 	}
 	s.monitor = NewMonitor(store, s.broker, sinks, MonitorConfig{
 		Interval: cfg.Interval, OfflineAfter: cfg.OfflineAfter, ReadyFailures: cfg.ReadyFailures,
+		LatestVersion: cfg.LatestVersion, Version: opts.Version, StatusDir: cfg.StatusDir,
 		Now: opts.Now, Logger: opts.Logger,
 	})
 	if len(cfg.Partners) > 0 {
@@ -95,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+tunnel.PathPoll, s.gateway(s.handlePoll))
 	mux.HandleFunc("POST "+tunnel.PathReply, s.gateway(s.handleReply))
 	mux.HandleFunc("GET "+tunnel.PathWhoami, s.gateway(s.handleWhoami))
+	mux.HandleFunc("POST "+tunnel.PathHeartbeat, s.gateway(s.handleHeartbeat))
 	mux.HandleFunc("GET /hub/status", s.handleStatus)
 	var api http.Handler = http.HandlerFunc(s.handlePartner)
 	if s.auth != nil {
@@ -220,6 +224,18 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request, club string
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleHeartbeat records a gateway's report of its own self-check. The
+// hub never asks a gateway for its readiness: the gateway reports it.
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, club string) {
+	var hb tunnel.Heartbeat
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, tunnel.MaxHeartbeatBody)).Decode(&hb); err != nil {
+		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed heartbeat")
+		return
+	}
+	s.monitor.Heartbeat(club, hb)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, club string) {
 	info := s.broker.Info(club)
 	out := tunnel.Whoami{Club: club, Connected: info.Connected, Latest: s.cfg.LatestVersion}
@@ -310,19 +326,22 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 
 // ClubStatus is one row of /hub/status.
 type ClubStatus struct {
-	Club         string `json:"club"`
-	Name         string `json:"name"`
-	Connected    bool   `json:"connected"`
-	LastSeen     string `json:"last_seen,omitempty"`
-	OfflineSince string `json:"offline_since,omitempty"`
-	Version      string `json:"version,omitempty"`
-	Build        string `json:"build,omitempty"`
-	Platform     string `json:"platform,omitempty"`
-	Outdated     bool   `json:"outdated"`
-	Ready        *bool  `json:"ready"`
-	ReadyReason  string `json:"ready_reason,omitempty"`
-	LastCheck    string `json:"last_check,omitempty"`
-	RegisteredAt string `json:"registered_at"`
+	Club      string `json:"club"`
+	Name      string `json:"name"`
+	Connected bool   `json:"connected"`
+	LastSeen  string `json:"last_seen,omitempty"`
+	// State is pending, online, not_ready or offline (from heartbeats).
+	State         string `json:"state"`
+	LastHeartbeat string `json:"last_heartbeat,omitempty"`
+	OfflineSince  string `json:"offline_since,omitempty"`
+	Version       string `json:"version,omitempty"`
+	Build         string `json:"build,omitempty"`
+	Platform      string `json:"platform,omitempty"`
+	Outdated      bool   `json:"outdated"`
+	Ready         *bool  `json:"ready"`
+	ReadyReason   string `json:"ready_reason,omitempty"`
+	LastCheck     string `json:"last_check,omitempty"`
+	RegisteredAt  string `json:"registered_at"`
 }
 
 func ts(t time.Time) string {
@@ -345,18 +364,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		h := s.monitor.Health(g.Club)
 		row := ClubStatus{
 			Club: g.Club, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
-			Version: info.Meta.Version, Build: info.Meta.Build, Platform: info.Meta.Platform,
-			RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.LastCheck), ReadyReason: h.Reason,
+			State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
+			Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
+			RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
 		}
-		if !info.Connected {
-			row.OfflineSince = ts(h.OfflineSince)
+		if h.Version != "" {
+			row.Version, row.Build = h.Version, h.Build
 		}
 		if h.Checked {
 			ready := h.Ready
 			row.Ready = &ready
 		}
-		if s.cfg.LatestVersion != "" && info.Meta.Version != "" {
-			row.Outdated = version.Compare(info.Meta.Version, s.cfg.LatestVersion) < 0
+		if s.cfg.LatestVersion != "" && row.Version != "" {
+			row.Outdated = version.Compare(row.Version, s.cfg.LatestVersion) < 0
 		}
 		rows = append(rows, row)
 	}
@@ -398,7 +418,7 @@ func (l *failLimiter) fail(now time.Time) {
 }
 
 // Run serves the hub until ctx is done: the HTTP(S) listener and the
-// heartbeat monitor.
+// heartbeat monitor (which writes the status files).
 func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) error {
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,

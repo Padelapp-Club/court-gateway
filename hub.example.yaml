@@ -5,6 +5,7 @@ tls:                                       # или без tls — тогда TL
   cert_file: /etc/court-gateway-hub/tls.crt
   key_file: /etc/court-gateway-hub/tls.key
 state_dir: /var/lib/court-gateway-hub      # зарегистрированные шлюзы (хеши секретов) и коды подключения
+status_dir: /var/lib/court-gateway-hub-status  # status.json и metrics для внешней проверки; отдельный каталог
 operator_key_env: HUB_OPERATOR_KEY         # ключ для GET /hub/status
 # latest_version: 0.1.0                    # хаб подсказывает шлюзам обновиться и помечает устаревшие
 # request_timeout: 30s                     # сколько хаб ждёт ответа шлюза на запрос партнёра
@@ -17,13 +18,11 @@ partners:
     clubs: ["*"]                           # или список: [my-club, other-club]
     # writes_per_minute: 60
 
-heartbeat:
-  interval: 60s                            # как часто хаб проверяет каждый шлюз
-  offline_after: 3m                        # алерт, если шлюза нет дольше
-  ready_failures: 3                        # алерт после стольких неудачных проверок готовности подряд
+heartbeat:                                 # шлюзы сами присылают сигнал после своей проверки, раз в минуту
+  interval: 60s                            # как часто хаб пересчитывает состояние клубов и пишет status_dir
+  offline_after: 3m                        # «нет связи», если сигнала нет дольше
+  ready_failures: 3                        # «не готов» после стольких сигналов подряд с ready=false
 
-alerts:
-  telegram:
-    bot_token_env: TELEGRAM_BOT_TOKEN
-    chat_id_env: TELEGRAM_CHAT_ID
-  # webhook_url_env: ALERT_WEBHOOK_URL     # POST JSON {event, club, club_name, text, time}
+# Необязательно — для операторов без своей системы проверок. По умолчанию выключено.
+# alerts:
+#   webhook_url_env: ALERT_WEBHOOK_URL     # POST JSON {event, club, club_name, text, time}

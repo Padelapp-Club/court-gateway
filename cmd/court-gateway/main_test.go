@@ -100,8 +100,7 @@ func TestExampleConfigIsValid(t *testing.T) {
 
 // The hub example must stay a valid hub config.
 func TestHubExampleConfigIsValid(t *testing.T) {
-	env := map[string]string{"HUB_OPERATOR_KEY": strings.Repeat("o", 32), "PARTNER_KEY_1": strings.Repeat("k", 32),
-		"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "-1"}
+	env := map[string]string{"HUB_OPERATOR_KEY": strings.Repeat("o", 32), "PARTNER_KEY_1": strings.Repeat("k", 32)}
 	if _, err := hub.LoadFile("../../hub.example.yaml", func(k string) string { return env[k] }); err != nil {
 		t.Fatal(err)
 	}

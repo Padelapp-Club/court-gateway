@@ -2,21 +2,34 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
+	"github.com/Padelapp-Club/court-gateway/internal/version"
 )
 
-// Monitor is the heartbeat: every interval it looks at every registered
-// gateway, asks connected ones for /health/ready through the tunnel and
-// alerts when a gateway has been offline for offlineAfter or failed
-// readyFailures probes in a row. It also says when things recover.
+// Club states as the monitor sees them.
+const (
+	// StatePending: no heartbeat yet since the hub started, but not for
+	// longer than offline_after either.
+	StatePending  = "pending"
+	StateOnline   = "online"
+	StateNotReady = "not_ready"
+	StateOffline  = "offline"
+)
+
+// Monitor watches the heartbeats gateways send after each of their own
+// self-checks. It never calls a gateway: a club is offline when its
+// heartbeats stop for longer than offlineAfter, and not ready after
+// readyFailures heartbeats in a row that report ready=false. Every Tick it
+// re-evaluates every registered club, writes the status files for the
+// external checker and, when sinks are configured, sends transitions to
+// them.
 type Monitor struct {
 	store         *Store
 	broker        *Broker
@@ -26,7 +39,9 @@ type Monitor struct {
 	interval      time.Duration
 	offlineAfter  time.Duration
 	readyFailures int
-	probeTimeout  time.Duration
+	latest        string
+	version       string
+	statusDir     string
 	started       time.Time
 
 	mu    sync.Mutex
@@ -34,24 +49,32 @@ type Monitor struct {
 }
 
 type clubHealth struct {
-	offlineSince    time.Time
-	failures        int
-	checked         bool
-	ready           bool
-	reason          string
-	lastCheck       time.Time
-	alertedOffline  bool
-	alertedNotReady bool
+	lastBeat  time.Time // hub clock: when the last heartbeat arrived
+	checkedAt time.Time // gateway clock, informational only
+	version   string
+	build     string
+	ready     bool
+	reason    string
+	notReady  int // heartbeats in a row with ready=false
+	beats     int
+
+	state      string // as of the last Tick
+	stateSince time.Time
 }
 
 // Health is the monitor's view of one club, for /hub/status.
 type Health struct {
+	State         string
+	LastHeartbeat time.Time
+	CheckedAt     time.Time
+	Version       string
+	Build         string
+	// Checked is true once a heartbeat has arrived since the hub started.
 	Checked      bool
 	Ready        bool
 	Reason       string
-	LastCheck    time.Time
-	OfflineSince time.Time
 	Failures     int
+	OfflineSince time.Time
 }
 
 // MonitorConfig configures a Monitor.
@@ -59,12 +82,19 @@ type MonitorConfig struct {
 	Interval      time.Duration
 	OfflineAfter  time.Duration
 	ReadyFailures int
-	ProbeTimeout  time.Duration
-	Now           func() time.Time
-	Logger        *slog.Logger
+	// LatestVersion marks older gateways as outdated in the status files.
+	LatestVersion string
+	// Version is the hub's own version, reported in status.json.
+	Version string
+	// StatusDir receives status.json and metrics every Tick; empty means
+	// no files.
+	StatusDir string
+	Now       func() time.Time
+	Logger    *slog.Logger
 }
 
-// NewMonitor builds a heartbeat monitor.
+// NewMonitor builds a heartbeat monitor. broker may be nil; it only adds
+// the tunnel state to the status details.
 func NewMonitor(store *Store, broker *Broker, sinks []Sink, cfg MonitorConfig) *Monitor {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -72,18 +102,20 @@ func NewMonitor(store *Store, broker *Broker, sinks []Sink, cfg MonitorConfig) *
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
-	if cfg.ProbeTimeout <= 0 {
-		cfg.ProbeTimeout = 15 * time.Second
+	if cfg.ReadyFailures < 1 {
+		cfg.ReadyFailures = DefaultReadyFailures
 	}
 	return &Monitor{
 		store: store, broker: broker, sinks: sinks, log: cfg.Logger, now: cfg.Now,
 		interval: cfg.Interval, offlineAfter: cfg.OfflineAfter, readyFailures: cfg.ReadyFailures,
-		probeTimeout: cfg.ProbeTimeout, started: cfg.Now(), state: map[string]*clubHealth{},
+		latest: cfg.LatestVersion, version: cfg.Version, statusDir: cfg.StatusDir, started: cfg.Now(), state: map[string]*clubHealth{},
 	}
 }
 
-// Run ticks until ctx is done.
+// Run evaluates once at start (so the status files exist at once) and
+// then every interval until ctx is done.
 func (m *Monitor) Run(ctx context.Context) {
+	m.Tick(ctx)
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
 	for {
@@ -96,132 +128,207 @@ func (m *Monitor) Run(ctx context.Context) {
 	}
 }
 
-// Health returns the monitor's view of club.
-func (m *Monitor) Health(club string) Health {
+var (
+	reasonRe  = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
+	versionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,39}$`)
+)
+
+// cleanReason accepts a gateway's reason only as a short upper-case code,
+// so a gateway cannot put arbitrary text into status files or alerts.
+func cleanReason(ready bool, r string) string {
+	switch {
+	case ready:
+		return ""
+	case reasonRe.MatchString(r):
+		return r
+	default:
+		return "NOT_READY"
+	}
+}
+
+func cleanVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if version.Valid(v) || versionRe.MatchString(v) {
+		return v
+	}
+	return ""
+}
+
+func cleanBuild(b string) string {
+	if b == tunnel.BuildRelease || b == tunnel.BuildSelf {
+		return b
+	}
+	return ""
+}
+
+// Heartbeat records a heartbeat from club's gateway, received now (hub
+// clock: the gateway's clock is not trusted for liveness).
+func (m *Monitor) Heartbeat(club string, hb tunnel.Heartbeat) {
+	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	h, ok := m.state[club]
-	if !ok {
-		return Health{}
+	h := m.health(club)
+	h.lastBeat, h.beats = now, h.beats+1
+	h.ready, h.reason = hb.Ready, cleanReason(hb.Ready, hb.Reason)
+	h.version, h.build = cleanVersion(hb.Version), cleanBuild(hb.Build)
+	if !hb.CheckedAt.IsZero() && hb.CheckedAt.Year() > 2000 && hb.CheckedAt.Year() < 3000 {
+		h.checkedAt = hb.CheckedAt.UTC()
 	}
-	return Health{Checked: h.checked, Ready: h.ready, Reason: h.reason, LastCheck: h.lastCheck, OfflineSince: h.offlineSince, Failures: h.failures}
+	if hb.Ready {
+		h.notReady = 0
+	} else {
+		h.notReady++
+	}
 }
 
-// Tick runs one heartbeat round over every registered gateway.
-func (m *Monitor) Tick(ctx context.Context) {
-	var wg sync.WaitGroup
-	for _, g := range m.store.Clubs() {
-		wg.Add(1)
-		go func(g GatewayRecord) {
-			defer wg.Done()
-			m.check(ctx, g)
-		}(g)
-	}
-	wg.Wait()
-}
-
+// health returns club's record; m.mu must be held.
 func (m *Monitor) health(club string) *clubHealth {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	h, ok := m.state[club]
 	if !ok {
-		// a gateway never seen since the hub started counts as offline
-		// from the start, so a hub restart cannot hide a dead club
-		h = &clubHealth{offlineSince: m.started}
+		h = &clubHealth{}
 		m.state[club] = h
 	}
 	return h
 }
 
-func (m *Monitor) check(ctx context.Context, g GatewayRecord) {
-	h := m.health(g.Club)
-	now := m.now()
-	if !m.broker.Connected(g.Club) {
-		m.mu.Lock()
-		if h.offlineSince.IsZero() {
-			h.offlineSince = now
-		}
-		since := h.offlineSince
-		fire := !h.alertedOffline && now.Sub(since) >= m.offlineAfter
-		if fire {
-			h.alertedOffline = true
-		}
-		m.mu.Unlock()
-		if fire {
-			m.send(ctx, Alert{Event: EventOffline, Club: g.Club, ClubName: g.Name, Time: now,
-				Text: fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s) с %s UTC — %s.",
-					g.Name, g.Club, since.UTC().Format("02.01 15:04"), minutes(now.Sub(since)))})
-		}
-		return
+// silentSince is when the club was last known alive: its last heartbeat,
+// or, before the first one, the later of the hub's start and the club's
+// registration. So a hub restart cannot hide a dead club, and a club that
+// has just registered gets offline_after to send its first heartbeat.
+func (m *Monitor) silentSince(h *clubHealth, registered time.Time) time.Time {
+	if !h.lastBeat.IsZero() {
+		return h.lastBeat
 	}
+	if registered.After(m.started) {
+		return registered
+	}
+	return m.started
+}
 
-	m.mu.Lock()
-	wasOffline, since := h.alertedOffline, h.offlineSince
-	h.alertedOffline = false
-	h.offlineSince = time.Time{}
-	m.mu.Unlock()
-	if wasOffline {
-		m.send(ctx, Alert{Event: EventOnline, Club: g.Club, ClubName: g.Name, Time: now,
-			Text: fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова на связи (не было связи %s).",
-				g.Name, g.Club, minutes(now.Sub(since)))})
-	}
-
-	ready, reason := m.probe(ctx, g.Club)
-	m.mu.Lock()
-	h.checked, h.ready, h.reason, h.lastCheck = true, ready, reason, now
-	var fireNotReady, fireReady bool
-	if ready {
-		fireReady = h.alertedNotReady
-		h.failures, h.alertedNotReady = 0, false
-	} else {
-		h.failures++
-		if h.failures >= m.readyFailures && !h.alertedNotReady {
-			fireNotReady, h.alertedNotReady = true, true
-		}
-	}
-	failures := h.failures
-	m.mu.Unlock()
+// evaluate computes club's state at now; m.mu must be held.
+func (m *Monitor) evaluate(h *clubHealth, registered, now time.Time) string {
+	seen := m.silentSince(h, registered)
 	switch {
-	case fireNotReady:
-		m.send(ctx, Alert{Event: EventNotReady, Club: g.Club, ClubName: g.Name, Time: now,
-			Text: fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) на связи, но НЕ ГОТОВ: %s (%d проверки подряд).",
-				g.Name, g.Club, reason, failures)})
-	case fireReady:
-		m.send(ctx, Alert{Event: EventReady, Club: g.Club, ClubName: g.Name, Time: now,
-			Text: fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова готов.", g.Name, g.Club)})
+	case now.Sub(seen) > m.offlineAfter:
+		return StateOffline
+	case h.beats == 0:
+		return StatePending
+	case h.notReady >= m.readyFailures:
+		return StateNotReady
+	default:
+		return StateOnline
 	}
 }
 
-var reasonRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
+// Health returns the monitor's view of club.
+func (m *Monitor) Health(club string) Health {
+	now := m.now()
+	g, _ := m.store.Get(club)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.state[club]
+	if !ok {
+		h = &clubHealth{}
+	}
+	out := Health{
+		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Failures: h.notReady,
+	}
+	if out.State == StateOffline {
+		out.OfflineSince = m.silentSince(h, g.RegisteredAt)
+	}
+	return out
+}
 
-// probe asks the gateway for /health/ready through the tunnel. The reason
-// it reports is accepted only as a short upper-case code, so a gateway
-// cannot put arbitrary text into an operator alert.
-func (m *Monitor) probe(ctx context.Context, club string) (bool, string) {
-	req := tunnel.Request{
-		ID: newCallID(), RequestID: "hb-" + newCallID()[:16], Method: http.MethodGet, Path: "/health/ready",
-		TimeoutMS: int(m.probeTimeout / time.Millisecond),
+// clubView is one club's evaluated state, for the status files.
+type clubView struct {
+	GatewayRecord
+	clubHealth
+	connected bool
+}
+
+// Tick evaluates every registered club, writes the status files and sends
+// state transitions to the sinks.
+func (m *Monitor) Tick(ctx context.Context) {
+	now := m.now()
+	var views []clubView
+	var alerts []Alert
+	clubs := m.store.Clubs()
+	connected := map[string]bool{}
+	if m.broker != nil {
+		for _, g := range clubs {
+			connected[g.Club] = m.broker.Connected(g.Club)
+		}
 	}
-	resp, err := m.broker.Do(ctx, club, req, m.probeTimeout, m.probeTimeout+5*time.Second)
-	switch {
-	case err == ErrOffline:
-		return false, "TUNNEL_OFFLINE"
-	case err != nil:
-		return false, "TUNNEL_TIMEOUT"
-	case resp.Status == http.StatusOK:
-		return true, ""
+	m.mu.Lock()
+	for _, g := range clubs {
+		h := m.health(g.Club)
+		st := m.evaluate(h, g.RegisteredAt, now)
+		prev, prevSince := h.state, h.stateSince
+		if st != prev {
+			h.state, h.stateSince = st, now
+			if a, ok := m.transition(g, *h, prev, prevSince, now); ok {
+				alerts = append(alerts, a)
+			}
+		}
+		views = append(views, clubView{GatewayRecord: g, clubHealth: *h, connected: connected[g.Club]})
 	}
-	var body struct {
-		Reason string `json:"reason"`
+	m.mu.Unlock()
+
+	if m.statusDir != "" {
+		o := statusOptions{version: m.version, latest: m.latest, offlineAfter: m.offlineAfter, readyFailures: m.readyFailures}
+		dropped, err := writeStatus(m.statusDir, now, o, views)
+		if len(dropped) > 0 {
+			m.log.Warn("status keys dropped: malformed or repeated", "keys", strings.Join(dropped, ","))
+		}
+		if err != nil {
+			m.log.Error("cannot write the status files", "dir", m.statusDir, "error", err)
+		}
 	}
-	if json.Unmarshal(resp.Body, &body) == nil && reasonRe.MatchString(body.Reason) {
-		return false, body.Reason
+	for _, a := range alerts {
+		m.send(ctx, a)
 	}
-	return false, fmt.Sprintf("HTTP_%d", resp.Status)
+}
+
+// transition builds the alert for a state change. The first evaluation of
+// a club (prev empty) alerts only when it is already bad; pending never
+// alerts.
+func (m *Monitor) transition(g GatewayRecord, h clubHealth, prev string, prevSince, now time.Time) (Alert, bool) {
+	a := Alert{Club: g.Club, ClubName: g.Name, Time: now}
+	switch h.state {
+	case StateOffline:
+		since := m.silentSince(&h, g.RegisteredAt)
+		a.Event = EventOffline
+		a.Text = fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s): последний сигнал %s UTC, %s назад.",
+			g.Name, g.Club, since.UTC().Format("02.01 15:04"), minutes(now.Sub(since)))
+		if h.lastBeat.IsZero() {
+			a.Text = fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s): ни одного сигнала за %s.",
+				g.Name, g.Club, minutes(now.Sub(since)))
+		}
+		return a, true
+	case StateNotReady:
+		a.Event = EventNotReady
+		a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) на связи, но НЕ ГОТОВ: %s (%d проверки подряд).",
+			g.Name, g.Club, h.reason, h.notReady)
+		return a, true
+	case StateOnline:
+		switch prev {
+		case StateOffline:
+			a.Event = EventOnline
+			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова на связи (не было связи %s).",
+				g.Name, g.Club, minutes(now.Sub(prevSince)))
+			return a, true
+		case StateNotReady:
+			a.Event = EventReady
+			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова готов.", g.Name, g.Club)
+			return a, true
+		}
+	}
+	return Alert{}, false
 }
 
 func (m *Monitor) send(ctx context.Context, a Alert) {
-	m.log.Warn("alert", "event", a.Event, "club", a.Club)
+	m.log.Warn("club state changed", "event", a.Event, "club", a.Club)
 	for _, s := range m.sinks {
 		sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		err := s.Send(sctx, a)
