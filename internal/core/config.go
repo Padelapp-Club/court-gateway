@@ -171,7 +171,7 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	// crm
 	s.CRMType = strings.TrimSpace(fc.CRM.Type)
 	if s.CRMType == "" {
-		add("crm.type: параметр обязателен (тип CRM клуба, например viva)")
+		add("crm.type: параметр обязателен (тип CRM клуба)")
 	}
 
 	// venue
