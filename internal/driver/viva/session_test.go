@@ -82,7 +82,7 @@ func studioCalls(stub *vivastub.Stub) int {
 
 // An installation with many clubs behind a slow CRM logs in once for the
 // account and all of them, and checks their config against one studio
-// list.
+// list per evaluation (applying the config, a readiness round).
 func TestManyClubsShareOneSession(t *testing.T) {
 	stub := vivastub.New(stubUser, stubPass, studio)
 	srv := httptest.NewServer(stub)
@@ -99,14 +99,18 @@ func TestManyClubsShareOneSession(t *testing.T) {
 	if err := in.apply(t, specs...); err != nil {
 		t.Fatal(err)
 	}
-	if err := in.clubs.Ready(context.Background()); err != nil {
+	if n := studioCalls(stub); n != 1 {
+		t.Fatalf("%d studio list requests to apply the config, want 1", n)
+	}
+	if err := in.syncer.Ready(context.Background()); err != nil {
 		t.Fatalf("ready: %v (%s)", err, core.ReadyReason(err))
 	}
 	if n := stub.LoginAttempts(); n != 1 {
 		t.Fatalf("%d logins for one account, want 1", n)
 	}
-	if n := studioCalls(stub); n != 1 {
-		t.Fatalf("%d studio list requests for one installation, want 1", n)
+	// one more for the readiness round: shared by its clubs, not kept
+	if n := studioCalls(stub); n != 2 {
+		t.Fatalf("%d studio list requests after one readiness round, want 2", n)
 	}
 }
 
@@ -189,7 +193,6 @@ func TestClubConfigMustMatchTheStudio(t *testing.T) {
 	}
 	// the room goes away in the CRM: the next readiness check sees it
 	stub.RemoveRoom(room2)
-	clk.add(time.Minute) // past the studio list's reuse
 	if err := in.clubs.Ready(context.Background()); core.ReadyReason(err) != "CONFIG_MISMATCH" {
 		t.Fatalf("ready after the room was removed: %v", err)
 	}

@@ -229,7 +229,7 @@ func (d *Driver) Studio() string { return d.studio }
 // account, every room is the studio's, and the club's time zone has the
 // studio's offset from UTC (Viva selects list records by the studio's
 // dates, so a club in another zone would read the wrong days). The
-// account's studio list is shared by its clubs (studiosTTL).
+// account's studio list is shared by its clubs within one evaluation.
 func (d *Driver) CheckConfig(ctx context.Context) error {
 	list, err := d.c.studioList(ctx)
 	if err != nil {

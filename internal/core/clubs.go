@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // Clubs serves every club of an installation on one handler. The set of
@@ -106,8 +107,10 @@ const readyParallel = 4
 
 // Ready checks every club's CRM access, a few clubs at a time, each within
 // its own ClubTimeout (and ctx); with no club it checks the account. The
-// error is the first club's, in id order.
+// error is the first club's, in id order. A club found not to match its
+// CRM (driver.MisconfigError) is blocked until a later check passes.
 func (c *Clubs) Ready(ctx context.Context) error {
+	ctx = driver.WithEvaluation(ctx)
 	t := c.cur.Load()
 	if len(t.ids) == 0 {
 		if c.readyNoClubs == nil {
@@ -127,7 +130,9 @@ func (c *Clubs) Ready(ctx context.Context) error {
 			defer func() { <-sem; wg.Done() }()
 			ctx, cancel := context.WithTimeout(ctx, c.clubTimeout)
 			defer cancel()
-			errs[i] = t.byID[id].srv.drv.Ready(ctx)
+			srv := t.byID[id].srv
+			errs[i] = srv.drv.Ready(ctx)
+			srv.noteCheck(errs[i])
 		}()
 	}
 	wg.Wait()
@@ -179,6 +184,11 @@ func (c *Clubs) APIHandler() http.Handler {
 			return
 		default:
 			WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
+			return
+		}
+		if e.srv.mismatch.Load() {
+			w.Header().Set("Retry-After", "60")
+			WriteError(w, r, http.StatusServiceUnavailable, "CLUB_UNAVAILABLE", "the club's configuration does not match its CRM")
 			return
 		}
 		e.api.ServeHTTP(w, r)

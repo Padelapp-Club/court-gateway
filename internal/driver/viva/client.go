@@ -26,18 +26,14 @@ const (
 	// authFailureTTL: a rejected login (wrong password) is not retried for
 	// this long, so a wrong password cannot get the account locked.
 	authFailureTTL = 10 * time.Minute
-	// studiosTTL: how long the account's studio list is reused, so the
-	// readiness checks of every club cost one request per installation.
-	studiosTTL = 30 * time.Second
 )
 
 // maxBody caps how much of an upstream response is read.
 const maxBody = 8 << 20
 
 // client talks HTTP to VivaCRM. One client serves the installation's
-// account and all its clubs. It keeps the access token (in memory, until
-// shortly before it expires), the last login failure and, briefly, the
-// account's studio list.
+// account and all its clubs. It keeps only the access token (in memory,
+// until shortly before it expires) and the last login failure.
 type client struct {
 	authURL  string
 	apiURL   string
@@ -51,10 +47,6 @@ type client struct {
 	expires  time.Time
 	loginErr error     // the last failed login
 	retryAt  time.Time // no login before this
-
-	smu       sync.Mutex
-	studios   []vivaStudio
-	studiosAt time.Time
 }
 
 type tokenResponse struct {
@@ -86,20 +78,11 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 	return tok, err
 }
 
-// studioList returns the account's studios, read at most once per
-// studiosTTL.
+// studioList returns the account's studios: read once per evaluation
+// (driver.Once), so the clubs of one readiness round or one config share
+// it, and never reused after it.
 func (c *client) studioList(ctx context.Context) ([]vivaStudio, error) {
-	c.smu.Lock()
-	defer c.smu.Unlock()
-	if c.studios != nil && c.now().Sub(c.studiosAt) < studiosTTL {
-		return c.studios, nil
-	}
-	list, err := listStudios(ctx, c)
-	if err != nil {
-		return nil, err
-	}
-	c.studios, c.studiosAt = list, c.now()
-	return list, nil
+	return driver.Once(ctx, "viva studios "+c.apiURL, func() ([]vivaStudio, error) { return listStudios(ctx, c) })
 }
 
 // invalidate drops the cached token if it is still the one that failed.

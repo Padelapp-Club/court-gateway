@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -28,6 +29,21 @@ type Server struct {
 	log  *slog.Logger
 	now  func() time.Time
 	caps driver.Capabilities
+	// mismatch: the last readiness check found the club's config does not
+	// match its CRM; partners get 503 until a check passes again.
+	mismatch atomic.Bool
+}
+
+// noteCheck records a readiness result: a mismatch blocks the club, a
+// pass unblocks it, a check that could not be made changes nothing.
+func (s *Server) noteCheck(err error) {
+	var me *driver.MisconfigError
+	switch {
+	case err == nil:
+		s.mismatch.Store(false)
+	case errors.As(err, &me):
+		s.mismatch.Store(true)
+	}
 }
 
 // NewServer builds the API of one club around its driver.

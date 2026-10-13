@@ -1,15 +1,7 @@
 // Package remote keeps a gateway's clubs equal to its installation's club
-// configuration on the hub, and answers the hub's discovery requests.
-//
-// One installation of the gateway is one CRM account; the account may
-// hold several clubs. The club side installs once and keeps only the CRM
-// login and the hub connection; the operator adds, changes and removes
-// clubs on the hub. The hub announces its config version on every poll
-// and heartbeat answer; when it differs from the version the gateway
-// runs, the gateway pulls the config, validates every club with the
-// driver, and swaps the whole set at once. A config that does not
-// validate is refused as a whole: the gateway keeps the previous one and
-// reports why in its heartbeats. The config lives in memory only.
+// configuration on the hub (pulled when the hub announces a new version,
+// kept in memory only) and answers the hub's discovery requests. Each club
+// is accepted or refused on its own; see Syncer.Apply.
 package remote
 
 import (
@@ -47,9 +39,13 @@ type Syncer struct {
 
 	notify chan int64
 
-	mu      sync.Mutex
-	applied int64
-	refused map[string]string // club -> why its config was refused
+	op sync.Mutex // one Apply or recheck at a time
+
+	mu         sync.Mutex
+	applied    int64
+	configured map[string]bool         // clubs of the applied config
+	waiting    map[string]*core.Server // built, not yet confirmed by the CRM
+	refused    map[string]string       // club -> why its config is not served
 }
 
 // Options configure New.
@@ -76,7 +72,7 @@ func New(o Options) *Syncer {
 		o.Retry = 5 * time.Second
 	}
 	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch,
-		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1}
+		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1, refused: map[string]string{}}
 }
 
 // SetFetch sets how the config is pulled (before Run).
@@ -167,38 +163,44 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// configCheckTimeout bounds the check of one club against the CRM.
+// configCheckTimeout bounds the check of one club against the CRM when a
+// config is applied; the readiness round repeats it within ReadyTimeout.
 const configCheckTimeout = 20 * time.Second
 
-// Apply serves the clubs of rc that load with the driver and match the
-// CRM (driver.ConfigChecker). A club that does not keeps its previous
-// config if it had one; otherwise partners get 503 for it. A club the CRM
-// could not be asked about is served: its readiness check repeats the
-// question. Apply returns the problems found (nil when every club loaded).
+// Apply serves the clubs of rc that load with the driver and that the CRM
+// confirms (driver.ConfigChecker). Until it does — the club does not match
+// the CRM, or the CRM could not be asked — a club keeps its previous
+// config if it had one, otherwise partners get 503 for it; Ready asks the
+// CRM again on every readiness round, without a new config from the hub.
+// Apply returns the problems found (nil when every club is served as
+// configured).
 func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
+	s.op.Lock()
+	defer s.op.Unlock()
 	servers, refused := Build(s.base, s.factories, s.hook, rc)
-	servers, refused = checkClubs(ctx, servers, refused, s.log)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	var unavailable, problems []string
+	s.applied = rc.Version
+	s.configured, s.waiting, s.refused = map[string]bool{}, map[string]*core.Server{}, map[string]string{}
+	var problems []string
 	for _, r := range refused {
 		problems = append(problems, r.Problems...)
-		if r.Club == "" {
-			continue
+		why := strings.Join(r.Problems, "; ")
+		if prev := s.refused[r.Club]; prev != "" {
+			why = prev + "; " + why
 		}
-		if old, ok := s.clubs.Server(r.Club); ok {
-			servers = append(servers, old)
-		} else {
-			unavailable = append(unavailable, r.Club)
+		s.refused[r.Club] = why
+		if r.Club != "" {
+			s.configured[r.Club] = true
 		}
 	}
-	s.clubs.Set(servers, unavailable...)
-	s.applied, s.refused = rc.Version, map[string]string{}
-	for _, r := range refused {
-		s.refused[r.Club] = strings.Join(r.Problems, "; ")
+	for _, srv := range servers {
+		s.configured[srv.Settings().ClubID] = true
+		s.waiting[srv.Settings().ClubID] = srv
 	}
+	s.mu.Unlock()
+	problems = append(problems, s.verify(driver.WithEvaluation(ctx), configCheckTimeout)...)
 	if len(problems) > 0 {
-		s.log.Error("club config from the hub applied without the clubs that do not load", "version", rc.Version,
+		s.log.Error("club config from the hub applied without the clubs that are not confirmed", "version", rc.Version,
 			"clubs", strings.Join(s.clubs.IDs(), ","), "error", strings.Join(problems, "; "))
 		return &core.ConfigError{Problems: problems}
 	}
@@ -206,35 +208,81 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	return nil
 }
 
-// checkClubs asks the CRM about every built club that can be checked and
-// moves the ones that do not match it to the refusals.
-func checkClubs(ctx context.Context, servers []*core.Server, refused []Refusal, log *slog.Logger) ([]*core.Server, []Refusal) {
-	kept := servers[:0:0]
-	for _, srv := range servers {
-		cc, ok := srv.Driver().(driver.ConfigChecker)
-		if !ok {
-			kept = append(kept, srv)
-			continue
+// Ready is the installation's readiness round: it asks the CRM again
+// about the clubs not yet confirmed, serving those it confirms, then
+// checks every served club (core.Clubs.Ready). The account's reads are
+// shared by the whole round.
+func (s *Syncer) Ready(ctx context.Context) error {
+	ctx = driver.WithEvaluation(ctx)
+	s.op.Lock()
+	s.mu.Lock()
+	n := len(s.waiting)
+	s.mu.Unlock()
+	if n > 0 {
+		if problems := s.verify(ctx, core.ReadyTimeout); len(problems) == 0 {
+			s.log.Info("club config confirmed by the CRM", "clubs", strings.Join(s.clubs.IDs(), ","))
 		}
-		cctx, cancel := context.WithTimeout(ctx, configCheckTimeout)
-		err := cc.CheckConfig(cctx)
-		cancel()
-		id := srv.Settings().ClubID
+	}
+	s.op.Unlock()
+	return s.clubs.Ready(ctx)
+}
+
+// verify asks the CRM about every waiting club and serves the configured
+// set: a confirmed club with its new config, any other with its previous
+// one if it had one. It returns the problems of the clubs still waiting.
+// The caller holds s.op.
+func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
+	s.mu.Lock()
+	ids := slices.Sorted(maps.Keys(s.waiting))
+	waiting := maps.Clone(s.waiting)
+	s.mu.Unlock()
+	confirmed := map[string]*core.Server{}
+	failed := map[string]string{}
+	for _, id := range ids {
+		var err error
+		if cc, ok := waiting[id].Driver().(driver.ConfigChecker); ok {
+			cctx, cancel := context.WithTimeout(ctx, timeout)
+			err = cc.CheckConfig(cctx)
+			cancel()
+		}
 		var me *driver.MisconfigError
 		switch {
+		case err == nil:
+			confirmed[id] = waiting[id]
 		case errors.As(err, &me):
-			r := Refusal{Club: id}
+			var ps []string
 			for _, p := range me.Problems {
-				r.Problems = append(r.Problems, "клуб «"+id+"»: "+p)
+				ps = append(ps, "клуб «"+id+"»: "+p)
 			}
-			refused = append(refused, r)
-			continue
-		case err != nil:
-			log.Warn("club config not checked against the CRM, serving it", "club", id, "reason", core.ReadyReason(err))
+			failed[id] = strings.Join(ps, "; ")
+		default:
+			failed[id] = fmt.Sprintf("клуб «%s»: конфигурацию не удалось сверить с CRM (%s), сверка повторится", id, core.ReadyReason(err))
 		}
-		kept = append(kept, srv)
 	}
-	return kept, refused
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var servers []*core.Server
+	var unavailable, problems []string
+	for id := range s.configured {
+		if srv, ok := confirmed[id]; ok {
+			delete(s.waiting, id)
+			delete(s.refused, id)
+			servers = append(servers, srv)
+			continue
+		}
+		if f, ok := failed[id]; ok {
+			s.refused[id] = f
+			problems = append(problems, f)
+		}
+		if old, ok := s.clubs.Server(id); ok {
+			servers = append(servers, old)
+		} else {
+			unavailable = append(unavailable, id)
+		}
+	}
+	s.clubs.Set(servers, unavailable...)
+	slices.Sort(problems)
+	return problems
 }
 
 // Refusal is a club of a hub config that does not load. Club is empty
