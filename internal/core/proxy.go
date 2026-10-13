@@ -16,10 +16,27 @@ import (
 // person's shell, so they are read from gateway.yaml or .env.
 type ProxyFunc func(*http.Request) (*url.URL, error)
 
-func parseProxy(rawURL, noProxy string) (ProxyFunc, error) {
+// parseProxy also returns the proxy password, if any, for the log
+// redaction. An error never repeats the login and password of the URL.
+func parseProxy(rawURL, noProxy string) (ProxyFunc, []string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("«%s» — нужен адрес вида http://прокси:3128", rawURL)
+		shown := rawURL
+		if err == nil {
+			bare := *u
+			bare.User = nil
+			shown = bare.String()
+		} else if at := strings.LastIndex(rawURL, "@"); at >= 0 {
+			shown = rawURL[at+1:] // unparsed: everything before the host is dropped
+		}
+		return nil, nil, fmt.Errorf("«%s» — нужен адрес вида http://прокси:3128", shown)
+	}
+	var secrets []string
+	if pw, ok := u.User.Password(); ok && pw != "" {
+		secrets = append(secrets, pw)
+		if _, raw, _ := strings.Cut(u.User.String(), ":"); raw != pw {
+			secrets = append(secrets, raw) // as written, percent-encoded
+		}
 	}
 	var skip []string
 	for _, e := range strings.Split(noProxy, ",") {
@@ -39,7 +56,7 @@ func parseProxy(rawURL, noProxy string) (ProxyFunc, error) {
 			}
 		}
 		return u, nil
-	}, nil
+	}, secrets, nil
 }
 
 // Transport is a clone of the default transport, through p when it is set.

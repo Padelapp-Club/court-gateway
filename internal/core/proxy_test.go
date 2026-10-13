@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,5 +60,21 @@ func TestProxyFromConfigAndEnv(t *testing.T) {
 	}
 	if _, err := Load([]byte(strings.Replace(proxyInstallation, "%s", "socks5://proxy:1080", 1)), env(goodEnv)); err == nil || !strings.Contains(err.Error(), "hub.proxy_url") {
 		t.Fatalf("bad proxy: %v", err)
+	}
+}
+
+// A proxy URL with a login: the password is redacted from logs, and a
+// config error shows the URL without it, also when the URL does not parse.
+func TestProxyCredentialsNeverShown(t *testing.T) {
+	const pw = "Proxy-Pa55-x7"
+	s, err := Load([]byte(strings.Replace(proxyInstallation, "%s", "http://corp-user:"+pw+"@proxy.corp.test:3128", 1)), env(goodEnv))
+	if err != nil || !slices.Contains(s.Secrets, pw) {
+		t.Fatalf("proxy password not among the redacted secrets: %v", err)
+	}
+	for _, raw := range []string{"socks5://corp-user:" + pw + "@proxy:1080", "http://corp-user:" + pw + "%zz@proxy:3128", "http://corp-user:" + pw + "@"} {
+		_, err := Load([]byte(strings.Replace(proxyInstallation, "%s", raw, 1)), env(goodEnv))
+		if err == nil || !strings.Contains(err.Error(), "hub.proxy_url") || strings.Contains(err.Error(), pw) || strings.Contains(err.Error(), "corp-user") {
+			t.Fatalf("%s: error %v", raw, err)
+		}
 	}
 }

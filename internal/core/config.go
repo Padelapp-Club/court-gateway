@@ -313,10 +313,11 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		// a corporate proxy: gateway.yaml, else HTTPS_PROXY / NO_PROXY
 		// (also from .env, which a service reads and a shell export is not)
 		if raw := cmp.Or(strings.TrimSpace(fc.Hub.ProxyURL), getenv("HTTPS_PROXY"), getenv("https_proxy")); raw != "" {
-			p, err := parseProxy(raw, cmp.Or(fc.Hub.NoProxy, getenv("NO_PROXY"), getenv("no_proxy")))
+			p, secrets, err := parseProxy(raw, cmp.Or(fc.Hub.NoProxy, getenv("NO_PROXY"), getenv("no_proxy")))
 			if err != nil {
 				add("hub.proxy_url: %v", err)
 			}
+			s.Secrets = append(s.Secrets, secrets...)
 			h.Proxy, s.Driver.Proxy = p, p
 		}
 	}
