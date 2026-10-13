@@ -77,6 +77,10 @@ func (d *Driver) window(kind string, from, to, now time.Time) (dateFrom, dateTo 
 	return d.day(from).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
+// list reads one kind for the studio. Exercises may be narrowed to one
+// room; breaks never are: a break without a room closes the whole studio,
+// and a room filter on the CRM side may leave it out. Breaks are filtered
+// here (intervals), never upstream.
 func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, dateTo time.Time) ([]slot, error) {
 	q := url.Values{
 		"studioId":        {d.studio},
@@ -84,7 +88,7 @@ func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, d
 		"dateTo":          {dateTo.Format("2006-01-02")},
 		"includeCanceled": {"false"},
 	}
-	if room != "" {
+	if room != "" && kind != "breaks" {
 		q.Set("roomId", room)
 	}
 	status, data, err := d.c.do(ctx, http.MethodGet, "/"+kind, q, nil)

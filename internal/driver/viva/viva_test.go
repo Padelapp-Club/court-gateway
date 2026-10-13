@@ -720,23 +720,35 @@ func TestQuoteAcrossSkippedMidnight(t *testing.T) {
 }
 
 // A break without a room closes the studio: it occupies every court
-// asked about instead of failing the whole answer.
+// asked about, also when one court is asked (as every create does), so a
+// booking during it is refused. The break is seeded, not injected: the
+// stub's list filters by roomId like the CRM may, and the driver must not
+// ask for that filter on breaks.
 func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
-	d := futureDay()
+	d := futureMidnight()
 	f := newFixture(t, fixtureOpts{})
-	from, to := d.Add(10*time.Hour), d.Add(11*time.Hour)
-	f.stub.FailNext(http.MethodGet, "/breaks", http.StatusOK, `[{"id": "00000000-0000-4000-8000-0000000000b1", "timeFrom": "`+from.UTC().Format(time.RFC3339)+`", "timeTo": "`+to.UTC().Format(time.RFC3339)+`", "room": null}]`)
-	status, m, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(24*time.Hour)), contract.ReadKey, "")
-	if status != http.StatusOK {
-		t.Fatalf("status %d: %s", status, raw)
+	from, to := d.Add(12*time.Hour), d.Add(13*time.Hour)
+	f.stub.SeedBreak(map[string]any{"timeFrom": from.UTC().Format(time.RFC3339), "timeTo": to.UTC().Format(time.RFC3339), "room": nil, "canceled": false})
+	for _, path := range []string{occupancyPath(from, to), occupancyPath(from, to) + "&court=court-1"} {
+		status, m, raw := call(t, f, http.MethodGet, path, contract.ReadKey, "")
+		if status != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", path, status, raw)
+		}
+		courts := map[string]bool{}
+		for _, it := range m["intervals"].([]any) {
+			courts[it.(map[string]any)["court"].(string)] = true
+		}
+		if !courts["court-1"] || (!strings.Contains(path, "court=") && !courts["court-2"]) {
+			t.Fatalf("%s: a room-less break did not block every court asked: %s", path, raw)
+		}
 	}
-	courts := map[string]bool{}
-	for _, it := range m["intervals"].([]any) {
-		iv := it.(map[string]any)
-		courts[iv["court"].(string)] = true
+	if status, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, createBody(from, "game", "")); status != http.StatusConflict || m["code"] != "SLOT_UNAVAILABLE" {
+		t.Fatalf("booking during a studio-wide break: %d %s, want 409 SLOT_UNAVAILABLE", status, raw)
 	}
-	if !courts["court-1"] || !courts["court-2"] {
-		t.Fatalf("a room-less break did not block every court: %s", raw)
+	for _, c := range f.stub.Calls() {
+		if strings.HasPrefix(c, "GET /breaks?") && strings.Contains(c, "roomId") {
+			t.Fatalf("breaks listed with a room filter: %s", c)
+		}
 	}
 	// and an exercise without a room is still invalid
 	f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, `[{"id": "00000000-0000-4000-8000-0000000000e1", "timeFrom": "`+from.UTC().Format(time.RFC3339)+`", "timeTo": "`+to.UTC().Format(time.RFC3339)+`"}]`)
