@@ -3,8 +3,10 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +37,9 @@ type ClientConfig struct {
 	Handler http.Handler
 	// Version, Build and Platform are reported to the hub on every poll.
 	Version, Build, Platform string
-	Logger                   *slog.Logger
+	// Instance identifies this process to the hub (default: random).
+	Instance string
+	Logger   *slog.Logger
 	// OnHint is called when the hub says a newer release exists.
 	OnHint func(version string)
 	// OnConfigVersion is called with the hub's club configuration version
@@ -59,12 +63,17 @@ type Client struct {
 	okPolls  atomic.Int32
 	lastHint atomic.Value // string
 	authFail atomic.Bool
+	dup      atomic.Bool
 	mu       sync.Mutex
 	state    string // "connected" / "disconnected", for transition logs
 }
 
 // ErrUnauthorized means the hub rejected the gateway secret.
 var ErrUnauthorized = errors.New("the hub rejected the gateway secret")
+
+// ErrDuplicate: the hub serves another running copy of this gateway, one
+// with the same secret; this copy stays idle until that one is gone.
+var ErrDuplicate = errors.New("another copy of this gateway, with the same secret, is connected to the hub")
 
 // ErrRedirected: the hub answered with a redirect. No request to the hub
 // follows one (core.RefuseRedirects): hub.url must be the hub itself.
@@ -76,6 +85,8 @@ func answerError(status int, what string) error {
 	switch {
 	case status == http.StatusUnauthorized:
 		return ErrUnauthorized
+	case status == http.StatusConflict:
+		return ErrDuplicate
 	case core.IsRedirect(status):
 		return fmt.Errorf("HTTP %d to %s: %w", status, what, ErrRedirected)
 	}
@@ -146,6 +157,11 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Build == "" {
 		cfg.Build = BuildSelf
 	}
+	if cfg.Instance == "" {
+		var b [16]byte
+		_, _ = crand.Read(b[:])
+		cfg.Instance = hex.EncodeToString(b[:])
+	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -158,6 +174,10 @@ func (c *Client) Connected() bool { return c.okPolls.Load() > 0 }
 
 // Unauthorized reports whether the hub's last answer rejected the secret.
 func (c *Client) Unauthorized() bool { return c.authFail.Load() }
+
+// Duplicate reports whether the hub's last answer refused this copy
+// because another one with the same secret is connected.
+func (c *Client) Duplicate() bool { return c.dup.Load() }
 
 // Run keeps Polls pollers running until ctx is done.
 func (c *Client) Run(ctx context.Context) {
@@ -181,9 +201,13 @@ func (c *Client) note(ok bool, err error) {
 		c.log.Info("hub connected", "hub", c.cfg.HubURL)
 	case !ok && c.state != "disconnected" && !c.Connected():
 		c.state = "disconnected"
-		if errors.Is(err, ErrUnauthorized) {
+		switch {
+		case errors.Is(err, ErrUnauthorized):
 			c.log.Error("hub rejected the gateway secret; run setup again with a new join code", "hub", c.cfg.HubURL)
-		} else {
+		case errors.Is(err, ErrDuplicate):
+			c.log.Error("another copy of this gateway, with the same secret, is connected to the hub; this copy stays idle "+
+				"until that one stops — run only one", "hub", c.cfg.HubURL)
+		default:
 			c.log.Warn("hub unreachable, reconnecting", "hub", c.cfg.HubURL, "error", err)
 		}
 	}
@@ -212,6 +236,7 @@ func (c *Client) poller(ctx context.Context) {
 		rq, err := c.poll(ctx, func() {
 			failures = 0
 			c.authFail.Store(false)
+			c.dup.Store(false)
 			setHealthy(true, nil)
 		})
 		if err != nil {
@@ -220,7 +245,7 @@ func (c *Client) poller(ctx context.Context) {
 			}
 			setHealthy(false, err)
 			failures++
-			if !sleep(ctx, c.backoff(failures, errors.Is(err, ErrUnauthorized))) {
+			if !sleep(ctx, c.backoff(failures, errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrDuplicate))) {
 				return
 			}
 			continue
@@ -234,10 +259,11 @@ func (c *Client) poller(ctx context.Context) {
 }
 
 // backoff returns a full-jitter delay: uniform in [0, min(max, min*2^n)).
-// A rejected secret waits the maximum: retrying faster cannot help.
-func (c *Client) backoff(failures int, unauthorized bool) time.Duration {
+// A rejected secret or a refused duplicate waits the maximum: retrying
+// faster cannot help.
+func (c *Client) backoff(failures int, refused bool) time.Duration {
 	ceil := c.cfg.MaxBackoff
-	if !unauthorized {
+	if !refused {
 		ceil = c.cfg.MinBackoff
 		for i := 1; i < failures && ceil < c.cfg.MaxBackoff; i++ {
 			ceil *= 2
@@ -274,6 +300,7 @@ func (c *Client) newRequest(ctx context.Context, method, p string, body []byte) 
 	req.Header.Set(HeaderBuild, c.cfg.Build)
 	req.Header.Set(HeaderPlatform, c.cfg.Platform)
 	req.Header.Set(HeaderPolls, strconv.Itoa(c.cfg.Polls))
+	req.Header.Set(HeaderInstance, c.cfg.Instance)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -311,6 +338,9 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 	case http.StatusUnauthorized:
 		c.authFail.Store(true)
 		return nil, ErrUnauthorized
+	case http.StatusConflict:
+		c.dup.Store(true)
+		return nil, ErrDuplicate
 	default:
 		return nil, answerError(resp.StatusCode, "a poll")
 	}
@@ -367,6 +397,25 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 		return RemoteConfig{}, errors.New("hub sent a malformed config")
 	}
 	return out, nil
+}
+
+// Release tells the hub that this copy has stopped, so the copy started
+// after it (a restart, an update) is served at once rather than refused
+// as a duplicate. Call it after Run has returned.
+func (c *Client) Release(ctx context.Context) error {
+	req, err := c.newRequest(ctx, http.MethodPost, PathRelease, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return cleanError(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return answerError(resp.StatusCode, "a release")
+	}
+	return nil
 }
 
 func (c *Client) reply(ctx context.Context, r Response) {

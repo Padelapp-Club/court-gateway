@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -129,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+tunnel.PathWhoami, s.gateway(s.handleWhoami))
 	mux.HandleFunc("POST "+tunnel.PathHeartbeat, s.gateway(s.handleHeartbeat))
 	mux.HandleFunc("GET "+tunnel.PathConfig, s.gateway(s.handleConfig))
+	mux.HandleFunc("POST "+tunnel.PathRelease, s.gateway(s.handleRelease))
 	mux.HandleFunc("GET /hub/status", s.operator(s.handleStatus))
 	mux.HandleFunc("POST /hub/installations", s.operator(s.handleCreateInstallation))
 	mux.HandleFunc("GET /hub/installations/{inst}", s.operator(s.handleGetInstallation))
@@ -228,10 +230,37 @@ func meta(r *http.Request) ConnMeta {
 	}
 }
 
+// instance is the gateway process that sent r ("-" when it does not say).
+func instance(r *http.Request) string {
+	v := strings.TrimSpace(r.Header.Get(tunnel.HeaderInstance))
+	if len(v) > 64 {
+		v = v[:64]
+	}
+	return cmp.Or(v, "-")
+}
+
+// admitted refuses a second running copy of a gateway (Monitor.Admit).
+func (s *Server) admitted(w http.ResponseWriter, r *http.Request, g GatewayRecord) bool {
+	if s.monitor.Admit(g.Installation, g.gen, instance(r)) {
+		return true
+	}
+	w.Header().Set("Retry-After", "60")
+	core.WriteError(w, r, http.StatusConflict, "DUPLICATE_GATEWAY", "another copy of this gateway, with the same secret, is connected; only one may run")
+	return false
+}
+
+func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
+	s.monitor.Release(g.Installation, g.gen, instance(r))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handlePoll answers 200 at once and flushes the headers, so the gateway
 // knows it is connected without waiting; the body follows when a request
 // arrives (a JSON tunnel.Request) or the wait ends (an empty body).
 func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
+	if !s.admitted(w, r, g) {
+		return
+	}
 	m := meta(r)
 	if s.cfg.LatestVersion != "" && m.Build == tunnel.BuildRelease && version.Newer(s.cfg.LatestVersion, m.Version) {
 		w.Header().Set(tunnel.HeaderUpdateHint, s.cfg.LatestVersion)
@@ -275,6 +304,9 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 	var hb tunnel.Heartbeat
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, tunnel.MaxHeartbeatBody)).Decode(&hb); err != nil {
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed heartbeat")
+		return
+	}
+	if !s.admitted(w, r, g) {
 		return
 	}
 	s.monitor.Heartbeat(g.Installation, hb)
@@ -445,6 +477,10 @@ type GatewayStatus struct {
 	ConfigError          string            `json:"config_error,omitempty"`
 	ClubErrors           map[string]string `json:"club_errors,omitempty"`
 	ClubsServed          []string          `json:"clubs_served"`
+	// Duplicate: a second copy of the gateway, with the same secret, was
+	// refused within offline_after (last at DuplicateSeenAt).
+	Duplicate       bool   `json:"duplicate"`
+	DuplicateSeenAt string `json:"duplicate_seen_at,omitempty"`
 }
 
 func ts(t time.Time) string {
@@ -478,6 +514,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
 		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
 		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.Clubs,
+		Duplicate: h.Duplicate, DuplicateSeenAt: ts(h.DuplicateAt),
 	}
 	if row.ClubsServed == nil {
 		row.ClubsServed = []string{}

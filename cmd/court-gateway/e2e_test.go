@@ -565,3 +565,27 @@ func TestHubJoinCodeCommand(t *testing.T) {
 		t.Fatalf("bad club id accepted: %d", rc)
 	}
 }
+
+// A stopped service tells the hub, so the copy started after it — a
+// restart, an update — is served at once instead of being refused as a
+// second copy until offline_after passes.
+func TestRestartedServiceIsServedAtOnce(t *testing.T) {
+	s := newStack(t)
+	var out, errb bytes.Buffer
+	if rc := run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	broker := s.hub.Server().Broker()
+	for i := range 2 {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan int, 1)
+		go func() { done <- serve(ctx, cfg, "", &contract.LogBuffer{}, env{}.get) }()
+		testkit.WaitFor(t, fmt.Sprintf("start %d connected", i+1), 10*time.Second, func() bool { return broker.Connected("club-one") })
+		cancel()
+		if rc := <-done; rc != 0 {
+			t.Fatalf("serve exit %d", rc)
+		}
+		testkit.WaitFor(t, "disconnected", 10*time.Second, func() bool { return !broker.Connected("club-one") })
+	}
+}

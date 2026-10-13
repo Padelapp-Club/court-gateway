@@ -60,6 +60,13 @@ type installationHealth struct {
 	applied   tunnel.AppliedConfig // as reported, cleaned
 
 	state string // as of the last Tick
+
+	// the gateway process that serves registration gen (see Admit)
+	gen       uint64
+	instance  string    // "" when none is bound
+	seen      time.Time // hub clock: its last poll or heartbeat
+	released  string    // an instance that said it stopped
+	refusedAt time.Time // hub clock: the last refusal of another copy
 }
 
 // Health is the monitor's view of one installation, for /hub/status.
@@ -74,6 +81,10 @@ type Health struct {
 	Ready        bool
 	Reason       string
 	OfflineSince time.Time
+	// DuplicateAt is when a second copy of the gateway, with the same
+	// secret, was last refused; Duplicate is true while that is recent.
+	Duplicate   bool
+	DuplicateAt time.Time
 	// the gateway's report on the club config it runs
 	tunnel.AppliedConfig
 }
@@ -191,6 +202,54 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 	}
 }
 
+// Admit decides whether gateway process instance may serve registration
+// gen of installation. The first instance is bound to it. Another is
+// refused while the bound one has polled or sent a heartbeat within
+// offlineAfter, and takes over after that. An instance that released
+// itself (it stopped) is not bound again.
+func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h := m.health(installation)
+	if h.gen != gen {
+		h.gen, h.instance, h.released, h.refusedAt = gen, "", "", time.Time{}
+	}
+	switch {
+	case instance == h.instance:
+	case instance == h.released:
+		return false
+	case h.instance == "" || now.Sub(h.seen) > m.offlineAfter:
+		if h.instance != "" {
+			m.log.Warn("another copy of a gateway took over from a silent one", "installation", installation)
+		}
+		h.instance = instance
+	default:
+		if !m.duplicate(h, now) {
+			m.log.Warn("second copy of a gateway refused: two copies run with one secret", "installation", installation)
+		}
+		h.refusedAt = now
+		return false
+	}
+	h.seen = now
+	return true
+}
+
+// Release unbinds instance, which says it has stopped, so the copy
+// started after it is admitted at once.
+func (m *Monitor) Release(installation string, gen uint64, instance string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if h := m.health(installation); h.gen == gen && h.instance == instance {
+		h.instance, h.released = "", instance
+	}
+}
+
+// duplicate reports whether a second copy was refused within offlineAfter.
+func (m *Monitor) duplicate(h *installationHealth, now time.Time) bool {
+	return !h.refusedAt.IsZero() && now.Sub(h.refusedAt) <= m.offlineAfter
+}
+
 // cleanConfigError bounds a gateway's config refusal text; it is shown to
 // the operator only (API), never written to status files.
 func cleanConfigError(s string, max int) string {
@@ -267,7 +326,7 @@ func (m *Monitor) Health(installation string) Health {
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
-		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt,
 		AppliedConfig: tunnel.AppliedConfig{ConfigVersion: h.applied.ConfigVersion, ConfigError: h.applied.ConfigError,
 			ClubErrors: maps.Clone(h.applied.ClubErrors), Clubs: append([]string(nil), h.applied.Clubs...)},
 	}
@@ -282,6 +341,7 @@ type installationView struct {
 	GatewayRecord
 	installationHealth
 	connected bool
+	duplicate bool
 }
 
 // Tick evaluates every registered gateway, writes the status files and
@@ -317,7 +377,7 @@ func (m *Monitor) Tick(context.Context) {
 				changes = append(changes, change{g.Installation, ev})
 			}
 		}
-		views = append(views, installationView{GatewayRecord: g, installationHealth: *h, connected: connected[g.Installation]})
+		views = append(views, installationView{GatewayRecord: g, installationHealth: *h, connected: connected[g.Installation], duplicate: m.duplicate(h, now)})
 	}
 	m.mu.Unlock()
 

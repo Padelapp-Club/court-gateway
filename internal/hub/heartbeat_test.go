@@ -110,12 +110,17 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 	}
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", factory, nil)
 	w.secret = w.hub.Register("demo-club", "Демо-клуб")
-	w.gw = testkit.StartGateway(t, testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), w.secret, b.Clubs.TunnelHandler(), nil))
+	cfg := testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), w.secret, b.Clubs.TunnelHandler(), nil)
+	cfg.Instance = beatInstance
+	w.gw = testkit.StartGateway(t, cfg)
 	testkit.WaitFor(t, "connected", 10*time.Second, func() bool { return w.hub.Server().Broker().Connected("demo-club") })
 	w.check = &tunnel.SelfCheck{Ready: w.crm.Ready, Reason: core.ReadyReason, Interval: time.Minute,
 		Now: w.clock.Now, Version: "1.0.0", Build: tunnel.BuildRelease}
 	return w
 }
+
+// beatInstance is the instance id of the beatWorld's gateway.
+const beatInstance = "beat-world-gateway"
 
 // beat sends one heartbeat over HTTP, as a gateway does.
 func (w *beatWorld) beat(t *testing.T, ready bool, reason string) {
@@ -300,6 +305,7 @@ func TestHeartbeatEndpoint(t *testing.T) {
 		if secret != "" {
 			req.Header.Set("Authorization", "Bearer "+secret)
 		}
+		req.Header.Set(tunnel.HeaderInstance, beatInstance)
 		resp, err := (&http.Client{Transport: w.hub.Transport()}).Do(req)
 		if err != nil {
 			t.Fatal(err)

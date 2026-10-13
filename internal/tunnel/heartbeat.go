@@ -119,6 +119,9 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb Heartbeat) error {
 	case http.StatusUnauthorized:
 		c.authFail.Store(true)
 		return ErrUnauthorized
+	case http.StatusConflict:
+		c.dup.Store(true)
+		return ErrDuplicate
 	default:
 		return answerError(resp.StatusCode, "a heartbeat")
 	}

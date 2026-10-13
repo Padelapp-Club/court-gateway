@@ -121,6 +121,7 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		{"all well", true, ok, true, ""},
 		{"crm down wins", false, hubState{authFailed: true}, false, "CRM_UNREACHABLE"},
 		{"secret rejected", true, hubState{authFailed: true}, false, "HUB_AUTH_FAILED"},
+		{"another copy serves", true, hubState{duplicate: true}, false, "DUPLICATE_GATEWAY"},
 		{"hub gone briefly", true, hubState{silentFor: time.Minute}, true, ""},
 		{"hub gone for long", true, hubState{silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
 		{"config refused", true, hubState{connected: true, configRefused: true}, false, "CONFIG_REFUSED"},

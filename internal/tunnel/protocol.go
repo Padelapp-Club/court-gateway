@@ -27,6 +27,9 @@ const (
 	PathHeartbeat = "/tunnel/heartbeat"
 	// PathConfig returns the installation's club configuration.
 	PathConfig = "/tunnel/config"
+	// PathRelease: a gateway that stops tells the hub, so that the copy
+	// started after it is not refused as a duplicate.
+	PathRelease = "/tunnel/release"
 )
 
 // PathDiscover is served by the GATEWAY (through the tunnel): the hub's
@@ -39,7 +42,11 @@ const (
 	HeaderBuild    = "X-Gateway-Build" // BuildRelease or BuildSelf
 	HeaderPlatform = "X-Gateway-Platform"
 	// HeaderPolls is how many polls the gateway keeps open.
-	HeaderPolls      = "X-Gateway-Polls"
+	HeaderPolls = "X-Gateway-Polls"
+	// HeaderInstance is a random id of the running gateway process. The
+	// hub serves one instance per registration and refuses another copy
+	// that runs with the same secret (409 DUPLICATE_GATEWAY).
+	HeaderInstance   = "X-Gateway-Instance"
 	HeaderUpdateHint = "X-Update-Hint"
 	// HeaderConfigVersion is set by the hub on poll and heartbeat answers:
 	// the current version of the installation's club configuration. A

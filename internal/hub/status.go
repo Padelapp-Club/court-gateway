@@ -123,6 +123,7 @@ func buildStatus(now time.Time, o statusOptions, views []installationView) ([]by
 		isOnline := st != StateOffline
 		check(id+"_online", isOnline, onlineDetail(v, now, o.offlineAfter))
 		check(id+"_ready", st != StateNotReady, readyDetail(v, o.readyFailures))
+		check(id+"_single", !v.duplicate, singleDetail(v))
 		if isOnline {
 			online++
 		}
@@ -181,6 +182,13 @@ func readyDetail(v installationView, readyFailures int) string {
 	default:
 		return "ready: CRM login and occupancy check passed"
 	}
+}
+
+func singleDetail(v installationView) string {
+	if !v.duplicate {
+		return "one copy of the gateway"
+	}
+	return fmt.Sprintf("«%s»: a second copy with the same secret was refused at %s; only one copy may run", v.Name, v.refusedAt.UTC().Format(time.RFC3339))
 }
 
 func readyWord(h installationHealth) string {

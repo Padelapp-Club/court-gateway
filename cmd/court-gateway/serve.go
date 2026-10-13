@@ -139,7 +139,11 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	}
 	syncer.SetFetch(client.FetchConfig)
 	go syncer.Run(ctx)
-	go client.Run(ctx)
+	tunnelDone := make(chan struct{})
+	go func() {
+		defer close(tunnelDone)
+		client.Run(ctx)
+	}()
 
 	// every statusInterval a readiness round (syncer.Ready) feeds the
 	// health status file (read by `healthcheck`) and a heartbeat to the
@@ -155,7 +159,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		var crm tunnel.Heartbeat
 		lastSeen := time.Now() // the hub, or the start
 		for {
-			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized()}
+			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate()}
 			if hs.connected {
 				lastSeen = time.Now()
 			}
@@ -236,6 +240,14 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		log.Info("restarting to run the version that is current now")
 	}
 	cancel()
+	// the copy started after this one (a restart, an update, the service
+	// manager) must not be refused by the hub as a duplicate
+	<-tunnelDone
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := client.Release(rctx); err != nil {
+		log.Debug("hub not told that this copy stopped", "error", err)
+	}
+	rcancel()
 	if restarting {
 		// returns only where a process cannot replace itself (Windows) or
 		// on failure; then the restart code makes the installed binary or
@@ -282,6 +294,7 @@ const hubOfflineAfter = 3 * time.Minute
 type hubState struct {
 	connected     bool
 	authFailed    bool // the hub rejected the gateway secret
+	duplicate     bool // the hub serves another copy with the same secret
 	silentFor     time.Duration
 	configRefused bool // a club of the hub's config does not load
 }
@@ -302,6 +315,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, cmp.Or(crmReason, "STARTING")
 	case h.authFailed:
 		return false, "HUB_AUTH_FAILED"
+	case h.duplicate:
+		return false, "DUPLICATE_GATEWAY"
 	case !h.connected && h.silentFor > hubOfflineAfter:
 		return false, "HUB_UNREACHABLE"
 	case h.configRefused:
