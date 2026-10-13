@@ -263,8 +263,11 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		s.driverError(w, r, "quote", err)
 		return
 	}
-	total, err := quote(table, s.cfg.Location, s.cfg.SlotMinutes, start, end)
+	total, err := quote(r.Context(), table, s.cfg.Location, s.cfg.SlotMinutes, start, end)
 	switch {
+	case err != nil && r.Context().Err() != nil:
+		s.driverError(w, r, "quote", err)
+		return
 	case errors.Is(err, errNotAligned):
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end must be on the club's slot grid")
 		return

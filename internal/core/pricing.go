@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"time"
@@ -72,20 +73,20 @@ func segments(t driver.PriceTable, day, from, to int) []pricePeriod {
 // hour (clocks go back) is charged twice and a skipped one (clocks go
 // forward) not at all. start and end must be on the slot grid (the API's
 // rule for bookings); the price itself does not depend on the grid.
-func quote(t driver.PriceTable, loc *time.Location, slot int, start, end time.Time) (int64, error) {
+func quote(ctx context.Context, t driver.PriceTable, loc *time.Location, slot int, start, end time.Time) (int64, error) {
 	if !aligned(start, loc, slot) || !aligned(end, loc, slot) || !end.After(start) {
 		return 0, errNotAligned
 	}
 	var kopeckMinutes int64
 	for c := start; c.Before(end); {
-		lc := c.In(loc)
-		next := time.Date(lc.Year(), lc.Month(), lc.Day()+1, 0, 0, 0, 0, loc)
-		if _, zoneEnd := lc.ZoneBounds(); !zoneEnd.IsZero() && zoneEnd.Before(next) {
-			next = zoneEnd
+		if err := ctx.Err(); err != nil {
+			return 0, err
 		}
+		next := nextBoundary(c, loc)
 		if end.Before(next) {
 			next = end
 		}
+		lc := c.In(loc)
 		from := lc.Hour()*60 + lc.Minute()
 		for _, p := range segments(t, isoWeekday(lc), from, from+int(next.Sub(c)/time.Minute)) {
 			if !p.ok {
@@ -100,6 +101,22 @@ func quote(t driver.PriceTable, loc *time.Location, slot int, start, end time.Ti
 	}
 	// kopeck-minutes -> rubles: divide by 60 (per hour) and by 100.
 	return (kopeckMinutes + 3000) / 6000, nil
+}
+
+// nextBoundary is the first instant strictly after c at which the local
+// date or the UTC offset changes. Midnight is computed in c's own offset,
+// where clock arithmetic is exact, and the offset's end is taken if it
+// comes first. So a midnight the clocks skip (they jump from 23:59 to
+// 01:00) or repeat (they go back from 00:00 to 23:00) still yields a
+// boundary after c, and the caller always makes progress.
+func nextBoundary(c time.Time, loc *time.Location) time.Time {
+	lc := c.In(loc)
+	name, offset := lc.Zone()
+	next := time.Date(lc.Year(), lc.Month(), lc.Day()+1, 0, 0, 0, 0, time.FixedZone(name, offset))
+	if _, zoneEnd := lc.ZoneBounds(); !zoneEnd.IsZero() && zoneEnd.Before(next) {
+		next = zoneEnd
+	}
+	return next
 }
 
 // aligned reports whether t falls on the slot grid of its local day.

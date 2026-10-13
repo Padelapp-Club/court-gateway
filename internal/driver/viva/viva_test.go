@@ -681,3 +681,39 @@ func TestCancelRefusedOnceTheBookingStarted(t *testing.T) {
 		t.Fatalf("the started booking was cancelled: %v", br)
 	}
 }
+
+// A quote across a midnight the clocks skip, end to end through the Viva
+// driver and the API, finishes (it used to loop forever) and charges the
+// one hour that passes.
+func TestQuoteAcrossSkippedMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const studio = "00000000-0000-4000-8000-000000000001"
+	const room = "00000000-0000-4000-8000-000000000002"
+	const pricing = "00000000-0000-4000-8000-000000000003"
+	stub := vivastub.New("synthetic-user", "synthetic-password", studio)
+	stub.Zone = loc
+	stub.AddRoom(room, "Court")
+	stub.SetPricing(pricing, `{"basePrices":[{"condition":{"type":"NONE"},"valueFrom":2000}]}`)
+	hs := httptest.NewServer(stub)
+	defer hs.Close()
+	d, err := viva.NewDriver(driver.Config{CRM: driver.Params{"username": "synthetic-user", "studio": studio, "auth_url": hs.URL + "/token", "api_url": hs.URL + "/api/v1"}, Password: "synthetic-password", Timezone: loc, Courts: []driver.CourtConfig{{ID: "court-1", Params: driver.Params{"viva_room": room, "price_list": pricing}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &core.Settings{ClubID: "c", Location: loc, SlotMinutes: 30, Courts: []core.Court{{ID: "court-1", Name: "Court"}}}
+	api := core.NewServer(cfg, d, nil).APIHandler()
+	req := httptest.NewRequest("GET", "/v1/clubs/c/quote?court=court-1&start=2030-09-07T23:30:00-04:00&end=2030-09-08T01:30:00-03:00", nil)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { rec := httptest.NewRecorder(); api.ServeHTTP(rec, req); done <- rec }()
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":2000`) {
+			t.Fatalf("status %d, body %s; want 200 with total 2000", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("quote did not finish")
+	}
+}
