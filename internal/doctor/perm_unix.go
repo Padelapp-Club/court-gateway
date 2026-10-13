@@ -9,7 +9,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
-func secretsFileCheckOS(cfgPath string) Check {
+func secretsFileCheck(cfgPath string) Check {
 	p := filepath.Join(filepath.Dir(cfgPath), core.EnvFileName)
 	info, err := os.Stat(p)
 	if err != nil {

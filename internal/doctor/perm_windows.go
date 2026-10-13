@@ -9,7 +9,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
-func secretsFileCheckOS(cfgPath string) Check {
+func secretsFileCheck(cfgPath string) Check {
 	p := filepath.Join(filepath.Dir(cfgPath), core.EnvFileName)
 	if _, err := os.Stat(p); err != nil {
 		return Check{Code: CodeSecretFile, Status: Skip, Message: "файла .env нет: секреты берутся из окружения"}

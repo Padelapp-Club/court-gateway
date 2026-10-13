@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -150,6 +151,8 @@ func Run(ctx context.Context, o Options) Report {
 	switch {
 	case !loginOK:
 		add(Check{Code: CodeOccupancy, Status: Skip, Message: "нет входа в CRM"})
+	case len(remoteClubs) == 0 && len(r.Clubs) > 0:
+		add(Check{Code: CodeOccupancy, Status: Skip, Message: "нет клуба, конфигурация которого подходит CRM"})
 	case len(remoteClubs) == 0:
 		add(Check{Code: CodeOccupancy, Status: Skip, Message: "клубов пока нет: оператор ещё не подключил клубы на хабе"})
 	default:
@@ -264,31 +267,57 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов с хаба не получена"}), nil
 	}
 	servers, refused := remote.Build(s, o.Factories, o.DriverHook, rc)
-	var problems []string
+	var problems, unchecked []string
 	for _, r := range refused {
 		problems = append(problems, r.Problems...)
 	}
+	// the CRM check the service makes before serving a club, each bounded
+	ectx := driver.WithEvaluation(ctx)
 	var clubs []clubDriver
-	ids := make([]string, len(servers))
-	for i, srv := range servers {
+	ids := make([]string, 0, len(servers))
+	for _, srv := range servers {
 		cd := clubDriver{id: srv.Settings().ClubID, drv: srv.Driver()}
 		for _, ct := range srv.Settings().Courts {
 			cd.courts = append(cd.courts, ct.ID)
 		}
-		clubs, ids[i] = append(clubs, cd), cd.id
+		ids = append(ids, cd.id)
+		if cc, ok := cd.drv.(driver.ConfigChecker); ok {
+			err := withTimeout(ectx, o.Timeout, cc.CheckConfig)
+			var me *driver.MisconfigError
+			switch {
+			case errors.As(err, &me):
+				for _, p := range me.Problems {
+					problems = append(problems, "клуб «"+cd.id+"»: "+p)
+				}
+				continue
+			case err != nil:
+				unchecked = append(unchecked, cd.id+" ("+core.ReadyReason(err)+")")
+			}
+		}
+		clubs = append(clubs, cd)
 	}
+	var unserved []string
+	for _, id := range who.Clubs {
+		if !slices.Contains(who.ClubsServed, id) {
+			unserved = append(unserved, id)
+		}
+	}
+	hint := "сообщите оператору хаба: остальные клубы работают, у этих служба оставляет прежнюю конфигурацию, если она была"
 	switch {
 	case len(problems) > 0:
-		out = append(out, Check{Code: CodeHubConfig, Status: Fail, Message: fmt.Sprintf("конфигурация клубов на хабе (версия %d) не подходит этому шлюзу: %s", rc.Version, strings.Join(problems, "; ")),
-			Hint: "сообщите оператору хаба: остальные клубы работают, у этих служба оставляет прежнюю конфигурацию, если она была"})
+		out = append(out, Check{Code: CodeHubConfig, Status: Fail, Message: fmt.Sprintf("конфигурация клубов на хабе (версия %d) не подходит этому шлюзу: %s", rc.Version, strings.Join(problems, "; ")), Hint: hint})
+	case who.Connected && who.ConfigError != "":
+		out = append(out, Check{Code: CodeHubConfig, Status: Fail, Message: fmt.Sprintf("служба (версия конфигурации %d) не приняла клубы: %s", who.AppliedConfigVersion, who.ConfigError), Hint: hint})
 	case len(rc.Clubs) == 0:
 		out = append(out, Check{Code: CodeHubConfig, Status: OK, Message: "на хабе пока нет клубов этой установки: оператор подключит их сам, на этом компьютере ничего делать не нужно"})
 	case who.Connected && who.AppliedConfigVersion != rc.Version:
-		msg := fmt.Sprintf("конфигурация клубов: версия %d на хабе, служба работает на версии %d", rc.Version, who.AppliedConfigVersion)
-		if who.ConfigError != "" {
-			msg += "; служба отклонила новую: " + who.ConfigError
-		}
-		out = append(out, Check{Code: CodeHubConfig, Status: Warn, Message: msg, Hint: "служба применяет новую конфигурацию в течение минуты; если не применила — сообщите оператору"})
+		out = append(out, Check{Code: CodeHubConfig, Status: Warn, Message: fmt.Sprintf("конфигурация клубов: версия %d на хабе, служба работает на версии %d", rc.Version, who.AppliedConfigVersion),
+			Hint: "служба применяет новую конфигурацию в течение минуты; если не применила — сообщите оператору"})
+	case who.Connected && len(unserved) > 0:
+		out = append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "служба не обслуживает клубы: " + strings.Join(unserved, ", "), Hint: hint})
+	case len(unchecked) > 0:
+		out = append(out, Check{Code: CodeHubConfig, Status: Warn, Message: "конфигурацию клубов не удалось сверить с CRM: " + strings.Join(unchecked, ", "),
+			Hint: "повторите doctor через минуту; служба сверяет клубы сама"})
 	default:
 		out = append(out, Check{Code: CodeHubConfig, Status: OK, Message: fmt.Sprintf("конфигурация клубов: версия %d, клубы: %s", rc.Version, strings.Join(ids, ", "))})
 	}
@@ -332,8 +361,4 @@ func shortErr(err error) string {
 		return "подпись манифеста не сошлась"
 	}
 	return "сервер выпусков недоступен"
-}
-
-func secretsFileCheck(cfgPath string) Check {
-	return secretsFileCheckOS(cfgPath)
 }
