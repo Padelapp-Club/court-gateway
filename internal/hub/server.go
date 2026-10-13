@@ -373,9 +373,10 @@ type GatewayStatus struct {
 	LastCheck     string `json:"last_check,omitempty"`
 	RegisteredAt  string `json:"registered_at"`
 	// The club config the gateway runs (from its heartbeats).
-	AppliedConfigVersion int64    `json:"applied_config_version"`
-	ConfigError          string   `json:"config_error,omitempty"`
-	ClubsServed          []string `json:"clubs_served"`
+	AppliedConfigVersion int64             `json:"applied_config_version"`
+	ConfigError          string            `json:"config_error,omitempty"`
+	ClubErrors           map[string]string `json:"club_errors,omitempty"`
+	ClubsServed          []string          `json:"clubs_served"`
 }
 
 func ts(t time.Time) string {
@@ -408,7 +409,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
 		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
-		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed,
+		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.ClubsServed,
 	}
 	if row.ClubsServed == nil {
 		row.ClubsServed = []string{}

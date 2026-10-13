@@ -53,7 +53,7 @@ func TestClubSpecJSONAndWithClub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := base.WithClub(spec)
+	s, err := base.WithClub(spec, []string{"studio"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,15 +73,38 @@ func TestClubSpecJSONAndWithClub(t *testing.T) {
 	}
 }
 
+// A club from the hub may set only club-level crm keys. The login and the
+// CRM endpoints belong to the installation: a hub-chosen auth_url would
+// receive the CRM password.
+func TestClubFromTheHubCannotSetInstallationKeys(t *testing.T) {
+	base, err := Load([]byte(hubInstallation), env(hubEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"auth_url", "api_url", "username", "type", "anything"} {
+		spec := ClubSpec{ID: "club-a", Name: "A", Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "07:00-23:00"},
+			CRM: map[string]any{"studio": "s-1", key: "https://crm.example.test/token"}, Courts: []CourtSpec{{ID: "court-1", Name: "C"}}}
+		if _, err := base.WithClub(spec, []string{"studio"}); err == nil || !strings.Contains(err.Error(), "crm."+key) {
+			t.Errorf("club with crm.%s accepted: %v", key, err)
+		}
+		if err := ValidateClubSpec(spec, []string{"studio"}); err == nil || !strings.Contains(err.Error(), "crm."+key) {
+			t.Errorf("hub accepted a club with crm.%s: %v", key, err)
+		}
+	}
+	if base.Driver.CRM["auth_url"] != nil {
+		t.Fatal("the installation settings changed")
+	}
+}
+
 func TestValidateClubSpecNamesJSONKeys(t *testing.T) {
 	err := ValidateClubSpec(ClubSpec{ID: "Bad Id", Timezone: "Mars/Base", SlotMinutes: 7, Hours: map[string]string{"mon": "9-10"},
-		Courts: []CourtSpec{{ID: "c1"}}, CRM: map[string]any{"type": "viva"}})
+		Courts: []CourtSpec{{ID: "c1"}}, CRM: map[string]any{"type": "viva"}}, []string{"studio"})
 	var ce *ConfigError
 	if !errors.As(err, &ce) {
 		t.Fatalf("err = %v", err)
 	}
 	msg := err.Error()
-	for _, want := range []string{"id: «Bad Id»", "name: параметр обязателен", "timezone: неизвестный часовой пояс", "slot_minutes: 7", "hours.mon: «9-10»", "courts[0].name", "crm.type: тип CRM задаёт установка"} {
+	for _, want := range []string{"id: «Bad Id»", "name: параметр обязателен", "timezone: неизвестный часовой пояс", "slot_minutes: 7", "hours.mon: «9-10»", "courts[0].name", "crm.type: задаётся только в gateway.yaml"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("missing %q in:\n%s", want, msg)
 		}
@@ -122,7 +145,7 @@ func TestDraftClub(t *testing.T) {
 	}
 	// with an id the draft is a valid club
 	spec.ID = "club-x"
-	if err := ValidateClubSpec(spec); err != nil {
+	if err := ValidateClubSpec(spec, []string{"studio"}); err != nil {
 		t.Fatalf("draft does not validate: %v", err)
 	}
 }

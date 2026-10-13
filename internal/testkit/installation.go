@@ -189,7 +189,7 @@ func (in *Installation) Beat(t *testing.T, ready bool) {
 	t.Helper()
 	cs := in.Syncer.State()
 	hb := tunnel.Heartbeat{Version: "1.0.0", Build: tunnel.BuildRelease, Ready: ready, CheckedAt: time.Now(),
-		ConfigVersion: cs.Version, ConfigError: cs.Error, Clubs: cs.Clubs}
+		ConfigVersion: cs.Version, ConfigError: cs.Error, ClubErrors: cs.ClubErrors, Clubs: cs.Clubs}
 	if !ready {
 		hb.Reason = "CRM_UNREACHABLE"
 	}

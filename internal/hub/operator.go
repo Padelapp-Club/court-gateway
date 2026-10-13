@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -193,7 +194,7 @@ func (s *Server) handlePutClub(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, r, ErrInvalidID)
 		return
 	}
-	if err := core.ValidateClubSpec(spec); err != nil {
+	if err := core.ValidateClubSpec(spec, drivers.AllClubCRMKeys()); err != nil {
 		var ce *core.ConfigError
 		problems := []string{err.Error()}
 		if errors.As(err, &ce) {

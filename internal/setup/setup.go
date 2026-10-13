@@ -18,8 +18,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
-	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
-	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -111,9 +110,6 @@ func (in Input) crmType() string {
 	return in.CRMType
 }
 
-// DefaultAccounts are the CRM accounts setup can check.
-var DefaultAccounts = map[string]driver.AccountFactory{"viva": viva.NewAccount, "demo": demo.NewAccount}
-
 // Run performs setup. The returned Result is always filled; err is a
 // *Problem when setup failed.
 func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
@@ -126,7 +122,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		deps.Now = time.Now
 	}
 	if deps.Accounts == nil {
-		deps.Accounts = DefaultAccounts
+		deps.Accounts = drivers.Accounts
 	}
 	if m := in.Missing(); len(m) > 0 {
 		return fail(problem("MISSING_INPUT", "не хватает: %s", strings.Join(m, ", ")))

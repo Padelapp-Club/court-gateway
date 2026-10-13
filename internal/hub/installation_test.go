@@ -112,37 +112,56 @@ func TestInstallationServesClubsFromHub(t *testing.T) {
 	}
 }
 
-// A config the gateway's driver refuses is not applied: the previous one
-// keeps serving, and the reason reaches the operator.
-func TestInvalidRemoteConfigKeepsPrevious(t *testing.T) {
+// A club whose config the gateway's driver refuses is refused on its own:
+// the other clubs are served, a refused new club answers 503 (not 404), a
+// refused change keeps the club's previous config, and the reason reaches
+// the operator per club.
+func TestRefusedClubDoesNotStopTheOthers(t *testing.T) {
 	h := startOperatorHub(t, hub.Options{})
 	in := demoInstallation(t, h, "net-2", demoClub("club-a", "demo-north", "Корт 1"))
-	in.Beat(t, true)
 
 	// valid for the hub (CRM-agnostic checks), invalid for the demo driver
-	bad := demoClub("club-b", "no-such-studio", "Корт 1")
-	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-2/clubs/club-b", bad)
-	testkit.WaitFor(t, "refusal recorded", 10*time.Second, func() bool { return in.Syncer.State().Error != "" })
+	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-2/clubs/club-b", demoClub("club-b", "no-such-studio", "Корт 1"))
+	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-2/clubs/club-c", demoClub("club-c", "demo-south", "Корт 1"))
+	in.WaitServing(t, "club-a", "club-c")
 	st := in.Syncer.State()
-	if st.Version != 1 || !strings.Contains(st.Error, "club-b") || !strings.Contains(st.Error, "crm.studio") {
+	if st.Version != 3 || !strings.Contains(st.ClubErrors["club-b"], "crm.studio") || len(st.ClubErrors) != 1 {
 		t.Fatalf("state: %+v", st)
 	}
-	if ids := strings.Join(in.Clubs.IDs(), ","); ids != "club-a" {
-		t.Fatalf("served after a refused config: %s", ids)
+	if r := call(t, h, http.MethodGet, "/v1/clubs/club-b/courts", contract.ReadKey, ""); r.status != http.StatusServiceUnavailable || !strings.Contains(string(r.body), "CLUB_UNAVAILABLE") {
+		t.Fatalf("refused club: %d %s", r.status, r.body)
 	}
-	if r := call(t, h, http.MethodGet, "/v1/clubs/club-a/courts", contract.ReadKey, ""); r.status != http.StatusOK {
-		t.Fatalf("previous club: %d %s", r.status, r.body)
+	// a refused change of a served club keeps its previous config
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-2/clubs/club-a", demoClub("club-a", "no-such-studio", "Другой корт"))
+	testkit.WaitFor(t, "change refused", 10*time.Second, func() bool { return in.Syncer.State().ClubErrors["club-a"] != "" })
+	if r := call(t, h, http.MethodGet, "/v1/clubs/club-a/courts", contract.ReadKey, ""); r.status != http.StatusOK || !strings.Contains(string(r.body), "Корт 1") {
+		t.Fatalf("previous config of club-a: %d %s", r.status, r.body)
 	}
 	in.Beat(t, true)
 	dto := installation(t, h, "net-2")
-	if dto.ConfigVersion != 2 || dto.Gateway.AppliedConfigVersion != 1 || !strings.Contains(dto.Gateway.ConfigError, "crm.studio") {
+	if dto.ConfigVersion != 4 || dto.Gateway.AppliedConfigVersion != 4 || !strings.Contains(dto.Gateway.ClubErrors["club-b"], "crm.studio") ||
+		!strings.Contains(dto.Gateway.ClubErrors["club-a"], "crm.studio") || !strings.Contains(dto.Gateway.ConfigError, "club-b") {
 		t.Fatalf("operator view: %+v", dto.Gateway)
 	}
-	// fixed: applied, and the error clears
+	// fixed: served, and the errors clear
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-2/clubs/club-a", demoClub("club-a", "demo-north", "Корт 1"))
 	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-2/clubs/club-b", demoClub("club-b", "demo-south", "Корт 1"))
-	in.WaitServing(t, "club-a", "club-b")
-	if st := in.Syncer.State(); st.Version != 3 || st.Error != "" {
-		t.Fatalf("after the fix: %+v", st)
+	in.WaitServing(t, "club-a", "club-b", "club-c")
+	testkit.WaitFor(t, "errors cleared", 10*time.Second, func() bool { st := in.Syncer.State(); return st.Version == 6 && st.Error == "" })
+}
+
+// The hub refuses a club that sets installation keys of the crm section:
+// the login and the CRM endpoints belong to the gateway's own config.
+func TestHubRefusesInstallationKeysInAClub(t *testing.T) {
+	h := startOperatorHub(t, hub.Options{})
+	h.MustOperator(t, http.StatusCreated, http.MethodPost, "/hub/installations", map[string]string{"installation_id": "net-k", "name": "Сеть"})
+	for _, key := range []string{"auth_url", "api_url", "username"} {
+		c := demoClub("club-k", "demo-north", "Корт 1")
+		c.CRM[key] = "https://crm.example.test/x"
+		code, body := h.Operator(t, testkit.OperatorKey, http.MethodPut, "/hub/installations/net-k/clubs/club-k", c)
+		if code != http.StatusBadRequest || !strings.Contains(string(body), "INVALID_CLUB_CONFIG") || !strings.Contains(string(body), "crm."+key) {
+			t.Fatalf("crm.%s: %d %s", key, code, body)
+		}
 	}
 }
 

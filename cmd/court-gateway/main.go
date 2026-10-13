@@ -17,9 +17,6 @@ import (
 	"runtime"
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
-	"github.com/Padelapp-Club/court-gateway/internal/driver"
-	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
-	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -32,18 +29,6 @@ var (
 	// defaultHubURL is offered by setup when --hub-url is not given.
 	defaultHubURL = ""
 )
-
-// factories lists the available CRM drivers by crm.type.
-var factories = map[string]driver.Factory{
-	"viva": viva.New,
-	"demo": demo.New,
-}
-
-// accounts lists the CRM accounts (login check and discovery) by crm.type.
-var accounts = map[string]driver.AccountFactory{
-	"viva": viva.NewAccount,
-	"demo": demo.NewAccount,
-}
 
 // exitRestart asks the service manager to start the binary again (used
 // where a process cannot replace itself, i.e. Windows, after an update).

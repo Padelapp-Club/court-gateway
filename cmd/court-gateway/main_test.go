@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 )
 
@@ -90,7 +91,7 @@ func TestExampleConfigIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := accounts[s.CRMType](s.Driver); err != nil {
+	if _, err := drivers.Accounts[s.CRMType](s.Driver); err != nil {
 		t.Fatal(err)
 	}
 	if s.Listen != "" || s.Hub == nil || s.ClubID != "" {

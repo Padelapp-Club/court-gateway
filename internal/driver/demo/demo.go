@@ -38,6 +38,9 @@ type Driver struct {
 
 var _ driver.Driver = (*Driver)(nil)
 
+// ClubCRMKeys are the club-level keys of the crm section.
+var ClubCRMKeys = []string{"studio"}
+
 // New is the driver.Factory for crm.type "demo".
 func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 

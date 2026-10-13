@@ -91,7 +91,7 @@ func TestAccountDiscoverStudios(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := base.WithClub(spec)
+	st, err := base.WithClub(spec, viva.ClubCRMKeys)
 	if err != nil {
 		t.Fatalf("draft: %v", err)
 	}

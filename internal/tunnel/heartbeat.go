@@ -21,12 +21,13 @@ type Heartbeat struct {
 	Reason    string    `json:"reason,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
 	// ConfigVersion is the club configuration version the gateway runs;
-	// ConfigError says why the hub's current version was refused (the
-	// gateway then keeps running the previous one); Clubs are the clubs it
-	// serves.
-	ConfigVersion int64    `json:"config_version"`
-	ConfigError   string   `json:"config_error,omitempty"`
-	Clubs         []string `json:"clubs,omitempty"`
+	// ClubErrors say why the config of a club was refused (the club keeps
+	// its previous config, if any), ConfigError sums them up; Clubs are
+	// the clubs it serves.
+	ConfigVersion int64             `json:"config_version"`
+	ConfigError   string            `json:"config_error,omitempty"`
+	ClubErrors    map[string]string `json:"club_errors,omitempty"`
+	Clubs         []string          `json:"clubs,omitempty"`
 }
 
 // MaxHeartbeatBody bounds an encoded heartbeat.

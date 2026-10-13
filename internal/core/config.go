@@ -378,7 +378,7 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		for _, c := range fc.Courts {
 			spec.Courts = append(spec.Courts, CourtSpec{ID: c.ID, Name: c.Name, Params: c.Rest})
 		}
-		errs = append(errs, applyClub(s, spec, filePaths)...)
+		errs = append(errs, applyClub(s, spec, filePaths, nil)...)
 	} else {
 		if fc.Club != nil || fc.Venue != nil || len(fc.Courts) > 0 || fc.Services != nil {
 			add("club, venue, courts, services: с хабом клубы настраивает оператор на хабе — уберите эти разделы из gateway.yaml")

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -96,6 +98,8 @@ func (c *ClubSpec) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func sortedKeys(m map[string]any) []string { return slices.Sorted(maps.Keys(m)) }
+
 func normalizeMap(m map[string]any) map[string]any {
 	for k, v := range m {
 		m[k] = normalize(v)
@@ -134,8 +138,11 @@ var (
 )
 
 // applyClub validates c and writes it into s (whose installation part is
-// already filled). It returns the problems found, in Russian.
-func applyClub(s *Settings, c ClubSpec, p clubPaths) []string {
+// already filled). crmKeys are the keys c.CRM may set: a club from the hub
+// may set its own keys (the studio) but never the installation's (the
+// login, the CRM endpoints), or the hub could send the CRM password to a
+// host of its choice. It returns the problems found, in Russian.
+func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string {
 	var errs []string
 	add := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
 
@@ -224,12 +231,12 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths) []string {
 	for k, v := range s.installCRM {
 		crm[k] = v
 	}
-	for k, v := range c.CRM {
-		if k == "type" {
-			add("crm.type: тип CRM задаёт установка, а не клуб")
+	for _, k := range sortedKeys(c.CRM) {
+		if !slices.Contains(crmKeys, k) {
+			add("crm.%s: задаётся только в gateway.yaml установки, не в клубе (клуб может задать: %s)", k, strings.Join(crmKeys, ", "))
 			continue
 		}
-		crm[k] = v
+		crm[k] = c.CRM[k]
 	}
 	s.Driver.CRM = crm
 	s.Driver.Timezone = s.Location
@@ -239,11 +246,12 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths) []string {
 
 // WithClub returns the settings of one club served by this installation:
 // the installation part of base (CRM type and login, hub, partners) with
-// the club spec applied. It never modifies base.
-func (base *Settings) WithClub(c ClubSpec) (*Settings, error) {
+// the club spec applied. crmKeys are the crm keys a club may set (see
+// drivers.ClubCRMKeys). It never modifies base.
+func (base *Settings) WithClub(c ClubSpec, crmKeys []string) (*Settings, error) {
 	s := *base
 	s.Driver.Courts, s.Driver.Services = nil, nil
-	if errs := applyClub(&s, c, remotePaths); len(errs) > 0 {
+	if errs := applyClub(&s, c, remotePaths, crmKeys); len(errs) > 0 {
 		id := strings.TrimSpace(c.ID)
 		for i := range errs {
 			errs[i] = "клуб «" + id + "»: " + errs[i]
@@ -253,12 +261,13 @@ func (base *Settings) WithClub(c ClubSpec) (*Settings, error) {
 	return &s, nil
 }
 
-// ValidateClubSpec checks the CRM-agnostic part of a club spec (the hub
-// does this before storing a club; the driver-specific keys are checked
-// by the gateway, which knows the CRM).
-func ValidateClubSpec(c ClubSpec) error {
+// ValidateClubSpec checks a club spec as far as the hub can: everything
+// CRM-agnostic, and that the crm section holds only club-level keys
+// (crmKeys); the rest of the driver keys are checked by the gateway, which
+// knows its CRM.
+func ValidateClubSpec(c ClubSpec, crmKeys []string) error {
 	s := &Settings{}
-	if errs := applyClub(s, c, remotePaths); len(errs) > 0 {
+	if errs := applyClub(s, c, remotePaths, crmKeys); len(errs) > 0 {
 		return &ConfigError{Problems: errs}
 	}
 	return nil

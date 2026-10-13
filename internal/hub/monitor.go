@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -60,6 +61,7 @@ type clubHealth struct {
 	// what the gateway reported about its club config
 	configVersion int64
 	configError   string
+	clubErrors    map[string]string
 	clubsServed   []string
 
 	state      string // as of the last Tick
@@ -83,6 +85,7 @@ type Health struct {
 	// on the club config it runs.
 	ConfigVersion int64
 	ConfigError   string
+	ClubErrors    map[string]string
 	ClubsServed   []string
 }
 
@@ -188,20 +191,29 @@ func (m *Monitor) Heartbeat(club string, hb tunnel.Heartbeat) {
 	} else {
 		h.notReady++
 	}
-	h.configVersion, h.configError, h.clubsServed = hb.ConfigVersion, cleanConfigError(hb.ConfigError), cleanClubs(hb.Clubs)
+	h.configVersion, h.configError, h.clubsServed = hb.ConfigVersion, cleanConfigError(hb.ConfigError, 2000), cleanClubs(hb.Clubs)
+	h.clubErrors = nil
+	for id, why := range hb.ClubErrors {
+		if ValidClubID(id) && len(h.clubErrors) < 1000 {
+			if h.clubErrors == nil {
+				h.clubErrors = map[string]string{}
+			}
+			h.clubErrors[id] = cleanConfigError(why, 500)
+		}
+	}
 }
 
 // cleanConfigError bounds a gateway's config refusal text; it is shown to
-// the operator only (API), never written to status files or alerts.
-func cleanConfigError(s string) string {
+// the operator only (API), never written to status files.
+func cleanConfigError(s string, max int) string {
 	s = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' || r >= ' ' {
 			return r
 		}
 		return -1
 	}, s)
-	if len(s) > 2000 {
-		s = s[:2000]
+	if len(s) > max {
+		s = s[:max]
 	}
 	return s
 }
@@ -268,7 +280,7 @@ func (m *Monitor) Health(club string) Health {
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
 		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Failures: h.notReady,
-		ConfigVersion: h.configVersion, ConfigError: h.configError, ClubsServed: append([]string(nil), h.clubsServed...),
+		ConfigVersion: h.configVersion, ConfigError: h.configError, ClubErrors: maps.Clone(h.clubErrors), ClubsServed: append([]string(nil), h.clubsServed...),
 	}
 	if out.State == StateOffline {
 		out.OfflineSince = m.silentSince(h, g.RegisteredAt)

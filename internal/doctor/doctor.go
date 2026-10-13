@@ -301,7 +301,11 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	if err != nil {
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов с хаба не получена"}), nil
 	}
-	servers, problems := remote.Build(s, o.Factories, o.DriverHook, rc)
+	servers, refused := remote.Build(s, o.Factories, o.DriverHook, rc)
+	var problems []string
+	for _, r := range refused {
+		problems = append(problems, r.Problems...)
+	}
 	var clubs []clubDriver
 	ids := make([]string, len(servers))
 	for i, srv := range servers {
@@ -314,7 +318,7 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	switch {
 	case len(problems) > 0:
 		out = append(out, Check{Code: CodeHubConfig, Status: Fail, Message: fmt.Sprintf("конфигурация клубов на хабе (версия %d) не подходит этому шлюзу: %s", rc.Version, strings.Join(problems, "; ")),
-			Hint: "сообщите оператору хаба: служба продолжает работать на предыдущей конфигурации"})
+			Hint: "сообщите оператору хаба: остальные клубы работают, у этих служба оставляет прежнюю конфигурацию, если она была"})
 	case len(rc.Clubs) == 0:
 		out = append(out, Check{Code: CodeHubConfig, Status: OK, Message: "на хабе пока нет клубов этой установки: оператор подключит их сам, на этом компьютере ничего делать не нужно"})
 	case who.Connected && who.AppliedConfigVersion != rc.Version:

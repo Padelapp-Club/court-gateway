@@ -21,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/remote"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
@@ -184,7 +185,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 				gw.reason.Store(st.Reason)
 				if client != nil {
 					cs := syncer.State()
-					hb.ConfigVersion, hb.ConfigError, hb.Clubs = cs.Version, cs.Error, cs.Clubs
+					hb.ConfigVersion, hb.ConfigError, hb.ClubErrors, hb.Clubs = cs.Version, cs.Error, cs.ClubErrors, cs.Clubs
 					go sendHeartbeat(ctx, client, hb, log)
 				}
 			}
@@ -279,7 +280,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 // hub (nil without a hub).
 func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, error) {
 	if s.Hub == nil {
-		drv, err := core.BuildDriver(s, factories)
+		drv, err := core.BuildDriver(s, drivers.Factories)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -290,7 +291,7 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 		clubs.Set([]*core.Server{core.NewServer(s, drv, log)})
 		return clubs, nil, nil
 	}
-	f, ok := accounts[s.CRMType]
+	f, ok := drivers.Accounts[s.CRMType]
 	if !ok {
 		return nil, nil, &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
 	}
@@ -303,7 +304,7 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 		return nil, nil, err
 	}
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
-	return clubs, remote.New(remote.Options{Base: s, Factories: factories, Clubs: clubs, Logger: log}), nil
+	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
 }
 
 // sendHeartbeat reports one self-check to the hub. A failed heartbeat is

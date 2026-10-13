@@ -19,13 +19,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -46,8 +49,7 @@ type Syncer struct {
 
 	mu      sync.Mutex
 	applied int64
-	refused int64 // version refused last; -1 for none
-	errText string
+	refused map[string]string // club -> why its config was refused
 }
 
 // Options configure New.
@@ -74,7 +76,7 @@ func New(o Options) *Syncer {
 		o.Retry = 5 * time.Second
 	}
 	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch,
-		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), refused: -1}
+		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1}
 }
 
 // SetFetch sets how the config is pulled (before Run).
@@ -98,22 +100,45 @@ func (s *Syncer) Notify(v int64) {
 
 // State is what the heartbeat reports.
 type State struct {
+	// Version is the applied config version (0 before the first one).
 	Version int64
-	Error   string
-	Clubs   []string
+	// Error sums up ClubErrors in one text; empty when every club loaded.
+	Error string
+	// ClubErrors says why the config of a club was refused.
+	ClubErrors map[string]string
+	Clubs      []string
 }
 
-// State returns the applied version, the last refusal and the clubs served.
+// State returns the applied version, the refused clubs and the clubs served.
 func (s *Syncer) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return State{Version: s.applied, Error: s.errText, Clubs: s.clubs.IDs()}
+	st := State{Version: max(s.applied, 0), Clubs: s.clubs.IDs()}
+	if len(s.refused) > 0 {
+		st.ClubErrors = maps.Clone(s.refused)
+		var lines []string
+		for _, id := range slices.Sorted(maps.Keys(s.refused)) {
+			lines = append(lines, s.refused[id])
+		}
+		st.Error = strings.Join(lines, "\n")
+		if len(st.Error) > maxErrorText {
+			st.Error = st.Error[:maxErrorText] + "…"
+		}
+	}
+	return st
+}
+
+// Applied reports whether a config from the hub has been applied.
+func (s *Syncer) Applied() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applied >= 0
 }
 
 func (s *Syncer) wanted(v int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return v != s.applied && v != s.refused
+	return v != s.applied
 }
 
 // Run pulls and applies configs until ctx is done.
@@ -149,64 +174,82 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// Apply validates rc and, if every club is valid, serves exactly its
-// clubs. Otherwise it keeps the previous set and records the reason.
+// Apply serves the clubs of rc that load with the driver. A club that does
+// not load keeps its previous config if it had one; otherwise partners get
+// 503 for it. It returns the problems found (nil when every club loaded).
 func (s *Syncer) Apply(rc tunnel.RemoteConfig) error {
-	servers, problems := Build(s.base, s.factories, s.hook, rc)
+	servers, refused := Build(s.base, s.factories, s.hook, rc)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(problems) > 0 {
-		err := &core.ConfigError{Problems: problems}
-		msg := err.Error()
-		if len(msg) > maxErrorText {
-			msg = msg[:maxErrorText] + "…"
+	var unavailable, problems []string
+	for _, r := range refused {
+		problems = append(problems, r.Problems...)
+		if r.Club == "" {
+			continue
 		}
-		s.refused, s.errText = rc.Version, msg
-		s.log.Error("club config from the hub refused; the previous one stays", "version", rc.Version, "kept_version", s.applied, "error", msg)
-		return err
+		if old, ok := s.clubs.Server(r.Club); ok {
+			servers = append(servers, old)
+		} else {
+			unavailable = append(unavailable, r.Club)
+		}
 	}
-	s.clubs.Set(servers)
-	s.applied, s.refused, s.errText = rc.Version, -1, ""
+	s.clubs.Set(servers, unavailable...)
+	s.applied, s.refused = rc.Version, map[string]string{}
+	for _, r := range refused {
+		s.refused[r.Club] = strings.Join(r.Problems, "; ")
+	}
+	if len(problems) > 0 {
+		s.log.Error("club config from the hub applied without the clubs that do not load", "version", rc.Version,
+			"clubs", strings.Join(s.clubs.IDs(), ","), "error", strings.Join(problems, "; "))
+		return &core.ConfigError{Problems: problems}
+	}
 	s.log.Info("club config applied", "version", rc.Version, "clubs", strings.Join(s.clubs.IDs(), ","))
 	return nil
 }
 
+// Refusal is a club of a hub config that does not load. Club is empty
+// when the entry could not even be read.
+type Refusal struct {
+	Club     string
+	Problems []string
+}
+
 // Build builds the server of every club in rc with this installation's
-// driver. It returns the servers of the valid clubs and a problem line,
-// in Russian, for every club that does not load. hook adjusts each
-// driver config before the driver is built (tests).
-func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), rc tunnel.RemoteConfig) ([]*core.Server, []string) {
-	var problems []string
+// driver. It returns the servers of the clubs that load and a refusal,
+// in Russian, for every one that does not. hook adjusts each driver
+// config before the driver is built (tests).
+func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), rc tunnel.RemoteConfig) ([]*core.Server, []Refusal) {
+	var refused []Refusal
 	var servers []*core.Server
 	seen := map[string]bool{}
 	for i, raw := range rc.Clubs {
 		var spec core.ClubSpec
 		if err := json.Unmarshal(raw, &spec); err != nil {
-			problems = append(problems, fmt.Sprintf("clubs[%d]: %v", i, err))
+			refused = append(refused, Refusal{Problems: []string{fmt.Sprintf("clubs[%d]: %v", i, err)}})
 			continue
 		}
 		if seen[spec.ID] {
-			problems = append(problems, fmt.Sprintf("клуб «%s» указан дважды", spec.ID))
+			refused = append(refused, Refusal{Problems: []string{fmt.Sprintf("клуб «%s» указан дважды", spec.ID)}})
 			continue
 		}
 		seen[spec.ID] = true
 		srv, err := buildClub(base, factories, hook, spec)
 		if err != nil {
+			r := Refusal{Club: spec.ID, Problems: []string{err.Error()}}
 			var ce *core.ConfigError
 			if errors.As(err, &ce) {
-				problems = append(problems, ce.Problems...)
-			} else {
-				problems = append(problems, err.Error())
+				r.Problems = ce.Problems
 			}
+			refused = append(refused, r)
 			continue
 		}
 		servers = append(servers, srv)
 	}
-	return servers, problems
+	return servers, refused
 }
 
 func buildClub(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), spec core.ClubSpec) (*core.Server, error) {
-	st, err := base.WithClub(spec)
+	st, err := base.WithClub(spec, drivers.ClubCRMKeys(base.CRMType))
 	if err != nil {
 		return nil, err
 	}

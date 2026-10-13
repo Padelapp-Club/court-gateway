@@ -33,6 +33,11 @@ const (
 	DefaultBreakTitle = "Бронь партнёра"
 )
 
+// ClubCRMKeys are the keys of the crm section that belong to one club: a
+// club configured on the hub may set these and nothing else (the login and
+// the endpoints stay in the installation's gateway.yaml).
+var ClubCRMKeys = []string{"studio"}
+
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type service struct {

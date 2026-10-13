@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Padelapp-Club/court-gateway/internal/doctor"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 )
@@ -184,7 +185,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 2
 	}
 	rep := doctor.Run(context.Background(), doctor.Options{
-		ConfigPath: *cfgPath, Getenv: getenv, Factories: factories, Accounts: accounts, Version: version, ReleaseKey: releaseKey,
+		ConfigPath: *cfgPath, Getenv: getenv, Factories: drivers.Factories, Accounts: drivers.Accounts, Version: version, ReleaseKey: releaseKey,
 	})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)

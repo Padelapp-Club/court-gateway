@@ -34,8 +34,13 @@ type clubEntry struct {
 }
 
 type clubTable struct {
-	ids  []string
-	byID map[string]clubEntry
+	// loaded is false until the first Set: a gateway that has not yet
+	// received its config answers 503, not "no such club".
+	loaded bool
+	ids    []string
+	byID   map[string]clubEntry
+	// unavailable are configured clubs whose config does not load.
+	unavailable map[string]bool
 }
 
 // ClubsOptions configure NewClubs.
@@ -75,9 +80,14 @@ func NewClubs(base *Settings, o ClubsOptions) (*Clubs, error) {
 // must be called before TunnelHandler.
 func (c *Clubs) SetGatewayAPI(h http.Handler) { c.gatewayAPI = h }
 
-// Set replaces the served clubs.
-func (c *Clubs) Set(servers []*Server) {
-	t := &clubTable{byID: make(map[string]clubEntry, len(servers))}
+// Set replaces the served clubs. unavailable are clubs of the config that
+// are not served because their config does not load: partners get 503
+// for them rather than 404.
+func (c *Clubs) Set(servers []*Server, unavailable ...string) {
+	t := &clubTable{loaded: true, byID: make(map[string]clubEntry, len(servers)), unavailable: map[string]bool{}}
+	for _, id := range unavailable {
+		t.unavailable[id] = true
+	}
 	for _, s := range servers {
 		if _, dup := t.byID[s.cfg.ClubID]; dup {
 			continue
@@ -144,7 +154,17 @@ func (c *Clubs) APIHandler() http.Handler {
 		}
 		club, _, _ := strings.Cut(rest, "/")
 		e, ok := t.byID[club]
-		if !ok {
+		switch {
+		case ok:
+		case !t.loaded:
+			w.Header().Set("Retry-After", "10")
+			writeError(w, r, http.StatusServiceUnavailable, "CONFIG_PENDING", "the gateway has not received its club configuration yet")
+			return
+		case t.unavailable[club]:
+			w.Header().Set("Retry-After", "60")
+			writeError(w, r, http.StatusServiceUnavailable, "CLUB_UNAVAILABLE", "the club's configuration does not load on its gateway")
+			return
+		default:
 			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 			return
 		}
