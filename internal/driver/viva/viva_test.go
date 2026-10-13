@@ -449,6 +449,7 @@ func TestCancelOwnershipRules(t *testing.T) {
 		{"break read without a comment and without a title: refused", "b-" + seedBr(map[string]any{"comment": "[cg:booker]"}), true, driver.ErrNotOwned},
 		{"title with the caller's marker is not evidence", "b-" + seedBr(map[string]any{"title": "[cg:booker]", "comment": "repairs"}), false, driver.ErrNotOwned},
 		{"unknown id is already gone", "e-00000000-0000-4000-8000-00000000dead", false, nil},
+		{"own break under the exercise prefix is not found", "e-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:booker]"}), false, driver.ErrNotFound},
 		{"malformed id", "e-nope", false, driver.ErrNotFound},
 	}
 	for _, c := range cases {
@@ -458,9 +459,9 @@ func TestCancelOwnershipRules(t *testing.T) {
 			if (c.want == nil && err != nil) || (c.want != nil && !errors.Is(err, c.want)) {
 				t.Fatalf("err = %v, want %v", err, c.want)
 			}
-			kind, uuid, _ := strings.Cut(c.id, "-")
+			_, uuid, _ := strings.Cut(c.id, "-")
 			rec := f.stub.Exercise(uuid)
-			if kind == "b" {
+			if rec == nil {
 				rec = f.stub.Break(uuid)
 			}
 			if rec != nil && (rec["canceled"] == true) != (c.want == nil) {

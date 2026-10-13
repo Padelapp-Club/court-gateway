@@ -1,6 +1,7 @@
 package viva
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -211,6 +212,12 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		return err
 	}
 	if !found {
+		// gone, unless the id names a record of the other kind (a wrong
+		// prefix): that one is not this booking
+		other := map[string]string{"exercises": "breaks", "breaks": "exercises"}[kind]
+		if _, exists, err := d.read(ctx, other, uuid); err != nil || exists {
+			return cmp.Or(err, driver.ErrNotFound)
+		}
 		return nil
 	}
 	s, err := d.decodeSlot(kind, uuid, raw)
