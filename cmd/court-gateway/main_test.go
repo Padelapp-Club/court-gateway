@@ -125,3 +125,17 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		}
 	}
 }
+
+// The version the installed binary hands over to runs serve with the same
+// config and the same log file: under the Windows service manager the log
+// file is not among the process's own arguments, and without it the
+// updated version would log nowhere.
+func TestHandoverKeepsTheLogFile(t *testing.T) {
+	got := strings.Join(serveArgs(`C:\court-gateway\gateway.yaml`, `C:\court-gateway\court-gateway.log`), " ")
+	if got != `serve -config C:\court-gateway\gateway.yaml -log-file C:\court-gateway\court-gateway.log` {
+		t.Fatalf("handover arguments: %s", got)
+	}
+	if got := strings.Join(serveArgs("gateway.yaml", ""), " "); got != "serve -config gateway.yaml" {
+		t.Fatalf("without a log file: %s", got)
+	}
+}

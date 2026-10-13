@@ -88,7 +88,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 				break
 			}
 			log.Info("starting the newest verified version", "path", next)
-			code, err := update.Handover(ctx, next, os.Args[1:], update.LaunchEnv(installed))
+			code, err := update.Handover(ctx, next, serveArgs(cfgPath, logFile), update.LaunchEnv(installed))
 			if err != nil {
 				log.Error("could not start it, running the installed binary", "error", err)
 				break
@@ -246,12 +246,24 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		// returns only where a process cannot replace itself (Windows) or
 		// on failure; then the restart code makes the installed binary or
 		// the service manager start again
-		if err := update.Restart(installed, os.Args[1:]); err != nil && !errors.Is(err, update.ErrRestartRequired) {
+		if err := update.Restart(installed, serveArgs(cfgPath, logFile)); err != nil && !errors.Is(err, update.ErrRestartRequired) {
 			log.Error("restart failed; the service manager will start the binary again", "error", err)
 		}
 		return exitRestart
 	}
 	return 0
+}
+
+// serveArgs are the arguments of a version the installed binary hands
+// over to, or of the installed binary started again: serve with this
+// config and this log file. Explicit, not this process's own arguments:
+// on Windows those are the service's, and the log file is not among them.
+func serveArgs(cfgPath, logFile string) []string {
+	args := []string{"serve", "-config", cfgPath}
+	if logFile != "" {
+		args = append(args, "-log-file", logFile)
+	}
+	return args
 }
 
 // buildInstallation builds what serve runs: the CRM account, the
