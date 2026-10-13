@@ -10,7 +10,8 @@
 #                     self-built binary that never updates itself. The key
 #                     is never read from the source tree implicitly.
 #   DEFAULT_HUB_URL   the hub a release connects to unless setup is given
-#                     --hub-url; empty (a self-build): setup needs --hub-url
+#                     --hub-url; empty (a self-build): setup needs --hub-url.
+#                     Written to $OUT/hub-url.txt, published with the release
 #   OUT               output directory (default: dist)
 #   TARGETS           space-separated os/arch list (default: all release targets)
 #
@@ -56,4 +57,7 @@ done
 		shasum -a 256 court-gateway-"${VERSION}"-* > SHA256SUMS
 	fi
 )
+if [ -n "$DEFAULT_HUB_URL" ]; then
+	printf '%s\n' "$DEFAULT_HUB_URL" > "$OUT/hub-url.txt"
+fi
 cat "$OUT/SHA256SUMS"
