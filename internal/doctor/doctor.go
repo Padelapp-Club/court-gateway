@@ -147,9 +147,8 @@ func Run(ctx context.Context, o Options) Report {
 	}
 	add(secretsFileCheck(o.ConfigPath))
 
-	// CRM login
-	cctx, cancel := context.WithTimeout(ctx, o.Timeout)
-	defer cancel()
+	// CRM login, the hub and the occupancy each get their own timeout: one
+	// slow step does not eat the next one's
 	loginOK := true
 	var login func(context.Context) error
 	if acct != nil {
@@ -159,7 +158,7 @@ func Run(ctx context.Context, o Options) Report {
 	}
 	if login == nil {
 		add(Check{Code: CodeCRMLogin, Status: Skip, Message: "у этого типа CRM нет входа"})
-	} else if err := login(cctx); err != nil {
+	} else if err := withTimeout(ctx, o.Timeout, login); err != nil {
 		loginOK = false
 		add(Check{Code: CodeCRMLogin, Status: Fail, Message: "вход в CRM не удался: " + core.ReadyReason(err), Hint: crmHint(err)})
 	} else {
@@ -197,7 +196,10 @@ func Run(ctx context.Context, o Options) Report {
 		} else {
 			ids = remoteClubs[0].courts
 		}
-		if _, err := target.Occupancy(cctx, driver.OccupancyQuery{Courts: ids, From: now, To: now.Add(24 * time.Hour)}); err != nil {
+		if err := withTimeout(ctx, o.Timeout, func(ctx context.Context) error {
+			_, err := target.Occupancy(ctx, driver.OccupancyQuery{Courts: ids, From: now, To: now.Add(24 * time.Hour)})
+			return err
+		}); err != nil {
 			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + targetName + " не читается: " + core.ReadyReason(err), Hint: crmHint(err)})
 		} else {
 			add(Check{Code: CodeOccupancy, Status: OK, Message: "занятость клуба " + targetName + " на сутки вперёд читается"})
@@ -210,6 +212,12 @@ func Run(ctx context.Context, o Options) Report {
 	}
 	r.Checks = append(r.Checks, versionCheck(ctx, o, s))
 	return finish(r)
+}
+
+func withTimeout(ctx context.Context, d time.Duration, f func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	return f(ctx)
 }
 
 type clubDriver struct {
