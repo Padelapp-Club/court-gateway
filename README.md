@@ -190,6 +190,14 @@ court-gateway 0.2.0 (release)
 ([docs/hub.md](docs/hub.md#операторское-api-установки-коды-клубы)). Логин и адреса CRM клуб с хаба
 изменить не может: они только в `gateway.yaml` и `.env` на компьютере клуба.
 
+## Если сменили пароль Viva
+
+Новый код подключения не нужен. В папке шлюза выполните `court-gateway set-password`
+(Windows: `.\court-gateway.exe set-password` в PowerShell от имени администратора): программа
+спросит новый пароль, проверит вход в Viva и заменит в `.env` только его. Затем перезапустите
+службу — команду программа напишет сама (Linux: `sudo systemctl restart court-gateway`, Windows:
+`Restart-Service court-gateway`, Docker: `docker compose restart`).
+
 ## Если в интернет можно только через прокси
 
 Служба не видит переменных прокси из вашей командной строки. Впишите прокси в `gateway.yaml`

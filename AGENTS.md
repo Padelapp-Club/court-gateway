@@ -196,6 +196,20 @@ added any already), that nothing else is needed on their side, where the log is 
 to `gateway.yaml`; on macOS, messages from before the log starts are in `court-gateway.stderr.log`), and that the operator can confirm the installation is connected in the hub. Do not
 include any secret in the report.
 
+## The Viva password changed
+
+No join code is needed. Have the human type the new password as in step 0 (`CRM_PASSWORD` only),
+then, in the install folder:
+
+```sh
+./court-gateway set-password -config "$PWD/gateway.yaml"; echo "exit=$?"
+```
+
+(Windows, PowerShell as Administrator: `.\court-gateway.exe set-password -config "$PWD\gateway.yaml"`.)
+It logs in to Viva with the new password first and replaces only `CRM_PASSWORD` in `.env`.
+**Expect:** `exit=0`; `CRM_AUTH_FAILED` means the password is wrong — ask again. Then restart the
+service with the command it prints, `unset CRM_PASSWORD`, and run step 5.
+
 ## Uninstall
 
 `sudo ./court-gateway uninstall-service` (Windows: `.\court-gateway.exe uninstall-service`), then

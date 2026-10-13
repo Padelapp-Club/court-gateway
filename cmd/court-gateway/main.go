@@ -2,6 +2,7 @@
 // in hub mode, the public hub that partners call and gateways connect to.
 //
 //	court-gateway setup            build gateway.yaml and .env (interactive or --non-interactive --json)
+//	court-gateway set-password     replace the CRM password in .env (no join code needed)
 //	court-gateway serve            run the gateway (connects out to the hub)
 //	court-gateway doctor [--json]  check everything, with stable check codes
 //	court-gateway install-service  register with systemd / launchd / Windows SCM
@@ -56,6 +57,7 @@ const usage = `court-gateway — партнёрский API клуба пове�
 
 Установка и работа шлюза:
   setup            собрать gateway.yaml и .env: вход в CRM, корты, часы, код подключения к хабу
+  set-password     сменить пароль CRM в .env, если его поменяли в CRM (код подключения не нужен)
   serve            запустить шлюз (сам подключается к хабу; входящих портов не открывает)
   doctor           проверить всё: конфигурацию, CRM, связь с хабом, версию (--json — для программ)
   install-service  зарегистрировать службу (systemd, launchd, Windows), чтобы шлюз запускался сам
@@ -94,6 +96,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return cmdDoctor(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "setup":
 		return cmdSetup(args[1:], stdout, stderr, getenv, defaultConfig)
+	case "set-password":
+		return cmdSetPassword(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "install-service":
 		return cmdInstallService(args[1:], stdout, stderr, defaultConfig, false)
 	case "uninstall-service":

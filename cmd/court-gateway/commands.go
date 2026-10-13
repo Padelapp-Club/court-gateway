@@ -108,6 +108,56 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	return 0
 }
 
+// restartHint is how to restart the installed service on goos.
+func restartHint(goos string) string {
+	switch goos {
+	case "linux":
+		return "sudo systemctl restart " + service.Name
+	case "darwin":
+		return "sudo launchctl kickstart -k system/" + service.Name + " (служба пользователя: launchctl kickstart -k gui/$(id -u)/" + service.Name + ")"
+	case "windows":
+		return "Restart-Service " + service.Name + " (PowerShell от имени администратора)"
+	}
+	return "перезапустите службу"
+}
+
+// cmdSetPassword replaces the CRM password in .env after the CRM
+// administrator's password changed; no join code is needed.
+func cmdSetPassword(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
+	fs := flag.NewFlagSet("set-password", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", defaultConfig, "gateway.yaml (.env next to it is changed)")
+	passwordStdin := fs.Bool("password-stdin", false, "read the new CRM password from the first line of stdin")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	password := getenv("CRM_PASSWORD")
+	switch {
+	case *passwordStdin:
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && line == "" {
+			fmt.Fprintln(stderr, "set-password: пароль не прочитан из stdin")
+			return 2
+		}
+		password = strings.TrimRight(line, "\r\n")
+	case password == "" && isTerminal():
+		fmt.Fprint(stderr, "Новый пароль администратора CRM (не отображается): ")
+		var err error
+		password, err = readSecret()
+		fmt.Fprintln(stderr)
+		if err != nil {
+			fmt.Fprintln(stderr, "set-password: ввод прерван")
+			return 2
+		}
+	}
+	if err := setup.SetPassword(context.Background(), *cfgPath, password, getenv, setup.Deps{ProtectSecrets: protectSecrets}); err != nil {
+		fmt.Fprintf(stderr, "set-password: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: %s (в Docker: docker compose restart).\n", restartHint(runtime.GOOS))
+	return 0
+}
+
 func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 	line := func(q, def string) (string, error) {
 		if def != "" {

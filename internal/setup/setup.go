@@ -172,19 +172,8 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if err != nil {
 		return fail(problem("INVALID_INPUT", "%v", err))
 	}
-	lctx, cancel := context.WithTimeout(ctx, time.Minute)
-	err = acct.CheckLogin(lctx)
-	cancel()
-	if err != nil {
-		var ue *driver.UpstreamError
-		switch {
-		case errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth:
-			return fail(problem("CRM_AUTH_FAILED", "CRM не приняла логин или пароль администратора"))
-		case errors.As(err, &ue) && ue.Kind == driver.UpstreamInvalid:
-			return fail(problem("CRM_INVALID_RESPONSE", "CRM ответила в непонятном формате"))
-		default:
-			return fail(problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже"))
-		}
+	if p := checkLogin(ctx, acct); p != nil {
+		return fail(p)
 	}
 	if p := validate(d, in.Password, "placeholder-secret"); p != nil {
 		return fail(p)
@@ -248,6 +237,24 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	res.Config, res.EnvFile, res.Hub = cfgPath, envPath, d.HubURL
 	res.Installation = &InstallationRef{ID: reg.Installation, Name: cmp.Or(strings.TrimSpace(reg.Name), reg.Installation)}
 	return res, nil
+}
+
+// checkLogin logs in to the CRM and names the failure.
+func checkLogin(ctx context.Context, acct driver.Account) *Problem {
+	lctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	err := acct.CheckLogin(lctx)
+	var ue *driver.UpstreamError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth:
+		return problem("CRM_AUTH_FAILED", "CRM не приняла логин или пароль администратора")
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamInvalid:
+		return problem("CRM_INVALID_RESPONSE", "CRM ответила в непонятном формате")
+	default:
+		return problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже")
+	}
 }
 
 // envFor is the environment a written config will see.
