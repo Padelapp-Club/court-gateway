@@ -43,3 +43,18 @@ func TestWindowsPlanRestrictsTheFolder(t *testing.T) {
 		t.Fatalf("first command %q, want %q", p.Commands[0], want)
 	}
 }
+
+// A path with a space and a % in the unit: the command line quotes and
+// escapes it, WorkingDirectory takes it unquoted (quotes would become part
+// of the path) with % escaped.
+func TestSystemdUnitPaths(t *testing.T) {
+	u := SystemdUnit(Spec{Exe: "/opt/court gateway 100%/court-gateway", Config: "/opt/court gateway 100%/gateway.yaml"})
+	for _, want := range []string{
+		"ExecStart=\"/opt/court gateway 100%%/court-gateway\" serve -config \"/opt/court gateway 100%%/gateway.yaml\"\n",
+		"WorkingDirectory=/opt/court gateway 100%%\n",
+	} {
+		if !strings.Contains(u, want) {
+			t.Fatalf("missing %q in\n%s", want, u)
+		}
+	}
+}

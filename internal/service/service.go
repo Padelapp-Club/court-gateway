@@ -47,9 +47,16 @@ func (s Spec) StartupLogFile() string { return filepath.Join(s.dir(), "court-gat
 // SystemdPath is the unit file location.
 const SystemdPath = "/etc/systemd/system/court-gateway.service"
 
+// systemdQuote quotes one word of a command line (ExecStart=): systemd
+// splits it at spaces, unescapes \ and ", and expands % and $.
 func systemdQuote(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%", "$", "$$").Replace(s) + `"`
 }
+
+// systemdPath writes a path setting (WorkingDirectory=), which systemd
+// takes as is — spaces included, quotes would be part of the path — and
+// only expands % in.
+func systemdPath(s string) string { return strings.ReplaceAll(s, "%", "%%") }
 
 // SystemdUnit renders the Linux unit. Restart=always brings the gateway
 // back after a crash, after an update re-exec that failed, and after boot.
@@ -60,7 +67,7 @@ func SystemdUnit(s Spec) string {
 	b.WriteString("Wants=network-online.target\nAfter=network-online.target\n\n")
 	b.WriteString("[Service]\nType=simple\n")
 	fmt.Fprintf(&b, "ExecStart=%s serve -config %s\n", systemdQuote(s.Exe), systemdQuote(s.Config))
-	fmt.Fprintf(&b, "WorkingDirectory=%s\n", systemdQuote(s.dir()))
+	fmt.Fprintf(&b, "WorkingDirectory=%s\n", systemdPath(s.dir()))
 	if s.User != "" {
 		fmt.Fprintf(&b, "User=%s\n", s.User)
 	}
