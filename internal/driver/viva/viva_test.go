@@ -492,3 +492,17 @@ func TestDriverConfigValidation(t *testing.T) {
 		})
 	}
 }
+
+// Cancelled records are dropped even if the CRM returns them despite
+// includeCanceled=false.
+func TestCancelledItemsAreNotOccupancy(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	d := futureDay()
+	item := `[{"id": "00000000-0000-4000-8000-0000000000e1", "timeFrom": "` + d.Add(10*time.Hour).Format(time.RFC3339) +
+		`", "timeTo": "` + d.Add(11*time.Hour).Format(time.RFC3339) + `", "room": {"id": "` + room1 + `"}, "canceled": true}]`
+	f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, item)
+	st, _, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(24*time.Hour)), contract.ReadKey, "")
+	if st != 200 || strings.Contains(raw, "0000000000e1") {
+		t.Fatalf("cancelled item returned: %d %s", st, raw)
+	}
+}
