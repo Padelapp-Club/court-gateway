@@ -261,3 +261,24 @@ func TestWindowsInstallBlocksCheckTheHashFirst(t *testing.T) {
 		}
 	}
 }
+
+// The release is reproducible only with one Go: go.mod pins it as the
+// toolchain, and the Dockerfile and README name the same version.
+func TestToolchainPinnedEverywhere(t *testing.T) {
+	read := func(name string) string {
+		data, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	mod := read("go.mod")
+	i := strings.Index(mod, "\ntoolchain go")
+	if i < 0 {
+		t.Fatal("go.mod has no toolchain line")
+	}
+	ver := strings.Fields(mod[i+len("\ntoolchain go"):])[0]
+	if !strings.Contains(read("Dockerfile"), "FROM golang:"+ver+"-") || !strings.Contains(read("README.md"), "(сейчас "+ver+")") {
+		t.Fatalf("toolchain go%s is not the Dockerfile's and README's Go", ver)
+	}
+}
