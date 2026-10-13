@@ -419,8 +419,8 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 	if len(rq.Body) > MaxRequestBody {
 		return fail(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body is too large")
 	}
-	timeout := time.Duration(rq.TimeoutMS) * time.Millisecond
-	if timeout < time.Second || timeout > 2*time.Minute {
+	timeout := min(max(time.Duration(rq.TimeoutMS)*time.Millisecond, time.Second), MaxRequestTimeout)
+	if rq.TimeoutMS <= 0 {
 		timeout = 30 * time.Second
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)

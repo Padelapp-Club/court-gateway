@@ -91,3 +91,28 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 		}
 	}
 }
+
+// The hub's timeout reaches the handler, cut to two minutes: a discovery
+// with a long timeout keeps two minutes, not a default 30 seconds.
+func TestExecuteClampsTheTimeout(t *testing.T) {
+	var left time.Duration
+	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dl, _ := r.Context().Deadline()
+		left = time.Until(dl)
+	})})
+	for _, tc := range []struct {
+		ms       int
+		min, max time.Duration
+	}{
+		{int((10 * time.Minute).Milliseconds()), 119 * time.Second, MaxRequestTimeout},
+		{int((150 * time.Second).Milliseconds()), 119 * time.Second, MaxRequestTimeout},
+		{int((45 * time.Second).Milliseconds()), 44 * time.Second, 45 * time.Second},
+		{1, 900 * time.Millisecond, time.Second},
+		{0, 29 * time.Second, 30 * time.Second},
+	} {
+		c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: "/v1/clubs", TimeoutMS: tc.ms})
+		if left < tc.min || left > tc.max {
+			t.Errorf("timeout_ms %d: the handler got %s", tc.ms, left)
+		}
+	}
+}

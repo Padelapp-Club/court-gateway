@@ -13,7 +13,10 @@
 // that is what "requests from the hub are signed" means for this design.
 package tunnel
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Endpoints on the hub.
 const (
@@ -52,6 +55,9 @@ const (
 const (
 	// MaxRequestBody caps a partner request body forwarded to a gateway.
 	MaxRequestBody = 1 << 20
+	// MaxRequestTimeout caps the time a gateway gives one request; a longer
+	// timeout from the hub is cut to it.
+	MaxRequestTimeout = 2 * time.Minute
 	// MaxResponseBody caps a gateway response body.
 	MaxResponseBody = 4 << 20
 	// maxEnvelope bounds an encoded envelope: base64 grows the body by 4/3.
