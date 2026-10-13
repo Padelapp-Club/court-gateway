@@ -253,7 +253,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		shCancel()
 	}
 	if target != "" {
-		err := update.Exec(target, os.Args[1:])
+		var env []string
+		if cache, ok := inst.(*update.CacheDir); ok {
+			// the next binary must keep using the cache, not replace itself
+			env = append(env, update.LaunchedEnv+"=1", update.ShippedEnv+"="+cache.Shipped)
+		}
+		err := update.Exec(target, os.Args[1:], env...)
 		if errors.Is(err, update.ErrRestartRequired) {
 			return exitRestart
 		}

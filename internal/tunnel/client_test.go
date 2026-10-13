@@ -57,3 +57,25 @@ func TestExecuteBoundsTheResponse(t *testing.T) {
 		t.Fatal("a partner key reached the gateway")
 	}
 }
+
+// The allow-list is checked by the tunnel itself, not left to the local
+// handler: here the handler would serve any path, so only the allow-list
+// stands between the hub and everything else.
+func TestAllowListIndependentOfHandler(t *testing.T) {
+	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("served " + r.URL.Path))
+	})})
+	for _, p := range []string{"/hub/status", "/debug/pprof/", "/", "", "/v1/../etc", "/v1/clubs/%2e%2e", "/healthz"} {
+		if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: p}); r.Status != http.StatusNotFound {
+			t.Fatalf("%q reached the handler: %d %s", p, r.Status, r.Body)
+		}
+	}
+	if r := c.Execute(context.Background(), Request{ID: "1", Method: "CONNECT", Path: "/v1/clubs"}); r.Status != http.StatusNotFound {
+		t.Fatalf("CONNECT reached the handler: %d", r.Status)
+	}
+	for _, p := range []string{"/v1/clubs", "/health/live", "/health/ready"} {
+		if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: p}); r.Status != http.StatusOK {
+			t.Fatalf("%q blocked: %d", p, r.Status)
+		}
+	}
+}
