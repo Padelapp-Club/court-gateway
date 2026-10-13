@@ -168,11 +168,11 @@ func (h *Hub) JoinCode(club, name string) string {
 	if h.Opts.Now != nil {
 		now = h.Opts.Now()
 	}
-	code, _, err := hub.CreateJoinCode(h.StateDir, club, name, time.Hour, now)
+	jc, err := hub.CreateJoinCode(h.StateDir, club, name, time.Hour, now)
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	return code
+	return jc.Code
 }
 
 // Transport returns a transport that trusts the test hub only.

@@ -48,7 +48,7 @@ const minKeyLength = 24
 // fileConfig mirrors gateway.yaml. Driver-specific keys of `crm`, of each
 // court and of `services` are kept as raw maps and handed to the driver.
 type fileConfig struct {
-	Club struct {
+	Club *struct {
 		ID   string `yaml:"id"`
 		Name string `yaml:"name"`
 	} `yaml:"club"`
@@ -68,7 +68,7 @@ type fileConfig struct {
 		Type string         `yaml:"type"`
 		Rest map[string]any `yaml:",inline"`
 	} `yaml:"crm"`
-	Venue struct {
+	Venue *struct {
 		Timezone    string            `yaml:"timezone"`
 		SlotMinutes int               `yaml:"slot_minutes"`
 		Hours       map[string]string `yaml:"hours"`
@@ -116,8 +116,15 @@ type UpdateSettings struct {
 	ManifestURL string
 }
 
-// Settings is a validated configuration.
+// Settings is a validated configuration: the installation (CRM type and
+// login, hub, partners, local port) and, when HasClub, one club served by
+// it. With a hub the clubs of an installation are configured on the hub
+// (see ClubSpec and WithClub) and gateway.yaml normally has no club; a
+// club written in gateway.yaml is still served, and is the only way
+// without a hub.
 type Settings struct {
+	// HasClub is true when the club fields below are set.
+	HasClub  bool
 	ClubID   string
 	ClubName string
 	// Listen is the local HTTP address; empty means no local port.
@@ -142,6 +149,9 @@ type Settings struct {
 	Secrets []string
 
 	stateDirDefaulted bool
+	// installCRM is the crm section of gateway.yaml without type; a club's
+	// own crm keys go over it.
+	installCRM driver.Params
 }
 
 // CourtByID returns a configured court.
@@ -183,7 +193,14 @@ func defaultStateDir(cfgPath, club string) string {
 	if abs, err := filepath.Abs(cfgPath); err == nil {
 		return filepath.Join(filepath.Dir(abs), "state")
 	}
-	return filepath.Join(os.TempDir(), "court-gateway-"+club)
+	return filepath.Join(os.TempDir(), tempStateName(club))
+}
+
+func tempStateName(club string) string {
+	if club == "" {
+		return "court-gateway"
+	}
+	return "court-gateway-" + club
 }
 
 // Load parses and validates config bytes. All problems found are reported
@@ -209,19 +226,6 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	add := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
 
 	s := &Settings{}
-
-	// club
-	s.ClubID = strings.TrimSpace(fc.Club.ID)
-	s.ClubName = strings.TrimSpace(fc.Club.Name)
-	switch {
-	case s.ClubID == "":
-		add("club.id: параметр обязателен (короткое имя латиницей, например my-club)")
-	case !slugRe.MatchString(s.ClubID):
-		add("club.id: «%s» — допустимы строчные латинские буквы, цифры и дефис, до 63 символов", s.ClubID)
-	}
-	if s.ClubName == "" {
-		add("club.name: параметр обязателен (название клуба)")
-	}
 
 	// hub
 	if fc.Hub != nil {
@@ -290,72 +294,29 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("crm.type: параметр обязателен (тип CRM клуба)")
 	}
 
-	// venue
-	s.TimezoneName = strings.TrimSpace(fc.Venue.Timezone)
-	if s.TimezoneName == "" {
-		add("venue.timezone: параметр обязателен (например Europe/Moscow)")
-	} else if loc, err := time.LoadLocation(s.TimezoneName); err != nil {
-		add("venue.timezone: неизвестный часовой пояс «%s» (пример: Europe/Moscow)", s.TimezoneName)
+	// the club of gateway.yaml: required without a hub; with a hub the
+	// clubs normally come from the hub
+	s.installCRM = driver.Params(fc.CRM.Rest)
+	if s.installCRM == nil {
+		s.installCRM = driver.Params{}
+	}
+	if s.Hub == nil || fc.Club != nil || fc.Venue != nil || len(fc.Courts) > 0 || fc.Services != nil {
+		spec := ClubSpec{Services: fc.Services}
+		if fc.Club != nil {
+			spec.ID, spec.Name = fc.Club.ID, fc.Club.Name
+		}
+		if fc.Venue != nil {
+			spec.Timezone, spec.SlotMinutes, spec.Hours = fc.Venue.Timezone, fc.Venue.SlotMinutes, fc.Venue.Hours
+		}
+		for _, c := range fc.Courts {
+			spec.Courts = append(spec.Courts, CourtSpec{ID: c.ID, Name: c.Name, Params: c.Rest})
+		}
+		errs = append(errs, applyClub(s, spec, filePaths)...)
 	} else {
-		s.Location = loc
-	}
-	s.SlotMinutes = fc.Venue.SlotMinutes
-	slotOK := true
-	if s.SlotMinutes < 5 || s.SlotMinutes > 240 || 1440%s.SlotMinutes != 0 {
-		add("venue.slot_minutes: %d — шаг сетки в минутах, от 5 до 240, и сутки должны делиться на него без остатка (например 30 или 60)", s.SlotMinutes)
-		slotOK = false
-	}
-	if len(fc.Venue.Hours) == 0 {
-		add("venue.hours: параметр обязателен (часы работы по дням недели, например mon-fri: \"07:00-23:00\")")
-	} else {
-		hours, herrs := parseHours(fc.Venue.Hours)
-		errs = append(errs, herrs...)
-		s.Hours = hours
-		if slotOK && len(herrs) == 0 {
-			for i, h := range hours {
-				if h != nil && (h.Open%s.SlotMinutes != 0 || h.Close%s.SlotMinutes != 0) {
-					add("venue.hours: часы работы в %s не совпадают с сеткой %d мин", dayNamesRu[i], s.SlotMinutes)
-				}
-			}
+		s.Driver.CRM = driver.Params{}
+		for k, v := range s.installCRM {
+			s.Driver.CRM[k] = v
 		}
-	}
-
-	// courts
-	if len(fc.Courts) == 0 {
-		add("courts: нужен хотя бы один корт")
-	}
-	seenCourt := map[string]bool{}
-	for i, c := range fc.Courts {
-		path := fmt.Sprintf("courts[%d]", i)
-		id := strings.TrimSpace(c.ID)
-		name := strings.TrimSpace(c.Name)
-		switch {
-		case id == "":
-			add("%s.id: параметр обязателен (например court-1)", path)
-		case !slugRe.MatchString(id):
-			add("%s.id: «%s» — допустимы строчные латинские буквы, цифры и дефис", path, id)
-		case seenCourt[id]:
-			add("%s.id: корт «%s» указан дважды", path, id)
-		}
-		seenCourt[id] = true
-		if name == "" {
-			add("%s.name: параметр обязателен (название корта)", path)
-		}
-		s.Courts = append(s.Courts, Court{ID: id, Name: name})
-		s.Driver.Courts = append(s.Driver.Courts, driver.CourtConfig{ID: id, Name: name, Params: driver.Params(c.Rest)})
-	}
-
-	// services
-	s.Driver.Services = map[string]driver.Params{}
-	for k, v := range fc.Services {
-		if k != "booking" && k != "tournament" {
-			add("services: неизвестная услуга «%s» (допустимы booking и tournament)", k)
-			continue
-		}
-		if v == nil {
-			continue
-		}
-		s.Driver.Services[k] = driver.Params(v)
 	}
 
 	// partners: with a hub, partner keys live on the hub; a local list is
@@ -433,14 +394,7 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	}
 	if s.StateDir == "" {
 		s.stateDirDefaulted = true
-		s.StateDir = filepath.Join(os.TempDir(), "court-gateway-"+s.ClubID)
-	}
-
-	s.Driver.Timezone = s.Location
-	s.Driver.SlotMinutes = s.SlotMinutes
-	s.Driver.CRM = driver.Params(fc.CRM.Rest)
-	if s.Driver.CRM == nil {
-		s.Driver.CRM = driver.Params{}
+		s.StateDir = filepath.Join(os.TempDir(), tempStateName(s.ClubID))
 	}
 	s.Driver.Password = password
 	return s, nil

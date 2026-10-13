@@ -73,6 +73,18 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 	if r := c.Execute(context.Background(), Request{ID: "1", Method: "CONNECT", Path: "/v1/clubs"}); r.Status != http.StatusNotFound {
 		t.Fatalf("CONNECT reached the handler: %d", r.Status)
 	}
+	// the gateway API for the hub's operator: POST only
+	if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: PathDiscover}); r.Status != http.StatusNotFound {
+		t.Fatalf("GET %s reached the handler: %d", PathDiscover, r.Status)
+	}
+	if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodPost, Path: PathDiscover}); r.Status != http.StatusOK {
+		t.Fatalf("POST %s blocked: %d", PathDiscover, r.Status)
+	}
+	for _, p := range []string{"/gateway/other", "/gateway/discover/../../hub/status"} {
+		if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodPost, Path: p}); r.Status != http.StatusNotFound {
+			t.Fatalf("%q reached the handler: %d", p, r.Status)
+		}
+	}
 	for _, p := range []string{"/v1/clubs", "/health/live", "/health/ready"} {
 		if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: p}); r.Status != http.StatusOK {
 			t.Fatalf("%q blocked: %d", p, r.Status)

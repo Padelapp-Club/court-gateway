@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,9 @@ type ClientConfig struct {
 	Logger                   *slog.Logger
 	// OnHint is called when the hub says a newer release exists.
 	OnHint func(version string)
+	// OnConfigVersion is called with the hub's club configuration version
+	// from every poll and heartbeat answer that carries one.
+	OnConfigVersion func(version int64)
 	// Transport defaults to NewTransport(nil).
 	Transport http.RoundTripper
 	// Backoff after a failed poll grows from MinBackoff to MaxBackoff with
@@ -271,6 +275,7 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 		return nil, cleanError(err)
 	}
 	defer resp.Body.Close()
+	c.noteConfigVersion(resp.Header)
 	if h := resp.Header.Get(HeaderUpdateHint); h != "" && c.cfg.OnHint != nil {
 		if prev, _ := c.lastHint.Load().(string); prev != h {
 			c.lastHint.Store(h)
@@ -304,6 +309,48 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 		return nil, errors.New("hub sent a request without id")
 	}
 	return &rq, nil
+}
+
+func (c *Client) noteConfigVersion(h http.Header) {
+	if c.cfg.OnConfigVersion == nil {
+		return
+	}
+	v := h.Get(HeaderConfigVersion)
+	if v == "" {
+		return
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+		c.cfg.OnConfigVersion(n)
+	}
+}
+
+// MaxConfigBody bounds the club configuration of an installation.
+const MaxConfigBody = 8 << 20
+
+// FetchConfig pulls the installation's club configuration from the hub.
+func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
+	var out RemoteConfig
+	req, err := c.newRequest(ctx, http.MethodGet, PathConfig, nil)
+	if err != nil {
+		return out, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, cleanError(err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized:
+		c.authFail.Store(true)
+		return out, ErrUnauthorized
+	default:
+		return out, fmt.Errorf("hub answered HTTP %d to a config request", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxConfigBody)).Decode(&out); err != nil {
+		return RemoteConfig{}, errors.New("hub sent a malformed config")
+	}
+	return out, nil
 }
 
 func (c *Client) reply(ctx context.Context, r Response) {
@@ -354,6 +401,9 @@ func allowed(method, p string) bool {
 	}
 	if p == "" || path.Clean(p) != p || strings.Contains(p, "%") {
 		return false
+	}
+	if p == PathDiscover {
+		return method == http.MethodPost
 	}
 	return p == "/health/live" || p == "/health/ready" || strings.HasPrefix(p, "/v1/")
 }

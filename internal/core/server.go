@@ -57,6 +57,12 @@ func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger, opts ...Optio
 	return s, nil
 }
 
+// Settings returns the club's settings.
+func (s *Server) Settings() *Settings { return s.cfg }
+
+// Driver returns the club's driver.
+func (s *Server) Driver() driver.Driver { return s.drv }
+
 // Handler returns the complete handler: request ids, access log, panic
 // recovery, unauthenticated health endpoints and the partner API behind
 // the auth middleware.

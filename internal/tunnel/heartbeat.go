@@ -20,10 +20,17 @@ type Heartbeat struct {
 	// Reason is a short upper-case code when Ready is false.
 	Reason    string    `json:"reason,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
+	// ConfigVersion is the club configuration version the gateway runs;
+	// ConfigError says why the hub's current version was refused (the
+	// gateway then keeps running the previous one); Clubs are the clubs it
+	// serves.
+	ConfigVersion int64    `json:"config_version"`
+	ConfigError   string   `json:"config_error,omitempty"`
+	Clubs         []string `json:"clubs,omitempty"`
 }
 
 // MaxHeartbeatBody bounds an encoded heartbeat.
-const MaxHeartbeatBody = 4096
+const MaxHeartbeatBody = 64 << 10
 
 // SelfCheck runs the gateway's readiness check (CRM login and a narrow
 // occupancy request) at most once per Interval. It is the only scheduled
@@ -103,6 +110,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb Heartbeat) error {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	c.noteConfigVersion(resp.Header)
 	switch resp.StatusCode {
 	case http.StatusNoContent, http.StatusOK:
 		return nil

@@ -1,7 +1,8 @@
 #cloud-config
 # court-gateway на облачной ВМ (Ubuntu/Debian, amd64 или arm64; 1 vCPU, до 1 ГБ памяти).
 #
-# 1. Впишите пять значений в блок «Заполните» ниже.
+# 1. Впишите четыре значения в блок «Заполните» ниже. Клуб, корты и часы не нужны:
+#    их настраивает оператор на хабе.
 # 2. Вставьте весь файл в поле «Пользовательские данные» (user data / cloud-init) при создании ВМ.
 # 3. Белый IP, домен и входящие порты НЕ нужны: шлюз сам подключается к хабу.
 #    Если облако предлагает открыть порты — не открывайте (SSH можно оставить для себя).
@@ -18,10 +19,9 @@ write_files:
     permissions: "0600"
     content: |
       # ---- Заполните ----
-      GATEWAY_HUB_URL='https://hub.example.com'
+      GATEWAY_HUB_URL='https://hub.example.test'
       GATEWAY_JOIN_CODE='XXXX-XXXX-XXXX-XXXX'
-      CRM_USERNAME='admin@example.com'
-      CRM_STUDIO='00000000-0000-0000-0000-000000000000'
+      CRM_USERNAME='admin@example.test'
       CRM_PASSWORD='пароль-администратора-Viva'
       # --------------------
 
@@ -48,7 +48,7 @@ runcmd:
       grep " $FILE\$" SHA256SUMS | sha256sum -c -
       install -m 0755 "$FILE" court-gateway
       rm -f "$FILE"
-      # one-time setup: CRM discovery, join code -> gateway.yaml and .env (0600)
+      # one-time setup: CRM login check, join code -> gateway.yaml and .env (0600)
       set -a; . /root/court-gateway-setup.env; set +a
       ./court-gateway setup --non-interactive --json --config "$DIR/gateway.yaml" > /root/court-gateway-setup.json || true
       shred -u /root/court-gateway-setup.env 2>/dev/null || rm -f /root/court-gateway-setup.env

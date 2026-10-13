@@ -28,6 +28,9 @@ type PriceCase struct {
 type Env struct {
 	Handler http.Handler
 	Club    string
+	// OtherClubs are the other clubs the same handler serves (an
+	// installation with several clubs); they must be listed too.
+	OtherClubs []string
 	// ReadKey has only the read scope; BookKey has read and book;
 	// OtherBookKey belongs to a second partner with read and book.
 	ReadKey      string
@@ -217,8 +220,17 @@ func testDiscovery(t *testing.T, env *Env) {
 	r := c.do(http.MethodGet, "/v1/clubs", env.ReadKey, nil)
 	expect(t, r, http.StatusOK, "")
 	clubs, _ := r.JSON["clubs"].([]any)
-	if len(clubs) != 1 || clubs[0].(map[string]any)["id"] != env.Club {
+	listed := map[any]bool{}
+	for _, c := range clubs {
+		listed[c.(map[string]any)["id"]] = true
+	}
+	if len(clubs) != 1+len(env.OtherClubs) || !listed[env.Club] {
 		t.Fatalf("clubs = %s", r.Body)
+	}
+	for _, o := range env.OtherClubs {
+		if !listed[o] {
+			t.Fatalf("clubs = %s, lacks %s", r.Body, o)
+		}
 	}
 	r = c.do(http.MethodGet, c.base(), env.ReadKey, nil)
 	expect(t, r, http.StatusOK, "")

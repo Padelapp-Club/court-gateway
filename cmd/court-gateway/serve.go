@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -20,7 +21,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/remote"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
@@ -91,12 +94,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	}
 
 	s.Driver.Logger = log
-	drv, err := core.BuildDriver(s, factories)
-	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
-	}
-	srv, err := core.NewServer(s, drv, log)
+	clubs, syncer, _, err := buildInstallation(s, log)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
 		return 2
@@ -112,7 +110,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	errc := make(chan error, 1)
 	if s.Listen != "" {
 		httpSrv = &http.Server{
-			Addr: s.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second,
+			Addr: s.Listen, Handler: clubs.Handler(), ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second,
 			MaxHeaderBytes: 64 << 10,
 		}
@@ -134,9 +132,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 			return 2
 		}
 		client, err = tunnel.NewClient(tunnel.ClientConfig{
-			HubURL: s.Hub.URL, Secret: s.Hub.Secret, Polls: s.Hub.Polls, Handler: srv.TunnelHandler(),
+			HubURL: s.Hub.URL, Secret: s.Hub.Secret, Polls: s.Hub.Polls, Handler: clubs.TunnelHandler(),
 			Version: version, Build: build(), Platform: platform(), Logger: log,
-			Transport: tunnel.NewTransport(roots),
+			Transport: tunnel.NewTransport(roots), OnConfigVersion: syncer.Notify,
 			OnHint: func(string) {
 				select {
 				case hint <- struct{}{}:
@@ -149,6 +147,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 			return 2
 		}
 		gw.connected = client.Connected
+		syncer.SetFetch(client.FetchConfig)
+		go syncer.Run(ctx)
 		go client.Run(ctx)
 	}
 
@@ -160,7 +160,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
-		check := &tunnel.SelfCheck{Ready: drv.Ready, Reason: core.ReadyReason, Interval: statusInterval,
+		check := &tunnel.SelfCheck{Ready: clubs.Ready, Reason: core.ReadyReason, Interval: statusInterval,
 			Timeout: core.ReadyTimeout, Version: version, Build: build()}
 		var st core.HealthStatus
 		lastHub := ""
@@ -181,6 +181,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 				gw.ready.Store(st.Ready)
 				gw.reason.Store(st.Reason)
 				if client != nil {
+					cs := syncer.State()
+					hb.ConfigVersion, hb.ConfigError, hb.Clubs = cs.Version, cs.Error, cs.Clubs
 					go sendHeartbeat(ctx, client, hb, log)
 				}
 			}
@@ -233,7 +235,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		go u.Loop(ctx, hint, first, 24*time.Hour, func(res update.Result) { restartTo <- res.Target })
 	}
 
-	log.Info("started", "version", version, "build", build(), "listen", s.Listen, "hub", s.Hub != nil, "crm", s.CRMType, "courts", len(s.Courts))
+	log.Info("started", "version", version, "build", build(), "listen", s.Listen, "hub", s.Hub != nil, "crm", s.CRMType, "local_club", s.ClubID)
 	code := 0
 	var target string
 	select {
@@ -267,6 +269,45 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		return exitRestart
 	}
 	return code
+}
+
+// buildInstallation builds what serve runs: the club of gateway.yaml (if
+// any), the CRM account, the multi-club handler and the syncer that keeps
+// the clubs equal to the installation's config on the hub.
+func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, driver.Account, error) {
+	var local []*core.Server
+	if s.HasClub {
+		drv, err := core.BuildDriver(s, factories)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		srv, err := core.NewServer(s, drv, log)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		local = append(local, srv)
+	}
+	var acct driver.Account
+	if f, ok := accounts[s.CRMType]; ok {
+		a, err := f(s.Driver)
+		if err != nil {
+			return nil, nil, nil, &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
+		}
+		acct = a
+	} else if !s.HasClub {
+		return nil, nil, nil, &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
+	}
+	o := core.ClubsOptions{Logger: log}
+	if acct != nil {
+		o.ReadyNoClubs = acct.CheckLogin
+	}
+	clubs, err := core.NewClubs(s, o)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
+	syncer := remote.New(remote.Options{Base: s, Factories: factories, Clubs: clubs, Local: local, Logger: log})
+	return clubs, syncer, acct, nil
 }
 
 // sendHeartbeat reports one self-check to the hub. A failed heartbeat is
@@ -437,18 +478,14 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	drv, err := core.BuildDriver(s, factories)
+	clubs, _, _, err := buildInstallation(s, nil)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if _, err := core.NewServer(s, drv, nil); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := drv.Ready(ctx); err != nil {
+	if err := clubs.Ready(ctx); err != nil {
 		fmt.Fprintln(stderr, "CRM: "+core.ReadyReason(err))
 		return update.SelfCheckTransientExit
 	}

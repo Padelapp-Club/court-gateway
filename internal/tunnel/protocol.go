@@ -17,6 +17,8 @@
 // that is what "requests from the hub are signed" means for this design.
 package tunnel
 
+import "encoding/json"
+
 // Endpoints on the hub.
 const (
 	PathRegister  = "/tunnel/register"
@@ -24,7 +26,13 @@ const (
 	PathReply     = "/tunnel/reply"
 	PathWhoami    = "/tunnel/whoami"
 	PathHeartbeat = "/tunnel/heartbeat"
+	// PathConfig returns the installation's club configuration.
+	PathConfig = "/tunnel/config"
 )
+
+// PathDiscover is served by the GATEWAY (through the tunnel): the hub's
+// operator API asks the gateway to read its CRM and draft a club config.
+const PathDiscover = "/gateway/discover"
 
 // Headers a gateway sends with every poll, and the hub's update hint.
 const (
@@ -32,6 +40,10 @@ const (
 	HeaderBuild      = "X-Gateway-Build" // BuildRelease or BuildSelf
 	HeaderPlatform   = "X-Gateway-Platform"
 	HeaderUpdateHint = "X-Update-Hint"
+	// HeaderConfigVersion is set by the hub on poll and heartbeat answers:
+	// the current version of the installation's club configuration. A
+	// gateway that runs another version pulls PathConfig.
+	HeaderConfigVersion = "X-Config-Version"
 )
 
 // Build kinds reported by a gateway.
@@ -80,19 +92,40 @@ type RegisterRequest struct {
 	Version string `json:"version,omitempty"`
 }
 
-// RegisterResponse carries the long-lived secret. It is shown once.
+// RegisterResponse carries the long-lived secret. It is shown once. Club
+// and ClubName are the installation's id and name under their historical
+// names (gateways before installations read them).
 type RegisterResponse struct {
-	Club     string `json:"club"`
-	ClubName string `json:"club_name"`
-	Secret   string `json:"secret"`
+	Installation string `json:"installation_id"`
+	Club         string `json:"club"`
+	ClubName     string `json:"club_name"`
+	Secret       string `json:"secret"`
 }
 
-// Whoami is the hub's view of the calling gateway.
+// Whoami is the hub's view of the calling gateway. Club is the
+// installation id under its historical name.
 type Whoami struct {
-	Club      string `json:"club"`
-	Connected bool   `json:"connected"`
-	LastSeen  string `json:"last_seen,omitempty"`
-	Latest    string `json:"latest_version,omitempty"`
+	Installation string `json:"installation_id"`
+	Club         string `json:"club"`
+	Connected    bool   `json:"connected"`
+	LastSeen     string `json:"last_seen,omitempty"`
+	Latest       string `json:"latest_version,omitempty"`
+	// ConfigVersion is the hub's current club configuration version;
+	// Clubs are the clubs in it.
+	ConfigVersion int64    `json:"config_version"`
+	Clubs         []string `json:"clubs"`
+	// Applied* is what the gateway reported in its last heartbeat.
+	AppliedConfigVersion int64    `json:"applied_config_version"`
+	ConfigError          string   `json:"config_error,omitempty"`
+	ClubsServed          []string `json:"clubs_served"`
+}
+
+// RemoteConfig is the club configuration of an installation (PathConfig).
+// Clubs are core.ClubSpec objects, kept raw here so the tunnel does not
+// depend on the core.
+type RemoteConfig struct {
+	Version int64             `json:"version"`
+	Clubs   []json.RawMessage `json:"clubs"`
 }
 
 // forwardedHeaders are the only request/response headers carried through

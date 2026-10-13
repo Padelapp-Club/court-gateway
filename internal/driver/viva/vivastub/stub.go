@@ -47,8 +47,15 @@ type Stub struct {
 	OmitCommentOnRead bool
 	// OmitTitleOnRead removes "title" from reads by id.
 	OmitTitleOnRead bool
+	// StudioName, StudioOffset (hours from UTC) and WorkTime (weekday name
+	// -> {from, to} as "HH:MM+03:00"; nil omits workTime) describe Studio
+	// in GET /studios.
+	StudioName   string
+	StudioOffset float64
+	WorkTime     map[string][2]string
 
 	mu        sync.Mutex
+	others    []map[string]any  // more studios of the account (listed only)
 	rooms     map[string]string // id -> name
 	tokens    map[string]bool
 	exercises map[string]map[string]any
@@ -97,6 +104,50 @@ func (s *Stub) AddRoom(id, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rooms[strings.ToLower(id)] = name
+}
+
+// AddStudio lists one more studio of the account in GET /studios, with
+// rooms (id -> name). Its rooms are not bookable in the stub.
+func (s *Stub) AddStudio(id, name string, rooms map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.others = append(s.others, studioObject(id, name, 3, nil, rooms))
+}
+
+func studioObject(id, name string, offset float64, workTime map[string][2]string, rooms map[string]string) map[string]any {
+	ids := make([]string, 0, len(rooms))
+	for rid := range rooms {
+		ids = append(ids, rid)
+	}
+	sort.Strings(ids)
+	list := []map[string]any{}
+	for _, rid := range ids {
+		list = append(list, map[string]any{
+			"id": rid, "name": rooms[rid], "studioId": id, "orgId": "00000000-0000-4000-8000-0000000000f0",
+			"totalCapacity": 4, "color": "#000000", "workTime": nil, "rates": []any{}, "directions": []any{},
+			"roomPartition": nil, "customFields": []any{}, "photos": []any{}, "mainPhoto": nil,
+		})
+	}
+	st := map[string]any{"id": id, "name": name, "offset": offset, "schedule": nil, "rooms": list}
+	if workTime != nil {
+		daily := map[string]any{}
+		for day, ft := range workTime {
+			daily[day] = map[string]string{"from": ft[0], "to": ft[1]}
+		}
+		st["workTime"] = map[string]any{"dailyWorkTime": daily}
+	}
+	return st
+}
+
+func (s *Stub) studios() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := s.StudioName
+	if name == "" {
+		name = "Studio"
+	}
+	out := []map[string]any{studioObject(s.Studio, name, s.StudioOffset, s.WorkTime, s.rooms)}
+	return append(out, s.others...)
 }
 
 // SetPricing stores a price list body for GET /pricing/{id}.
@@ -232,6 +283,16 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRead(w, parts[0], parts[1])
 	case len(parts) == 2 && (parts[0] == "exercises" || parts[0] == "breaks") && r.Method == http.MethodDelete:
 		s.handleDelete(w, parts[0], parts[1])
+	case len(parts) == 1 && parts[0] == "studios" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, s.studios())
+	case len(parts) == 2 && parts[0] == "studios" && r.Method == http.MethodGet:
+		for _, st := range s.studios() {
+			if st["id"] == parts[1] {
+				writeJSON(w, http.StatusOK, st)
+				return
+			}
+		}
+		notFound(w)
 	case len(parts) == 1 && parts[0] == "pricing" && r.Method == http.MethodGet:
 		s.handlePricingList(w, r)
 	case len(parts) == 2 && parts[0] == "pricing" && r.Method == http.MethodGet:

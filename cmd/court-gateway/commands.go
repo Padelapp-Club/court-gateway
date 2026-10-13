@@ -42,21 +42,30 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	fs.StringVar(&in.HubURL, "hub-url", firstSet(getenv("GATEWAY_HUB_URL"), defaultHubURL), "hub address (env GATEWAY_HUB_URL)")
 	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "extra CA certificate for a self-hosted hub")
 	fs.StringVar(&in.JoinCode, "join-code", getenv("GATEWAY_JOIN_CODE"), "one-time join code (env GATEWAY_JOIN_CODE)")
-	fs.StringVar(&in.ClubID, "club-id", getenv("GATEWAY_CLUB_ID"), "expected club id (must match the join code)")
-	fs.StringVar(&in.ClubName, "club-name", getenv("GATEWAY_CLUB_NAME"), "club name (default: from the hub)")
-	fs.StringVar(&in.CRMType, "crm", "viva", "CRM type: viva or demo")
+	fs.StringVar(&in.CRMType, "crm", "", "CRM type: viva (default) or demo")
 	fs.StringVar(&in.Username, "crm-username", getenv("CRM_USERNAME"), "CRM administrator login (env CRM_USERNAME)")
-	fs.StringVar(&in.Studio, "crm-studio", getenv("CRM_STUDIO"), "CRM studio id (env CRM_STUDIO)")
 	fs.StringVar(&in.AuthURL, "crm-auth-url", "", "CRM login endpoint override (test doubles)")
 	fs.StringVar(&in.APIURL, "crm-api-url", "", "CRM API endpoint override (test doubles)")
-	fs.StringVar(&in.Timezone, "timezone", "Europe/Moscow", "club time zone")
-	fs.IntVar(&in.SlotMinutes, "slot-minutes", 30, "booking grid step, minutes")
+	// Inputs of older versions: accepted so old scripts keep working, and
+	// ignored — the hub assigns the installation and configures its clubs.
+	for _, name := range []string{"club-id", "club-name", "crm-studio", "timezone", "slot-minutes"} {
+		fs.String(name, "", "deprecated, ignored: clubs are configured on the hub")
+	}
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "club-id", "club-name", "crm-studio", "timezone", "slot-minutes":
+			in.Ignored = append(in.Ignored, "--"+f.Name)
+		}
+	})
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
 	in.JoinCode = strings.TrimSpace(in.JoinCode)
+	if *nonInteractive && in.CRMType == "" {
+		in.CRMType = "viva"
+	}
 	in.Password = getenv("CRM_PASSWORD")
 	reader := bufio.NewReader(stdin)
 	if *passwordStdin {
@@ -131,18 +140,19 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		return strings.TrimRight(s, "\r\n"), nil
 	}
 	var err error
-	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся логин и пароль администратора Viva и код подключения от нас.")
+	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся тип CRM, логин и пароль администратора CRM и код подключения.")
+	fmt.Fprintln(w, "Клубы, корты и часы работы здесь не задаются: их подключит оператор на хабе.")
 	if in.HubURL == "" {
 		if in.HubURL, err = line("Адрес хаба (пришёл вместе с кодом подключения)", ""); err != nil {
 			return err
 		}
 	}
-	if in.JoinCode == "" {
-		if in.JoinCode, err = secret("Код подключения"); err != nil {
+	if in.CRMType == "" {
+		if in.CRMType, err = line("Тип CRM (viva или demo)", "viva"); err != nil {
 			return err
 		}
 	}
-	if in.CRMType == "" || in.CRMType == "viva" {
+	if in.CRMType == "viva" {
 		if in.Username == "" {
 			if in.Username, err = line("Логин администратора Viva (e-mail)", ""); err != nil {
 				return err
@@ -153,14 +163,11 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 				return err
 			}
 		}
-		if in.Studio == "" {
-			if in.Studio, err = line("Идентификатор студии Viva (UUID из адресной строки кабинета Viva)", ""); err != nil {
-				return err
-			}
-		}
 	}
-	if in.Timezone, err = line("Часовой пояс клуба", in.Timezone); err != nil {
-		return err
+	if in.JoinCode == "" {
+		if in.JoinCode, err = secret("Код подключения"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -170,23 +177,16 @@ func printSetup(w io.Writer, r setup.Result) {
 		fmt.Fprintf(w, "Не получилось (%s): %s\n", r.Error.Code, r.Error.Message)
 		return
 	}
-	fmt.Fprintf(w, "Готово. Клуб: %s (%s), хаб: %s\n", r.Club.Name, r.Club.ID, r.Hub)
+	fmt.Fprintf(w, "Готово. Установка: %s (%s), хаб: %s\n", r.Installation.Name, r.Installation.ID, r.Hub)
 	fmt.Fprintf(w, "Конфигурация: %s\nСекреты:      %s (доступ только владельцу)\n", r.Config, r.EnvFile)
-	fmt.Fprintf(w, "Корты (%d):\n", len(r.Courts))
-	for _, c := range r.Courts {
-		if c.Room != "" {
-			fmt.Fprintf(w, "  %s  %s  (броней за 28 дней: %d)\n", c.ID, c.Name, c.Bookings)
-		} else {
-			fmt.Fprintf(w, "  %s  %s\n", c.ID, c.Name)
-		}
-	}
 	if len(r.Warnings) > 0 {
 		fmt.Fprintln(w, "Проверьте:")
 		for _, x := range r.Warnings {
 			fmt.Fprintf(w, "  - %s\n", x.Message)
 		}
 	}
-	fmt.Fprintln(w, "Дальше: court-gateway install-service, затем court-gateway doctor")
+	fmt.Fprintln(w, "Дальше: court-gateway install-service, затем court-gateway doctor.")
+	fmt.Fprintln(w, "Больше ничего делать не нужно: клубы подключает оператор на хабе, шлюз получит их сам.")
 }
 
 func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
@@ -198,7 +198,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 2
 	}
 	rep := doctor.Run(context.Background(), doctor.Options{
-		ConfigPath: *cfgPath, Getenv: getenv, Factories: factories, Version: version, ReleaseKey: releaseKey,
+		ConfigPath: *cfgPath, Getenv: getenv, Factories: factories, Accounts: accounts, Version: version, ReleaseKey: releaseKey,
 	})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -207,6 +207,10 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	} else {
 		mark := map[doctor.Status]string{doctor.OK: "ок  ", doctor.Warn: "ВНИМ", doctor.Fail: "ОШИБ", doctor.Skip: " -  "}
 		fmt.Fprintf(stdout, "court-gateway %s (%s)\n", rep.Version, rep.Build)
+		if rep.Installation != "" {
+			fmt.Fprintf(stdout, "Установка %s: конфигурация клубов версии %d (%s); служба применила версию %d и обслуживает: %s\n",
+				rep.Installation, rep.ConfigVersion, listOrNone(rep.Clubs), rep.AppliedConfigVersion, listOrNone(rep.ClubsServed))
+		}
 		for _, c := range rep.Checks {
 			fmt.Fprintf(stdout, "[%s] %-17s %s\n", mark[c.Status], c.Code, c.Message)
 			if c.Hint != "" && c.Status != doctor.OK {
@@ -223,6 +227,13 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 1
 	}
 	return 0
+}
+
+func listOrNone(v []string) string {
+	if len(v) == 0 {
+		return "клубов нет"
+	}
+	return strings.Join(v, ", ")
 }
 
 func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig string, uninstall bool) int {

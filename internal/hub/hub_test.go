@@ -258,10 +258,11 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 		t.Fatalf("one code redeemed %d times", wins)
 	}
 	// expiry
-	code, _, err = hub.CreateJoinCode(w.hub.StateDir, "demo-club", "Демо-клуб", time.Hour, now)
+	jc, err := hub.CreateJoinCode(w.hub.StateDir, "demo-club", "Демо-клуб", time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	code = jc.Code
 	mu.Lock()
 	now = now.Add(time.Hour + time.Second)
 	mu.Unlock()

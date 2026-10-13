@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,7 +100,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+tunnel.PathReply, s.gateway(s.handleReply))
 	mux.HandleFunc("GET "+tunnel.PathWhoami, s.gateway(s.handleWhoami))
 	mux.HandleFunc("POST "+tunnel.PathHeartbeat, s.gateway(s.handleHeartbeat))
-	mux.HandleFunc("GET /hub/status", s.handleStatus)
+	mux.HandleFunc("GET "+tunnel.PathConfig, s.gateway(s.handleConfig))
+	mux.HandleFunc("GET /hub/status", s.operator(s.handleStatus))
+	mux.HandleFunc("POST /hub/installations", s.operator(s.handleCreateInstallation))
+	mux.HandleFunc("GET /hub/installations/{inst}", s.operator(s.handleGetInstallation))
+	mux.HandleFunc("DELETE /hub/installations/{inst}", s.operator(s.handleDeleteInstallation))
+	mux.HandleFunc("POST /hub/installations/{inst}/join-codes", s.operator(s.handleCreateJoinCode))
+	mux.HandleFunc("PUT /hub/installations/{inst}/clubs/{club}", s.operator(s.handlePutClub))
+	mux.HandleFunc("DELETE /hub/installations/{inst}/clubs/{club}", s.operator(s.handleDeleteClub))
+	mux.HandleFunc("POST /hub/installations/{inst}/discover", s.operator(s.handleDiscover))
 	var api http.Handler = http.HandlerFunc(s.handlePartner)
 	if s.auth != nil {
 		api = s.auth.Wrap(api)
@@ -154,7 +163,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("gateway registered", "club", g.Club, "version", req.Version)
-	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Club: g.Club, ClubName: g.Name, Secret: secret})
+	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Club, Club: g.Club, ClubName: g.Name, Secret: secret})
 }
 
 func (s *Server) gateway(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
@@ -192,6 +201,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, club string)
 	if s.cfg.LatestVersion != "" && m.Build == tunnel.BuildRelease && version.Newer(s.cfg.LatestVersion, m.Version) {
 		w.Header().Set(tunnel.HeaderUpdateHint, s.cfg.LatestVersion)
 	}
+	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(club), 10))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -233,12 +243,36 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, club st
 		return
 	}
 	s.monitor.Heartbeat(club, hb)
+	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(club), 10))
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, club string) {
-	info := s.broker.Info(club)
-	out := tunnel.Whoami{Club: club, Connected: info.Connected, Latest: s.cfg.LatestVersion}
+// handleConfig gives a gateway its installation's club configuration.
+// The club argument of gateway handlers is the installation id.
+func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, inst string) {
+	out := tunnel.RemoteConfig{Clubs: []json.RawMessage{}}
+	if in, ok := s.store.Installation(inst); ok {
+		out.Version = in.Version
+		for _, c := range in.ClubList() {
+			raw, _ := json.Marshal(c)
+			out.Clubs = append(out.Clubs, raw)
+		}
+	}
+	core.WriteJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, inst string) {
+	info := s.broker.Info(inst)
+	h := s.monitor.Health(inst)
+	out := tunnel.Whoami{Installation: inst, Club: inst, Connected: info.Connected, Latest: s.cfg.LatestVersion,
+		Clubs: []string{}, AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed}
+	if out.ClubsServed == nil {
+		out.ClubsServed = []string{}
+	}
+	if in, ok := s.store.Installation(inst); ok {
+		out.ConfigVersion = in.Version
+		out.Clubs = core.SortedClubIDs(in.ClubList())
+	}
 	if !info.LastSeen.IsZero() {
 		out.LastSeen = info.LastSeen.UTC().Format(time.RFC3339)
 	}
@@ -263,9 +297,9 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		list := []clubListItem{}
-		for _, g := range s.store.Clubs() {
-			if s.cfg.partnerMayReach(partner, g.Club) {
-				list = append(list, clubListItem{ID: g.Club, Name: g.Name, Online: s.broker.Connected(g.Club)})
+		for _, c := range s.store.ClubRefs() {
+			if s.cfg.partnerMayReach(partner, c.ID) {
+				list = append(list, clubListItem{ID: c.ID, Name: c.Name, Online: s.broker.Connected(c.Installation)})
 			}
 		}
 		core.WriteJSON(w, http.StatusOK, map[string]any{"clubs": list})
@@ -277,11 +311,12 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 		return
 	}
-	if _, registered := s.store.Get(club); !registered {
+	inst, routed := s.store.Route(club)
+	if !routed {
 		core.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 		return
 	}
-	if !s.broker.Connected(club) {
+	if _, registered := s.store.Get(inst); !registered || !s.broker.Connected(inst) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_OFFLINE", "the club's gateway is not connected")
 		return
@@ -301,7 +336,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 			rq.Header[h] = v
 		}
 	}
-	resp, err := s.broker.Do(r.Context(), club, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
+	resp, err := s.broker.Do(r.Context(), inst, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):
 		w.Header().Set("Retry-After", "60")
@@ -324,7 +359,8 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 
 // ---- operator ----
 
-// ClubStatus is one row of /hub/status.
+// ClubStatus is one row of /hub/status: one installation's gateway. Club
+// is the installation id (its historical name).
 type ClubStatus struct {
 	Club      string `json:"club"`
 	Name      string `json:"name"`
@@ -342,6 +378,10 @@ type ClubStatus struct {
 	ReadyReason   string `json:"ready_reason,omitempty"`
 	LastCheck     string `json:"last_check,omitempty"`
 	RegisteredAt  string `json:"registered_at"`
+	// The club config the gateway runs (from its heartbeats).
+	AppliedConfigVersion int64    `json:"applied_config_version"`
+	ConfigError          string   `json:"config_error,omitempty"`
+	ClubsServed          []string `json:"clubs_served"`
 }
 
 func ts(t time.Time) string {
@@ -351,34 +391,50 @@ func ts(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	presented := sha256.Sum256([]byte(bearer(r)))
-	if !s.hasOp || subtle.ConstantTimeCompare(presented[:], s.opKey[:]) != 1 {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="operator"`)
-		core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "operator key required")
-		return
+// operator guards the operator API with the operator key (Bearer),
+// compared in constant time.
+func (s *Server) operator(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		presented := sha256.Sum256([]byte(bearer(r)))
+		if !s.hasOp || subtle.ConstantTimeCompare(presented[:], s.opKey[:]) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="operator"`)
+			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "operator key required")
+			return
+		}
+		next(w, r)
 	}
+}
+
+func (s *Server) statusRow(g GatewayRecord) ClubStatus {
+	info := s.broker.Info(g.Club)
+	h := s.monitor.Health(g.Club)
+	row := ClubStatus{
+		Club: g.Club, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
+		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
+		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
+		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
+		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed,
+	}
+	if row.ClubsServed == nil {
+		row.ClubsServed = []string{}
+	}
+	if h.Version != "" {
+		row.Version, row.Build = h.Version, h.Build
+	}
+	if h.Checked {
+		ready := h.Ready
+		row.Ready = &ready
+	}
+	if s.cfg.LatestVersion != "" && row.Version != "" {
+		row.Outdated = version.Compare(row.Version, s.cfg.LatestVersion) < 0
+	}
+	return row
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	rows := []ClubStatus{}
 	for _, g := range s.store.Clubs() {
-		info := s.broker.Info(g.Club)
-		h := s.monitor.Health(g.Club)
-		row := ClubStatus{
-			Club: g.Club, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
-			State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
-			Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
-			RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
-		}
-		if h.Version != "" {
-			row.Version, row.Build = h.Version, h.Build
-		}
-		if h.Checked {
-			ready := h.Ready
-			row.Ready = &ready
-		}
-		if s.cfg.LatestVersion != "" && row.Version != "" {
-			row.Outdated = version.Compare(row.Version, s.cfg.LatestVersion) < 0
-		}
-		rows = append(rows, row)
+		rows = append(rows, s.statusRow(g))
 	}
 	core.WriteJSON(w, http.StatusOK, map[string]any{"time": ts(s.now()), "latest_version": s.cfg.LatestVersion, "clubs": rows})
 }

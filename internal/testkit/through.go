@@ -1,8 +1,6 @@
 package testkit
 
 import (
-	"bytes"
-	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -32,27 +30,6 @@ func ThroughHub(t *testing.T, b *contract.Built) (handler http.Handler, logs fun
 	WaitFor(t, "gateway connected", 10*time.Second, func() bool {
 		return gw.Client.Connected() && h.Server().Broker().Connected(b.Settings.ClubID)
 	})
-	client := &http.Client{Transport: h.Transport(), Timeout: 60 * time.Second}
-	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		req, err := http.NewRequest(r.Method, h.URL()+r.URL.RequestURI(), bytes.NewReader(body))
-		if err != nil {
-			t.Errorf("forward: %v", err)
-			return
-		}
-		req.Header = r.Header.Clone()
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Errorf("forward: %v", err)
-			w.WriteHeader(599)
-			return
-		}
-		defer resp.Body.Close()
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-	})
+	handler = h.Forwarder(t)
 	return handler, func() string { return b.Logs.String() + h.Logs.String() }
 }

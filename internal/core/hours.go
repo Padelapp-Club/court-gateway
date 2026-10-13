@@ -63,7 +63,7 @@ func formatClock(min int) string {
 	return fmt.Sprintf("%02d:%02d", min/60, min%60)
 }
 
-func parseHours(m map[string]string) ([7]*DayHours, []string) {
+func parseHours(path string, m map[string]string) ([7]*DayHours, []string) {
 	var hours [7]*DayHours
 	var defined [7]bool
 	var errs []string
@@ -76,7 +76,7 @@ func parseHours(m map[string]string) ([7]*DayHours, []string) {
 		v := strings.TrimSpace(m[k])
 		days, err := parseDays(k)
 		if err != nil {
-			errs = append(errs, "venue.hours: "+err.Error())
+			errs = append(errs, path+": "+err.Error())
 			continue
 		}
 		var dh *DayHours
@@ -85,18 +85,18 @@ func parseHours(m map[string]string) ([7]*DayHours, []string) {
 			open, ok1 := parseClock(a)
 			closeAt, ok2 := parseClock(b)
 			if !ok || !ok1 || !ok2 || open >= 1440 {
-				errs = append(errs, fmt.Sprintf("venue.hours.%s: «%s» — ожидается время вида \"07:00-23:00\" (конец дня — 24:00) или closed", k, v))
+				errs = append(errs, fmt.Sprintf("%s.%s: «%s» — ожидается время вида \"07:00-23:00\" (конец дня — 24:00) или closed", path, k, v))
 				continue
 			}
 			if closeAt <= open {
-				errs = append(errs, fmt.Sprintf("venue.hours.%s: «%s» — закрытие должно быть позже открытия; работа после полуночи пока не поддерживается, укажите 24:00", k, v))
+				errs = append(errs, fmt.Sprintf("%s.%s: «%s» — закрытие должно быть позже открытия; работа после полуночи пока не поддерживается, укажите 24:00", path, k, v))
 				continue
 			}
 			dh = &DayHours{Open: open, Close: closeAt}
 		}
 		for _, d := range days {
 			if defined[d] {
-				errs = append(errs, fmt.Sprintf("venue.hours: часы на %s указаны дважды", dayNamesRu[d]))
+				errs = append(errs, fmt.Sprintf("%s: часы на %s указаны дважды", path, dayNamesRu[d]))
 				continue
 			}
 			defined[d] = true
@@ -105,7 +105,7 @@ func parseHours(m map[string]string) ([7]*DayHours, []string) {
 	}
 	for i, ok := range defined {
 		if !ok {
-			errs = append(errs, fmt.Sprintf("venue.hours: не указаны часы на %s (если клуб не работает — укажите closed)", dayNamesRu[i]))
+			errs = append(errs, fmt.Sprintf("%s: не указаны часы на %s (если клуб не работает — укажите closed)", path, dayNamesRu[i]))
 		}
 	}
 	return hours, errs

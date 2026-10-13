@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -73,8 +74,9 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 	fs := flag.NewFlagSet("hub join-code create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
-	club := fs.String("club", "", "club id: lower-case latin letters, digits, dashes")
-	name := fs.String("name", "", "club name as people know it")
+	inst := fs.String("installation", "", "installation id (one CRM account): lower-case latin letters, digits, dashes")
+	club := fs.String("club", "", "deprecated name of --installation")
+	name := fs.String("name", "", "installation name, used if the code creates the installation")
 	ttl := fs.Duration("ttl", hub.DefaultJoinCodeTTL, "how long the code stays valid")
 	if fs.Parse(args) != nil {
 		return 2
@@ -84,13 +86,26 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
 	}
-	code, expires, err := hub.CreateJoinCode(s.StateDir, *club, *name, *ttl, time.Now())
-	if err != nil {
+	if *inst == "" {
+		*inst = *club
+	}
+	jc, err := hub.CreateJoinCode(s.StateDir, *inst, *name, *ttl, time.Now())
+	switch {
+	case errors.Is(err, hub.ErrInvalidID):
+		fmt.Fprintf(stderr, "court-gateway hub: --installation: «%s» — от 2 до 63 символов: строчные латинские буквы, цифры и дефис\n", *inst)
+		return 2
+	case errors.Is(err, hub.ErrInvalidName):
+		fmt.Fprintln(stderr, "court-gateway hub: --name: не длиннее 200 символов, без управляющих символов")
+		return 2
+	case errors.Is(err, hub.ErrInvalidTTL):
+		fmt.Fprintf(stderr, "court-gateway hub: --ttl: больше нуля и не дольше %s\n", hub.MaxJoinCodeTTL)
+		return 2
+	case err != nil:
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "Код подключения клуба %s: %s\n", *club, code)
-	fmt.Fprintf(stdout, "Действует до %s UTC, один раз.\n", expires.UTC().Format("2006-01-02 15:04"))
+	fmt.Fprintf(stdout, "Код подключения установки %s: %s\n", jc.Installation, jc.Code)
+	fmt.Fprintf(stdout, "Действует до %s UTC, один раз.\n", jc.Expires.UTC().Format("2006-01-02 15:04"))
 	if s.PublicURL != "" {
 		fmt.Fprintf(stdout, "Адрес хаба: %s\n", s.PublicURL)
 		fmt.Fprintf(stdout, "Команда для клуба: court-gateway setup --hub-url %s\n", s.PublicURL)
@@ -102,19 +117,27 @@ func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	fs := flag.NewFlagSet("hub gateway revoke", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
-	club := fs.String("club", "", "club id")
+	inst := fs.String("installation", "", "installation id")
+	club := fs.String("club", "", "deprecated name of --installation")
 	if fs.Parse(args) != nil {
 		return 2
+	}
+	if *inst == "" {
+		*inst = *club
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
 	}
-	if err := hub.RevokeGateway(s.StateDir, *club); err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+	if err := hub.RevokeGateway(s.StateDir, *inst); err != nil {
+		if errors.Is(err, hub.ErrNotRegistered) {
+			fmt.Fprintf(stderr, "court-gateway hub: у установки %s нет зарегистрированного шлюза\n", *inst)
+		} else {
+			fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+		}
 		return 1
 	}
-	fmt.Fprintf(stdout, "Подключение клуба %s отозвано; шлюз потеряет доступ при следующем запросе.\n", *club)
+	fmt.Fprintf(stdout, "Подключение установки %s отозвано; шлюз потеряет доступ при следующем запросе. Клубы установки остались на хабе.\n", *inst)
 	return 0
 }

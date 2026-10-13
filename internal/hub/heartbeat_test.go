@@ -335,7 +335,7 @@ func TestHeartbeatEndpoint(t *testing.T) {
 	if code := post(w.secret, `not json`); code != http.StatusBadRequest {
 		t.Fatalf("malformed: %d", code)
 	}
-	if code := post(w.secret, `{"ready":false,"reason":"`+strings.Repeat("A", 5000)+`"}`); code != http.StatusBadRequest {
+	if code := post(w.secret, `{"ready":false,"reason":"`+strings.Repeat("A", 70000)+`"}`); code != http.StatusBadRequest {
 		t.Fatalf("oversized: %d", code)
 	}
 	if st := w.state(t); st != hub.StatePending {

@@ -41,11 +41,17 @@ var _ driver.Driver = (*Driver)(nil)
 // New is the driver.Factory for crm.type "demo".
 func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 
-// NewDriver builds a demo driver. It accepts no driver-specific keys.
+// NewDriver builds a demo driver. Its only driver-specific key is the
+// optional crm.studio, which names one of the demo account's studios.
 func NewDriver(cfg driver.Config) (*Driver, error) {
 	var errs []string
-	if err := cfg.CRM.RejectUnknown("crm"); err != nil {
+	if err := cfg.CRM.RejectUnknown("crm", "studio"); err != nil {
 		errs = append(errs, err.Error())
+	}
+	if st, err := cfg.CRM.String("crm", "studio", false); err != nil {
+		errs = append(errs, err.Error())
+	} else if st != "" && studioByID(st) == nil {
+		errs = append(errs, fmt.Sprintf("crm.studio: «%s» — в учебной CRM есть студии %s", st, studioIDs()))
 	}
 	d := &Driver{courts: map[string]bool{}, records: map[string]*record{}}
 	for i, c := range cfg.Courts {

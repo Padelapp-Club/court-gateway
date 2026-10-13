@@ -357,7 +357,7 @@ func TestCancelOwnershipRules(t *testing.T) {
 		{"another partner's marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:other]"}), false, false, driver.ErrNotOwned},
 		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, false, driver.ErrNotOwned},
 		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), false, false, nil},
-		{"comment not returned: residual, allowed", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "club note"}), true, false, nil},
+		{"exercise read without comment: refused", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), true, false, driver.ErrNotOwned},
 		{"own break", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:booker]"}), false, false, nil},
 		{"club break, other comment", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "repairs"}), false, false, driver.ErrNotOwned},
 		{"club break, no comment returned, foreign title", "b-" + seedBr(map[string]any{"title": "Repairs", "comment": "x"}), true, false, driver.ErrNotOwned},

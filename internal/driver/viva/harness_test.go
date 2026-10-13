@@ -186,11 +186,14 @@ func TestContractBreaksOnly(t *testing.T) {
 	})
 }
 
-// And with a CRM that does not return comments on read: ownership falls
-// back to the client checks only.
+// And with a CRM that does not return comments on read. VivaCRM does
+// return the comment of an exercise (observed), and an exercise read
+// without one is refused; what a break read returns is not observed, so
+// bookings here are breaks (no service configured) and ownership falls
+// back to the break title.
 func TestContractNoCommentOnRead(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		f := newFixture(t, fixtureOpts{services: bookingService})
+		f := newFixture(t, fixtureOpts{})
 		f.stub.OmitCommentOnRead = true
 		env := f.env()
 		env.NoPartnerIsolation = "the CRM returns no comment on read, so the ownership marker cannot be checked"

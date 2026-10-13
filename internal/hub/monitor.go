@@ -57,6 +57,10 @@ type clubHealth struct {
 	reason    string
 	notReady  int // heartbeats in a row with ready=false
 	beats     int
+	// what the gateway reported about its club config
+	configVersion int64
+	configError   string
+	clubsServed   []string
 
 	state      string // as of the last Tick
 	stateSince time.Time
@@ -75,6 +79,11 @@ type Health struct {
 	Reason       string
 	Failures     int
 	OfflineSince time.Time
+	// ConfigVersion, ConfigError and ClubsServed are the gateway's report
+	// on the club config it runs.
+	ConfigVersion int64
+	ConfigError   string
+	ClubsServed   []string
 }
 
 // MonitorConfig configures a Monitor.
@@ -179,6 +188,32 @@ func (m *Monitor) Heartbeat(club string, hb tunnel.Heartbeat) {
 	} else {
 		h.notReady++
 	}
+	h.configVersion, h.configError, h.clubsServed = hb.ConfigVersion, cleanConfigError(hb.ConfigError), cleanClubs(hb.Clubs)
+}
+
+// cleanConfigError bounds a gateway's config refusal text; it is shown to
+// the operator only (API), never written to status files or alerts.
+func cleanConfigError(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r >= ' ' {
+			return r
+		}
+		return -1
+	}, s)
+	if len(s) > 2000 {
+		s = s[:2000]
+	}
+	return s
+}
+
+func cleanClubs(ids []string) []string {
+	out := []string{}
+	for _, id := range ids {
+		if ValidClubID(id) && len(out) < 1000 {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // health returns club's record; m.mu must be held.
@@ -233,6 +268,7 @@ func (m *Monitor) Health(club string) Health {
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
 		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Failures: h.notReady,
+		ConfigVersion: h.configVersion, ConfigError: h.configError, ClubsServed: append([]string(nil), h.clubsServed...),
 	}
 	if out.State == StateOffline {
 		out.OfflineSince = m.silentSince(h, g.RegisteredAt)

@@ -39,6 +39,12 @@ var factories = map[string]driver.Factory{
 	"demo": demo.New,
 }
 
+// accounts lists the CRM accounts (login check and discovery) by crm.type.
+var accounts = map[string]driver.AccountFactory{
+	"viva": viva.NewAccount,
+	"demo": demo.NewAccount,
+}
+
 // exitRestart asks the service manager to start the binary again (used
 // where a process cannot replace itself, i.e. Windows, after an update).
 const exitRestart = 3
@@ -69,8 +75,8 @@ const usage = `court-gateway — партнёрский API клуба пове�
 
 Хаб (для оператора):
   hub                        запустить хаб (-config hub.yaml)
-  hub join-code create       выдать одноразовый код подключения клуба (--club id --name "Название")
-  hub gateway revoke         отозвать подключение клуба (--club id)
+  hub join-code create       выдать одноразовый код подключения установки (--installation id --name "Название")
+  hub gateway revoke         отозвать подключение установки (--installation id)
 
 Общий параметр:
   -config путь     gateway.yaml (по умолчанию gateway.yaml или $GATEWAY_CONFIG)

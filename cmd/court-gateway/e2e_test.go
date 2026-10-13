@@ -82,7 +82,7 @@ func (s *stack) setupArgs(extra ...string) []string {
 	return append([]string{"setup", "--non-interactive", "--json",
 		"--config", filepath.Join(s.dir, "gateway.yaml"),
 		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
-		"--crm-username", crmUser, "--crm-studio", studio,
+		"--crm-username", crmUser,
 		"--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1",
 	}, extra...)
 }
@@ -119,22 +119,8 @@ func TestSetupNonInteractive(t *testing.T) {
 	if rc != 0 || !r.OK {
 		t.Fatalf("setup: rc=%d %s %s", rc, out.String(), errb.String())
 	}
-	if r.Club.ID != "club-one" || r.Club.Name != "Клуб Один" {
-		t.Fatalf("club: %+v", r.Club)
-	}
-	// rooms seen in bookings, in natural order; the idle room is missing
-	// and the output says so
-	if len(r.Courts) != 2 || r.Courts[0].Name != "Корт 2" || r.Courts[1].Name != "Корт 10" || r.Courts[0].Bookings != 2 {
-		t.Fatalf("courts: %+v", r.Courts)
-	}
-	if r.Courts[0].PriceList != priceList {
-		t.Fatalf("the only price list was not assigned: %+v", r.Courts[0])
-	}
-	if r.Hours["mon-fri"] != "07:00-23:00" || r.Hours["sat-sun"] != "08:00-22:00" {
-		t.Fatalf("hours: %+v", r.Hours)
-	}
-	if !hasWarning(r, "COURTS_FROM_BOOKINGS") {
-		t.Fatalf("no warning about courts without bookings: %+v", r.Warnings)
+	if r.Installation.ID != "club-one" || r.Installation.Name != "Клуб Один" || len(r.Warnings) != 0 {
+		t.Fatalf("installation: %+v %+v", r.Installation, r.Warnings)
 	}
 	// no secret on stdout or stderr
 	for _, secret := range []string{crmPass, code, "cgs_"} {
@@ -143,9 +129,15 @@ func TestSetupNonInteractive(t *testing.T) {
 		}
 	}
 	// the files
+	// the club side keeps only the CRM login and the hub: no club, no courts
 	cfg, _ := os.ReadFile(r.Config)
-	if !strings.Contains(string(cfg), "проверьте") || strings.Contains(string(cfg), crmPass) || strings.Contains(string(cfg), "cgs_") {
+	if strings.Contains(string(cfg), crmPass) || strings.Contains(string(cfg), "cgs_") {
 		t.Fatalf("gateway.yaml:\n%s", cfg)
+	}
+	for _, w := range []string{"club:", "venue:", "courts:", "studio", studio} {
+		if strings.Contains(string(cfg), w) {
+			t.Fatalf("gateway.yaml holds %q:\n%s", w, cfg)
+		}
 	}
 	if strings.Contains(string(cfg), "listen") {
 		t.Fatalf("setup opened a local port:\n%s", cfg)
@@ -165,7 +157,7 @@ func TestSetupNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("written config does not load: %v", err)
 	}
-	if loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") || loaded.Listen != "" {
+	if loaded.HasClub || loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") || loaded.Listen != "" {
 		t.Fatalf("loaded: password ok=%v hub=%v listen=%q", loaded.Driver.Password == crmPass, loaded.Hub != nil, loaded.Listen)
 	}
 
@@ -179,6 +171,17 @@ func TestSetupNonInteractive(t *testing.T) {
 	rc = run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "x")}.get)
 	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.Error.Code != "CONFIG_EXISTS" {
 		t.Fatalf("existing config: rc=%d %s", rc, out.String())
+	}
+	// inputs of older versions are accepted, ignored and named
+	out.Reset()
+	rc = run(s.setupArgs("--force", "--club-id", "typed-by-hand", "--crm-studio", studio), &out, &errb,
+		env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get)
+	r = decodeSetup(t, out.Bytes())
+	if rc != 0 || r.Installation.ID != "club-one" || !hasWarning(r, "INPUT_IGNORED") || !strings.Contains(r.Warnings[0].Message, "--club-id") {
+		t.Fatalf("old flags: rc=%d %s", rc, out.String())
+	}
+	if cfg, _ := os.ReadFile(r.Config); strings.Contains(string(cfg), "typed-by-hand") {
+		t.Fatalf("a typed club id reached the config:\n%s", cfg)
 	}
 }
 
@@ -197,16 +200,22 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	defer func() { stdin = old }()
 	isTerminal = func() bool { return false }
 
-	answers := strings.Join([]string{s.hub.JoinCode("club-two", "Клуб Два"), crmPass, ""}, "\n") + "\n"
+	// CRM type (default), password, join code: nothing about clubs
+	answers := strings.Join([]string{"", crmPass, s.hub.JoinCode("club-two", "Клуб Два")}, "\n") + "\n"
 	stdin = strings.NewReader(answers)
 	var out, errb bytes.Buffer
 	args := []string{"setup", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
-		"--crm-username", crmUser, "--crm-studio", studio, "--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
+		"--crm-username", crmUser, "--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
 	if rc := run(args, &out, &errb, env{}.get); rc != 0 {
 		t.Fatalf("interactive: %d\n%s\n%s", rc, out.String(), errb.String())
 	}
-	if !strings.Contains(errb.String(), "Код подключения") || !strings.Contains(errb.String(), "Пароль администратора Viva") {
+	if !strings.Contains(errb.String(), "Код подключения") || !strings.Contains(errb.String(), "Пароль администратора Viva") || !strings.Contains(errb.String(), "Тип CRM") {
 		t.Fatalf("prompts: %s", errb.String())
+	}
+	for _, q := range []string{"Часовой пояс", "студии", "клуба"} {
+		if strings.Contains(errb.String(), q+":") || strings.Contains(errb.String(), q+" [") {
+			t.Fatalf("setup asked about %q: %s", q, errb.String())
+		}
 	}
 	if strings.Contains(out.String()+errb.String(), crmPass) {
 		t.Fatal("interactive setup echoed the password")
@@ -220,15 +229,17 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	stdin = strings.NewReader(crmPass + "\n")
 	out.Reset()
 	args = []string{"setup", "--non-interactive", "--json", "--password-stdin", "--config", filepath.Join(dir2, "gateway.yaml"),
-		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile, "--crm-username", crmUser, "--crm-studio", studio,
+		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile, "--crm-username", crmUser,
 		"--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
 	if rc := run(args, &out, &errb, env{"GATEWAY_JOIN_CODE": s.hub.JoinCode("club-three", "Клуб Три")}.get); rc != 0 {
 		t.Fatalf("password-stdin: %d %s", rc, out.String())
 	}
 }
 
-// The whole path a club goes through: setup -> serve -> doctor -> partner
-// call through the hub -> healthcheck; then the CRM goes away.
+// The whole path: the club runs setup once (CRM login + join code) and the
+// service; the operator configures the club on the hub; the gateway pulls
+// it -> doctor -> partner call through the hub -> healthcheck; then the
+// CRM goes away.
 func TestServeDoctorHealthcheck(t *testing.T) {
 	s := newStack(t)
 	statusInterval = 200 * time.Millisecond
@@ -238,6 +249,14 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 		t.Fatalf("setup: %s", out.String())
 	}
 	cfg := filepath.Join(s.dir, "gateway.yaml")
+	// the operator adds the club to the installation (what an admin panel does)
+	club := core.ClubSpec{ID: "club-one", Name: "Клуб Один", Timezone: "Europe/Moscow", SlotMinutes: 30,
+		Hours: map[string]string{"mon-sun": "07:00-23:00"}, CRM: map[string]any{"studio": studio},
+		Courts: []core.CourtSpec{
+			{ID: "court-1", Name: "Корт 10", Params: map[string]any{"viva_room": roomA, "price_list": priceList}},
+			{ID: "court-2", Name: "Корт 2", Params: map[string]any{"viva_room": roomB, "price_list": priceList}},
+		}}
+	s.hub.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/club-one/clubs/club-one", club)
 
 	// doctor before the service runs: the tunnel check fails, exit 1
 	out.Reset()
@@ -259,6 +278,11 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 		}
 	}()
 	testkit.WaitFor(t, "gateway connected", 15*time.Second, func() bool { return s.hub.Server().Broker().Connected("club-one") })
+	mon := s.hub.Server().Monitor()
+	testkit.WaitFor(t, "the service applied the club config", 15*time.Second, func() bool {
+		h := mon.Health("club-one")
+		return h.ConfigVersion == 1 && strings.Join(h.ClubsServed, ",") == "club-one"
+	})
 
 	out.Reset()
 	rc := run([]string{"doctor", "--json", "-config", cfg}, &out, &errb, env{}.get)
@@ -266,7 +290,10 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 	if rc != 0 || !rep.OK {
 		t.Fatalf("doctor: rc=%d %s", rc, out.String())
 	}
-	for _, c := range []string{doctor.CodeConfig, doctor.CodeCRMLogin, doctor.CodeOccupancy, doctor.CodeHubReach, doctor.CodeHubAuth, doctor.CodeTunnel} {
+	if rep.Installation != "club-one" || rep.ConfigVersion != 1 || rep.AppliedConfigVersion != 1 || strings.Join(rep.ClubsServed, ",") != "club-one" {
+		t.Fatalf("doctor report: %s", out.String())
+	}
+	for _, c := range []string{doctor.CodeConfig, doctor.CodeCRMLogin, doctor.CodeOccupancy, doctor.CodeHubReach, doctor.CodeHubAuth, doctor.CodeTunnel, doctor.CodeHubConfig} {
 		if status(rep, c) != doctor.OK {
 			t.Fatalf("%s is %s: %s", c, status(rep, c), out.String())
 		}
@@ -275,7 +302,7 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 		t.Fatalf("version check: %s", out.String())
 	}
 	out.Reset()
-	if rc := run([]string{"doctor", "-config", cfg}, &out, &errb, env{}.get); rc != 0 || !strings.Contains(out.String(), "Всё в порядке") {
+	if rc := run([]string{"doctor", "-config", cfg}, &out, &errb, env{}.get); rc != 0 || !strings.Contains(out.String(), "Всё в порядке") || !strings.Contains(out.String(), "обслуживает: club-one") {
 		t.Fatalf("doctor text: %d %s", rc, out.String())
 	}
 
@@ -298,7 +325,6 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 		return run([]string{"healthcheck", "-config", cfg}, &b, io.Discard, env{}.get) == 0 && strings.Contains(b.String(), "hub=connected")
 	})
 	// the same self-check reaches the hub as a heartbeat
-	mon := s.hub.Server().Monitor()
 	testkit.WaitFor(t, "hub got a ready heartbeat", 10*time.Second, func() bool {
 		h := mon.Health("club-one")
 		return h.Checked && h.Ready && h.Version != ""

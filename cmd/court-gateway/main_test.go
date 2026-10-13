@@ -90,11 +90,11 @@ func TestExampleConfigIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := core.BuildDriver(s, factories); err != nil {
+	if _, err := accounts[s.CRMType](s.Driver); err != nil {
 		t.Fatal(err)
 	}
-	if s.Listen != "" || s.Hub == nil {
-		t.Fatalf("the example must show the hub mode with no local port: listen=%q", s.Listen)
+	if s.Listen != "" || s.Hub == nil || s.HasClub {
+		t.Fatalf("the example must show a hub installation with no local port and no club: listen=%q club=%q", s.Listen, s.ClubID)
 	}
 }
 
