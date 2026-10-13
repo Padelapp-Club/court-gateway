@@ -162,8 +162,10 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
+		// each club has its own time limit (core.ReadyTimeout); this only
+		// bounds the whole round
 		check := &tunnel.SelfCheck{Ready: clubs.Ready, Reason: core.ReadyReason, Interval: statusInterval,
-			Timeout: core.ReadyTimeout, Version: version, Build: build()}
+			Timeout: time.Minute, Version: version, Build: build()}
 		var st core.HealthStatus
 		var crm tunnel.Heartbeat
 		lastSeen := time.Now() // the hub, or the start

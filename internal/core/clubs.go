@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -24,6 +25,7 @@ type Clubs struct {
 	// readyNoClubs answers readiness while no club is configured (the
 	// CRM login of the account); nil means ready.
 	readyNoClubs func(context.Context) error
+	clubTimeout  time.Duration
 	// gatewayAPI serves /gateway/ (the operator's requests).
 	gatewayAPI http.Handler
 }
@@ -49,6 +51,9 @@ type ClubsOptions struct {
 	Now    func() time.Time
 	// ReadyNoClubs is the readiness check while no club is configured.
 	ReadyNoClubs func(context.Context) error
+	// ClubTimeout bounds the readiness check of one club (default
+	// ReadyTimeout).
+	ClubTimeout time.Duration
 }
 
 // NewClubs builds an empty set.
@@ -59,7 +64,7 @@ func NewClubs(o ClubsOptions) *Clubs {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	c := &Clubs{log: o.Logger, now: o.Now, readyNoClubs: o.ReadyNoClubs}
+	c := &Clubs{log: o.Logger, now: o.Now, readyNoClubs: o.ReadyNoClubs, clubTimeout: cmp.Or(o.ClubTimeout, ReadyTimeout)}
 	c.cur.Store(&clubTable{byID: map[string]clubEntry{}})
 	return c
 }
@@ -100,16 +105,17 @@ func (c *Clubs) Server(id string) (*Server, bool) {
 const readyParallel = 4
 
 // Ready checks every club's CRM access, a few clubs at a time, each within
-// ctx (one CRM account, so in practice the first failure is everybody's);
-// with no club it checks the account. The error is the first club's, in
-// id order.
+// its own ClubTimeout (and ctx); with no club it checks the account. The
+// error is the first club's, in id order.
 func (c *Clubs) Ready(ctx context.Context) error {
 	t := c.cur.Load()
 	if len(t.ids) == 0 {
-		if c.readyNoClubs != nil {
-			return c.readyNoClubs(ctx)
+		if c.readyNoClubs == nil {
+			return nil
 		}
-		return nil
+		ctx, cancel := context.WithTimeout(ctx, c.clubTimeout)
+		defer cancel()
+		return c.readyNoClubs(ctx)
 	}
 	errs := make([]error, len(t.ids))
 	sem := make(chan struct{}, readyParallel)
@@ -119,6 +125,8 @@ func (c *Clubs) Ready(ctx context.Context) error {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
+			ctx, cancel := context.WithTimeout(ctx, c.clubTimeout)
+			defer cancel()
 			errs[i] = t.byID[id].srv.drv.Ready(ctx)
 		}()
 	}
