@@ -198,6 +198,8 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	reg, err := tunnel.Register(rctx, rt, d.HubURL, in.JoinCode, deps.Version)
 	cancel()
 	switch {
+	case errors.Is(err, tunnel.ErrRateLimited):
+		return fail(problem("HUB_RATE_LIMITED", "хаб временно не принимает коды подключения с этого адреса — повторите позже, через минуту"))
 	case errors.Is(err, tunnel.ErrJoinCodeRejected):
 		return fail(problem("JOIN_CODE_REJECTED", "хаб не принял код подключения: он неверный, уже использован или истёк — попросите новый"))
 	case err != nil:

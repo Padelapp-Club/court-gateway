@@ -1,6 +1,10 @@
 package setup
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,5 +65,21 @@ func TestMissingInputs(t *testing.T) {
 	demo := Input{CRMType: "demo", HubURL: "https://x", JoinCode: "y"}
 	if m := demo.Missing(); len(m) != 0 {
 		t.Fatalf("demo needs no CRM login: %v", m)
+	}
+}
+
+type statusTransport int
+
+func (s statusTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: int(s), Body: io.NopCloser(strings.NewReader("{}")), Header: http.Header{}, Request: r}, nil
+}
+
+// A hub that limits failed registrations answers 429: setup says to try
+// again later instead of reporting the hub as unreachable.
+func TestSetupRateLimitedByTheHub(t *testing.T) {
+	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
+	res, err := Run(context.Background(), in, Deps{HubTransport: statusTransport(http.StatusTooManyRequests)})
+	if err == nil || res.Error == nil || res.Error.Code != "HUB_RATE_LIMITED" || !strings.Contains(res.Error.Message, "повторите позже") {
+		t.Fatalf("result: %+v %v", res.Error, err)
 	}
 }

@@ -15,6 +15,10 @@ import (
 // expired; the hub deliberately does not say which).
 var ErrJoinCodeRejected = errors.New("join code rejected")
 
+// ErrRateLimited: the hub refuses registrations from this address for a
+// while after too many failed ones.
+var ErrRateLimited = errors.New("too many failed registrations from this address")
+
 // Register exchanges a join code for the gateway secret.
 func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version string) (RegisterResponse, error) {
 	var out RegisterResponse
@@ -33,6 +37,8 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 	case http.StatusOK:
 	case http.StatusForbidden, http.StatusNotFound, http.StatusGone:
 		return out, ErrJoinCodeRejected
+	case http.StatusTooManyRequests:
+		return out, ErrRateLimited
 	default:
 		return out, fmt.Errorf("hub answered HTTP %d to registration", resp.StatusCode)
 	}

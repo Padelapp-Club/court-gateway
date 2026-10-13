@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,12 +45,13 @@ type fileConfig struct {
 		CertFile string `yaml:"cert_file"`
 		KeyFile  string `yaml:"key_file"`
 	} `yaml:"tls"`
-	StateDir       string `yaml:"state_dir"`
-	StatusDir      string `yaml:"status_dir"`
-	OperatorKeyEnv string `yaml:"operator_key_env"`
-	LatestVersion  string `yaml:"latest_version"`
-	RequestTimeout string `yaml:"request_timeout"`
-	PollWait       string `yaml:"poll_wait"`
+	StateDir       string   `yaml:"state_dir"`
+	StatusDir      string   `yaml:"status_dir"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	OperatorKeyEnv string   `yaml:"operator_key_env"`
+	LatestVersion  string   `yaml:"latest_version"`
+	RequestTimeout string   `yaml:"request_timeout"`
+	PollWait       string   `yaml:"poll_wait"`
 	Partners       []struct {
 		core.PartnerEntry `yaml:",inline"`
 		Clubs             []string `yaml:"clubs"`
@@ -70,8 +72,11 @@ type Settings struct {
 	StateDir    string
 	// StatusDir receives status.json and metrics for an external checker;
 	// empty means the files are not written.
-	StatusDir      string
-	OperatorKey    string
+	StatusDir   string
+	OperatorKey string
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For names
+	// the client; from anyone else the header is ignored.
+	TrustedProxies []netip.Prefix
 	LatestVersion  string
 	RequestTimeout time.Duration
 	PollWait       time.Duration
@@ -141,6 +146,21 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	s.StatusDir = strings.TrimSpace(fc.StatusDir)
 	if s.StatusDir != "" && s.StateDir != "" && filepath.Clean(s.StatusDir) == filepath.Clean(s.StateDir) {
 		add("status_dir: должен отличаться от state_dir (файлы состояния читает внешняя проверка, а state_dir закрыт)")
+	}
+	for _, p := range fc.TrustedProxies {
+		p = strings.TrimSpace(p)
+		pfx, err := netip.ParsePrefix(p)
+		if err != nil {
+			var a netip.Addr
+			if a, err = netip.ParseAddr(p); err == nil {
+				pfx = netip.PrefixFrom(a, a.BitLen())
+			}
+		}
+		if err != nil {
+			add("trusted_proxies: «%s» — ожидается IP-адрес или сеть вида 10.0.0.0/8", p)
+			continue
+		}
+		s.TrustedProxies = append(s.TrustedProxies, pfx.Masked())
 	}
 	if env := strings.TrimSpace(fc.OperatorKeyEnv); env != "" {
 		s.OperatorKey = strings.TrimSpace(getenv(env))

@@ -10,7 +10,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,8 +131,10 @@ func newCallID() string {
 // ---- gateway side ----
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.regLim.allow(s.now()) {
-		core.WriteError(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many failed registrations, try again later")
+	client := clientIP(r, s.cfg.TrustedProxies)
+	if !s.regLim.allow(client, s.now()) {
+		w.Header().Set("Retry-After", "60")
+		core.WriteError(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many failed registrations from this address, try again later")
 		return
 	}
 	var req tunnel.RegisterRequest
@@ -140,7 +144,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	g, secret, err := s.store.Redeem(req.Code)
 	if err != nil {
-		s.regLim.fail(s.now())
+		s.regLim.fail(client, s.now())
 		if errors.Is(err, ErrJoinCode) {
 			core.WriteError(w, r, http.StatusForbidden, "JOIN_CODE_REJECTED", "the join code is unknown, already used or expired")
 			return
@@ -427,38 +431,82 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	core.WriteJSON(w, http.StatusOK, map[string]any{"time": ts(s.now()), "latest_version": s.cfg.LatestVersion, "gateways": rows})
 }
 
-// failLimiter refuses work after too many failures in a window; it slows
-// down guessing join codes without keeping per-client state.
+// failLimiter refuses work from a client after too many failures in a
+// window, so guessing join codes is slow without one client being able to
+// lock everyone else out.
 type failLimiter struct {
-	mu     sync.Mutex
-	max    int
-	window time.Duration
-	start  time.Time
-	count  int
+	mu      sync.Mutex
+	max     int
+	window  time.Duration
+	clients map[netip.Addr]*failWindow
+}
+
+type failWindow struct {
+	start time.Time
+	count int
 }
 
 func newFailLimiter(max int, window time.Duration) *failLimiter {
-	return &failLimiter{max: max, window: window}
+	return &failLimiter{max: max, window: window, clients: map[netip.Addr]*failWindow{}}
 }
 
-func (l *failLimiter) roll(now time.Time) {
-	if now.Sub(l.start) >= l.window {
-		l.start, l.count = now, 0
+func (l *failLimiter) allow(client netip.Addr, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w := l.clients[client]
+	return w == nil || now.Sub(w.start) >= l.window || w.count < l.max
+}
+
+func (l *failLimiter) fail(client netip.Addr, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.clients) > 4096 {
+		for c, w := range l.clients {
+			if now.Sub(w.start) >= l.window {
+				delete(l.clients, c)
+			}
+		}
 	}
+	w := l.clients[client]
+	if w == nil || now.Sub(w.start) >= l.window {
+		w = &failWindow{start: now}
+		l.clients[client] = w
+	}
+	w.count++
 }
 
-func (l *failLimiter) allow(now time.Time) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.roll(now)
-	return l.count < l.max
-}
-
-func (l *failLimiter) fail(now time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.roll(now)
-	l.count++
+// clientIP is the address a request came from: the peer, or, when the peer
+// is a trusted proxy, the last address in X-Forwarded-For that is not
+// one.
+func clientIP(r *http.Request, trusted []netip.Prefix) netip.Addr {
+	isTrusted := func(a netip.Addr) bool {
+		for _, p := range trusted {
+			if p.Contains(a) {
+				return true
+			}
+		}
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, _ := netip.ParseAddr(host)
+	addr = addr.Unmap()
+	if !isTrusted(addr) {
+		return addr
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			return addr
+		}
+		if addr = a.Unmap(); !isTrusted(addr) {
+			return addr
+		}
+	}
+	return addr
 }
 
 // Run serves the hub until ctx is done: the HTTP(S) listener and the
