@@ -66,6 +66,47 @@ func TestQuote(t *testing.T) {
 	}
 }
 
+// Daylight saving time: the price is for the time that actually passes.
+// In Europe/Berlin clocks go back at 03:00 on 2030-10-27 (02:00-03:00 is
+// lived twice) and forward at 02:00 on 2030-03-31 (02:00-03:00 never
+// happens).
+func TestQuoteAcrossDaylightSavingChanges(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := driver.Weekdays{true, true, true, true, true, true, true}
+	flat := driver.PriceTable{Base: []driver.PriceRule{{Days: all, From: 0, To: 1440, PerHour: 2000_00}}}
+	// 2000/h until 02:30 local, 4000/h after
+	split := driver.PriceTable{Base: []driver.PriceRule{{Days: all, From: 0, To: 150, PerHour: 2000_00}, {Days: all, From: 150, To: 1440, PerHour: 4000_00}}}
+	summer, winter := time.FixedZone("CEST", 2*3600), time.FixedZone("CET", 3600)
+	cases := []struct {
+		name       string
+		table      driver.PriceTable
+		start, end time.Time
+		want       int64
+	}{
+		// one hour passes between the two 02:30s
+		{"repeated hour, flat", flat, time.Date(2030, 10, 27, 2, 30, 0, 0, summer), time.Date(2030, 10, 27, 2, 30, 0, 0, winter), 2000},
+		// 02:30-03:00 summer at 4000, then 02:00-02:30 winter at 2000
+		{"repeated hour, split", split, time.Date(2030, 10, 27, 2, 30, 0, 0, summer), time.Date(2030, 10, 27, 2, 30, 0, 0, winter), 3000},
+		{"the whole autumn night", flat, time.Date(2030, 10, 27, 0, 0, 0, 0, loc), time.Date(2030, 10, 27, 6, 0, 0, 0, loc), 14000},
+		// 01:30 to 03:30 local is one hour of real time
+		{"skipped hour, flat", flat, time.Date(2030, 3, 31, 1, 30, 0, 0, loc), time.Date(2030, 3, 31, 3, 30, 0, 0, loc), 2000},
+		// 01:30-02:00 at 2000, 03:00-03:30 at 4000
+		{"skipped hour, split", split, time.Date(2030, 3, 31, 1, 30, 0, 0, loc), time.Date(2030, 3, 31, 3, 30, 0, 0, loc), 3000},
+		{"the whole spring night", flat, time.Date(2030, 3, 31, 0, 0, 0, 0, loc), time.Date(2030, 3, 31, 6, 0, 0, 0, loc), 10000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := quote(c.table, loc, 30, c.start, c.end)
+			if err != nil || got != c.want {
+				t.Fatalf("quote = %d, %v; want %d", got, err, c.want)
+			}
+		})
+	}
+}
+
 func TestQuoteRefusals(t *testing.T) {
 	loc := mustLoc(t)
 	at := func(hh, mm int) time.Time { return time.Date(2030, 3, 4, hh, mm, 0, 0, loc) }

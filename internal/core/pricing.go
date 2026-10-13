@@ -65,29 +65,35 @@ func segments(t driver.PriceTable, day, from, to int) []pricePeriod {
 	return out
 }
 
-// quote integrates the price over [start, end), split at local midnights
-// and at every price boundary, and rounds the total to whole rubles (half
-// up). start and end must be on the slot grid (the API's rule for
-// bookings); the price itself does not depend on the grid.
+// quote integrates the price over [start, end), split at local midnights,
+// at UTC offset changes and at every price boundary, and rounds the total
+// to whole rubles (half up). Each piece lies within one local day and one
+// offset, so its local clock minutes are its elapsed minutes: a repeated
+// hour (clocks go back) is charged twice and a skipped one (clocks go
+// forward) not at all. start and end must be on the slot grid (the API's
+// rule for bookings); the price itself does not depend on the grid.
 func quote(t driver.PriceTable, loc *time.Location, slot int, start, end time.Time) (int64, error) {
 	if !aligned(start, loc, slot) || !aligned(end, loc, slot) || !end.After(start) {
 		return 0, errNotAligned
 	}
 	var kopeckMinutes int64
-	for c := start.In(loc); c.Before(end); {
-		next := time.Date(c.Year(), c.Month(), c.Day()+1, 0, 0, 0, 0, loc)
-		to := 1440
-		if end.Before(next) {
-			e := end.In(loc)
-			next, to = end, e.Hour()*60+e.Minute()
+	for c := start; c.Before(end); {
+		lc := c.In(loc)
+		next := time.Date(lc.Year(), lc.Month(), lc.Day()+1, 0, 0, 0, 0, loc)
+		if _, zoneEnd := lc.ZoneBounds(); !zoneEnd.IsZero() && zoneEnd.Before(next) {
+			next = zoneEnd
 		}
-		for _, p := range segments(t, isoWeekday(c), c.Hour()*60+c.Minute(), to) {
+		if end.Before(next) {
+			next = end
+		}
+		from := lc.Hour()*60 + lc.Minute()
+		for _, p := range segments(t, isoWeekday(lc), from, from+int(next.Sub(c)/time.Minute)) {
 			if !p.ok {
 				return 0, errNoPrice
 			}
 			kopeckMinutes += p.PerHour * int64(p.To-p.From)
 		}
-		c = next.In(loc)
+		c = next
 	}
 	if kopeckMinutes < 0 {
 		return 0, errNoPrice
