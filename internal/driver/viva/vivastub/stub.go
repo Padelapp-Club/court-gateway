@@ -1,10 +1,7 @@
-// Package vivastub is a fake VivaCRM for tests: a Keycloak-like token
-// endpoint and the admin API endpoints the viva driver uses. It mimics the
-// behaviour the driver depends on, as observed on a live account: lists
-// select records by their START date in the studio's local day (dateFrom
-// and dateTo included), the exercise list comes back EMPTY when dateFrom
-// is a past day while the break list does not, and reads by id always
-// work.
+// Package vivastub is a fake VivaCRM for tests: the token endpoint and the
+// admin API endpoints the viva driver uses. Lists select records by their
+// start date in the studio's local day (dateFrom and dateTo included) and
+// leave out exercises of past days, not breaks; reads by id always work.
 //
 // Serve it with httptest.NewServer(stub); then the driver's auth_url is
 // <server>/token and api_url is <server>/api/v1.

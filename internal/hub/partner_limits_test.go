@@ -14,7 +14,7 @@ import (
 // rawGateway connects a gateway with polls polls whose handler is h.
 func rawGateway(t *testing.T, extraHub string, polls int, h http.Handler) *testkit.Hub {
 	t.Helper()
-	hb := testkit.StartHub(t, hubYAML+extraHub, hubEnv(), hub.Options{})
+	hb := testkit.StartHub(t, hubYAML+extraHub, testkit.HubEnv(), hub.Options{})
 	secret := hb.Register("raw-club", "Raw")
 	cfg := testkit.ClientConfig(hb.URL(), hb.Transport(), secret, h, nil)
 	cfg.Polls = polls

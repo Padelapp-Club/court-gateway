@@ -99,7 +99,7 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 	w := &beatWorld{clock: newFakeClock(), status: filepath.Join(t.TempDir(), "status")}
 	opts.Now = w.clock.Now
 	if env == nil {
-		env = hubEnv()
+		env = testkit.HubEnv()
 	}
 	w.hub = testkit.StartHub(t, hubYAML+"status_dir: "+w.status+"\n"+extraYAML, env, opts)
 	w.crm = &countingDriver{clock: w.clock}
@@ -210,7 +210,7 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 
 	// nothing secret in the hub log
 	all := w.hub.Logs.String()
-	for _, s := range []string{w.secret, operatorKey, contract.ReadKey, contract.BookKey} {
+	for _, s := range []string{w.secret, testkit.OperatorKey, contract.ReadKey, contract.BookKey} {
 		if strings.Contains(all, s) {
 			t.Fatalf("secret %q leaked into the log", s[:8])
 		}
@@ -467,7 +467,7 @@ func TestStatusFilesFormat(t *testing.T) {
 	}
 	for _, f := range []string{hub.StatusFile, hub.MetricsFile} {
 		data, _ := os.ReadFile(filepath.Join(w.status, f))
-		for _, s := range []string{w.secret, "cgs_", operatorKey, contract.ReadKey, contract.BookKey} {
+		for _, s := range []string{w.secret, "cgs_", testkit.OperatorKey, contract.ReadKey, contract.BookKey} {
 			if bytes.Contains(data, []byte(s)) {
 				t.Fatalf("%s holds a secret", f)
 			}
@@ -530,7 +530,7 @@ func TestStatusAPI(t *testing.T) {
 	if r := call(t, w.hub, http.MethodGet, "/hub/status", contract.ReadKey, ""); r.status != http.StatusUnauthorized {
 		t.Fatalf("status with a partner key: %d", r.status)
 	}
-	r := call(t, w.hub, http.MethodGet, "/hub/status", operatorKey, "")
+	r := call(t, w.hub, http.MethodGet, "/hub/status", testkit.OperatorKey, "")
 	if r.status != http.StatusOK {
 		t.Fatalf("status: %d %s", r.status, r.body)
 	}
@@ -551,7 +551,7 @@ func TestStatusAPI(t *testing.T) {
 }
 
 func TestHubSendsNoAlertsOfItsOwn(t *testing.T) {
-	env := func(k string) string { return hubEnv()[k] }
+	env := func(k string) string { return testkit.HubEnv()[k] }
 	// the hub only writes status files; any alert section is an unknown key
 	for _, section := range []string{"alerts:\n  webhook_url_env: X\n", "alerts:\n  chat_bot: { token_env: X, chat_env: Y }\n"} {
 		if _, err := hub.Load([]byte("state_dir: /tmp/x\n"+section), env); err == nil {

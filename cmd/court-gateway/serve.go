@@ -142,14 +142,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	go syncer.Run(ctx)
 	go client.Run(ctx)
 
-	// self-check -> health status file (read by `healthcheck`) and
-	// heartbeat to the hub: the CRM is checked every statusInterval, the hub
-	// connection every 2 seconds; the file is rewritten after each CRM check
-	// and whenever the readiness or the hub connection changes, and each CRM
-	// check is sent to the hub as a heartbeat over the gateway's own
-	// connection. Both carry the same readiness: the CRM, the hub and the
-	// club config (a refused club makes the installation not ready while
-	// the other clubs are served)
+	// every statusInterval a readiness round (syncer.Ready) feeds the
+	// health status file (read by `healthcheck`) and a heartbeat to the
+	// hub; the file is also rewritten when the hub connection changes
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()

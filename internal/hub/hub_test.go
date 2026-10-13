@@ -24,15 +24,7 @@ import (
 
 var demoSpec = testkit.Club("demo-club", "Демо-клуб", "Корт 1", "Корт 2")
 
-const operatorKey = "test-operator-key-0123456789abcdef"
-
-func hubEnv() map[string]string {
-	env := contract.KeyEnv()
-	env["HUB_OPERATOR_KEY"] = operatorKey
-	return env
-}
-
-const hubYAML = "poll_wait: 1s\nrequest_timeout: 3s\noperator_key_env: HUB_OPERATOR_KEY\n" + testkit.HubPartnersYAML
+const hubYAML = "poll_wait: 1s\nrequest_timeout: 3s\n" + testkit.OperatorYAML + testkit.HubPartnersYAML
 
 type partnerResp struct {
 	status int
@@ -77,7 +69,7 @@ type world struct {
 
 func newWorld(t *testing.T, opts hub.Options, extraHub string) *world {
 	t.Helper()
-	h := testkit.StartHub(t, hubYAML+extraHub, hubEnv(), opts)
+	h := testkit.StartHub(t, hubYAML+extraHub, testkit.HubEnv(), opts)
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	return &world{hub: h, built: b, drv: b.Driver.(*demo.Driver)}
 }
@@ -105,24 +97,9 @@ func TestEndToEnd(t *testing.T) {
 	w := newWorld(t, hub.Options{}, "")
 	w.connect(t, w.hub.URL())
 
-	r := call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/courts", contract.ReadKey, "")
-	if r.status != http.StatusOK || !strings.Contains(string(r.body), `"court-2"`) {
-		t.Fatalf("courts: %d %s", r.status, r.body)
-	}
-	day := time.Now().In(w.built.Settings.Location).AddDate(0, 0, 2)
-	start := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-	body := `{"court":"court-1","start":"` + start.Format(time.RFC3339) + `","end":"` + start.Add(time.Hour).Format(time.RFC3339) + `","kind":"game"}`
-	r = call(t, w.hub, http.MethodPost, "/v1/clubs/demo-club/bookings", contract.BookKey, body)
-	if r.status != http.StatusCreated {
-		t.Fatalf("create: %d %s", r.status, r.body)
-	}
-	id, _ := r.json["id"].(string)
-	r = call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/"+id, contract.ReadKey, "")
-	if r.status != http.StatusOK || r.json["status"] != "active" {
-		t.Fatalf("read: %d %s", r.status, r.body)
-	}
+	// the API itself goes through the hub in the contract suites; here:
 	// one request id from the partner's view to the gateway's log
-	r = call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/x-nothing", contract.ReadKey, "")
+	r := call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/x-nothing", contract.ReadKey, "")
 	rid := r.header.Get("X-Request-ID")
 	if r.status != http.StatusNotFound || rid == "" || r.json["request_id"] != rid {
 		t.Fatalf("request id: %d %q %s", r.status, rid, r.body)
@@ -158,7 +135,7 @@ func TestClubOfflineAndUnknown(t *testing.T) {
 func TestPartnerLimitedToItsClubs(t *testing.T) {
 	extra := `  - { name: narrow, key_env: NARROW_KEY, scopes: [read], clubs: [other-club] }
 `
-	env := hubEnv()
+	env := testkit.HubEnv()
 	env["NARROW_KEY"] = "narrow-key-0123456789abcdef0123"
 	h := testkit.StartHub(t, hubYAML+extra, env, hub.Options{})
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
@@ -337,7 +314,7 @@ func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
 func TestUpdateHint(t *testing.T) {
 	var mu sync.Mutex
 	var hint string
-	h := testkit.StartHub(t, hubYAML+"latest_version: 1.2.0\n", hubEnv(), hub.Options{})
+	h := testkit.StartHub(t, hubYAML+"latest_version: 1.2.0\n", testkit.HubEnv(), hub.Options{})
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	c, err := tunnel.NewClient(tunnel.ClientConfig{
 		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Clubs.TunnelHandler(),

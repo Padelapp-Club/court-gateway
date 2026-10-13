@@ -111,7 +111,7 @@ func TestHubBehindPathPrefix(t *testing.T) {
 		"status_dir: " + statusDir + "\n" +
 		"poll_wait: 1s\nrequest_timeout: 3s\noperator_key_env: HUB_OPERATOR_KEY\n" +
 		"heartbeat: { interval: 1s }\n" + testkit.HubPartnersYAML
-	env := hubEnv()
+	env := testkit.HubEnv()
 	settings, err := hub.Load([]byte(cfg), func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
