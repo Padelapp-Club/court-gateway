@@ -3,7 +3,6 @@ package tunnel
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -121,6 +120,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb Heartbeat) error {
 		c.authFail.Store(true)
 		return ErrUnauthorized
 	default:
-		return fmt.Errorf("hub answered HTTP %d to a heartbeat", resp.StatusCode)
+		return answerError(resp.StatusCode, "a heartbeat")
 	}
 }

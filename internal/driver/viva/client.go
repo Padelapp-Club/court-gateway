@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -114,6 +115,8 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	switch {
 	case resp.StatusCode == http.StatusOK:
+	case core.IsRedirect(resp.StatusCode):
+		return "", redirected("login", resp.StatusCode)
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d", resp.StatusCode))
 	default:
@@ -139,6 +142,12 @@ func networkError(op string, err error) error {
 	// The url.Error text holds the request URL; it carries no secrets
 	// (credentials go in the body or a header), but keep only the op.
 	return driver.Upstream(driver.UpstreamUnavailable, op+": network error")
+}
+
+// redirected is the error for a 3xx answer: redirects are not followed
+// (core.RefuseRedirects).
+func redirected(op string, status int) error {
+	return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("%s answered with a redirect (HTTP %d), which is not followed", op, status))
 }
 
 // do sends an authenticated API request. A 401 drops the token, logs in
@@ -189,6 +198,9 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 				continue
 			}
 			return 0, nil, driver.Upstream(driver.UpstreamAuth, method+" "+pathTemplate(path)+": token rejected after re-login")
+		}
+		if core.IsRedirect(resp.StatusCode) {
+			return 0, nil, redirected(method+" "+pathTemplate(path), resp.StatusCode)
 		}
 		if resp.StatusCode >= 500 {
 			return 0, nil, driver.Upstream(driver.UpstreamUnavailable,

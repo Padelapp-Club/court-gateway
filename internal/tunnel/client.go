@@ -66,6 +66,27 @@ type Client struct {
 // ErrUnauthorized means the hub rejected the gateway secret.
 var ErrUnauthorized = errors.New("the hub rejected the gateway secret")
 
+// ErrRedirected: the hub answered with a redirect. No request to the hub
+// follows one (core.RefuseRedirects): hub.url must be the hub itself.
+var ErrRedirected = errors.New("the hub answered with a redirect, which is not followed: hub.url must be the hub's own address")
+
+// answerError is the error for a hub answer with status code, other than
+// a success; what names the request.
+func answerError(status int, what string) error {
+	switch {
+	case status == http.StatusUnauthorized:
+		return ErrUnauthorized
+	case core.IsRedirect(status):
+		return fmt.Errorf("HTTP %d to %s: %w", status, what, ErrRedirected)
+	}
+	return fmt.Errorf("hub answered HTTP %d to %s", status, what)
+}
+
+// hubClient is the HTTP client of every request to the hub.
+func hubClient(rt http.RoundTripper) *http.Client {
+	return &http.Client{Transport: rt, CheckRedirect: core.RefuseRedirects}
+}
+
 // LoadRoots returns the system root pool plus the certificates in caFile.
 func LoadRoots(caFile string) (*x509.CertPool, error) {
 	pool, err := x509.SystemCertPool()
@@ -129,7 +150,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Client{cfg: cfg, http: &http.Client{Transport: cfg.Transport}, log: log}, nil
+	return &Client{cfg: cfg, http: hubClient(cfg.Transport), log: log}, nil
 }
 
 // Connected reports whether at least one poll is currently healthy.
@@ -291,7 +312,7 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 		c.authFail.Store(true)
 		return nil, ErrUnauthorized
 	default:
-		return nil, fmt.Errorf("hub answered HTTP %d to a poll", resp.StatusCode)
+		return nil, answerError(resp.StatusCode, "a poll")
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxEnvelope))
 	if err != nil {
@@ -341,7 +362,7 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 		c.authFail.Store(true)
 		return out, ErrUnauthorized
 	case status != http.StatusOK:
-		return out, fmt.Errorf("hub answered HTTP %d to a config request", status)
+		return out, answerError(status, "a config request")
 	case err != nil:
 		return RemoteConfig{}, errors.New("hub sent a malformed config")
 	}
@@ -365,6 +386,9 @@ func (c *Client) reply(ctx context.Context, r Response) {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			cancel()
+			if core.IsRedirect(resp.StatusCode) {
+				break // not delivered, and a retry would not be either
+			}
 			if resp.StatusCode < 500 {
 				return // delivered, or the partner is gone (410)
 			}

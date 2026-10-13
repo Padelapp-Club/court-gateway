@@ -67,3 +67,13 @@ func (p ProxyFunc) Transport() *http.Transport {
 	}
 	return t
 }
+
+// RefuseRedirects is the CheckRedirect of every client that carries a
+// secret or acts on the answer (hub, CRM): a redirect is never followed —
+// the secret would go wherever it points, plain HTTP included, and that
+// answer would stand in for the server's. The 3xx answer is returned to
+// the caller, which treats it as an error.
+func RefuseRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// IsRedirect reports whether status is a 3xx answer.
+func IsRedirect(status int) bool { return status >= 300 && status < 400 }

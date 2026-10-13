@@ -224,7 +224,7 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	hctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(hctx, http.MethodGet, strings.TrimRight(s.Hub.URL, "/")+"/health/live", nil)
-	resp, err := (&http.Client{Transport: rt}).Do(req)
+	resp, err := (&http.Client{Transport: rt, CheckRedirect: core.RefuseRedirects}).Do(req)
 	if err == nil {
 		resp.Body.Close()
 	}

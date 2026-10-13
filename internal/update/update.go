@@ -157,12 +157,34 @@ func (u *Updater) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// httpsRedirectsOnly is the CheckRedirect of release downloads. Release
+// hosting redirects (GitHub: latest → the version → its file storage), so
+// redirects are followed, but only to https: the manifest is trusted by
+// its signature and a binary by the signed checksum, never by the
+// transport, and no secret is sent.
+func httpsRedirectsOnly(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return errors.New("redirect to a non-https address refused")
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
+// do sends req with u.Client, following only https redirects.
+func (u *Updater) do(req *http.Request) (*http.Response, error) {
+	hc := *u.Client
+	hc.CheckRedirect = httpsRedirectsOnly
+	return hc.Do(req)
+}
+
 func (u *Updater) get(ctx context.Context, url string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := u.Client.Do(req)
+	resp, err := u.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +283,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := u.Client.Do(req)
+	resp, err := u.do(req)
 	if err != nil {
 		return "", err
 	}

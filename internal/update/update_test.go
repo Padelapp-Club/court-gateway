@@ -517,3 +517,36 @@ func TestRunningVersion(t *testing.T) {
 		t.Fatalf("as the service reports it: %s", got)
 	}
 }
+
+// Release hosting redirects (GitHub: latest → the version → file storage),
+// so the updater follows redirects, but only to https: a redirect to plain
+// HTTP is refused before a request goes there.
+func TestUpdaterFollowsOnlyHTTPSRedirects(t *testing.T) {
+	r := newRelease(t, "1.2.0", []byte("NEW BINARY"))
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		plainHits.Add(1)
+		r.srv.Config.Handler.ServeHTTP(w, req)
+	}))
+	defer plain.Close()
+	for _, tc := range []struct {
+		target string
+		ok     bool
+	}{{r.srv.URL, true}, {plain.URL, false}} {
+		front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			http.Redirect(w, req, tc.target+req.URL.Path, http.StatusFound)
+		}))
+		u := &Updater{PublicKey: r.pub, ManifestURL: front.URL + "/manifest.json", Current: "1.0.0", Client: r.srv.Client()}
+		m, err := u.Fetch(context.Background())
+		front.Close()
+		if tc.ok && (err != nil || m.Version != "1.2.0") {
+			t.Fatalf("https redirect: %v", err)
+		}
+		if !tc.ok && err == nil {
+			t.Fatal("a redirect to plain HTTP was followed")
+		}
+	}
+	if n := plainHits.Load(); n != 0 {
+		t.Fatalf("%d requests went to plain HTTP", n)
+	}
+}

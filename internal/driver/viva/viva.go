@@ -95,13 +95,13 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	if cfg.Password == "" {
 		add(errors.New("CRM_PASSWORD: переменная окружения с паролем администратора Viva не задана"))
 	}
-	hc := cfg.HTTPClient
-	if hc == nil {
-		hc = &http.Client{Timeout: timeout}
-		if cfg.Proxy != nil {
-			hc.Transport = core.ProxyFunc(cfg.Proxy).Transport()
-		}
+	hc := &http.Client{Timeout: timeout}
+	if cfg.HTTPClient != nil {
+		*hc = *cfg.HTTPClient
+	} else if cfg.Proxy != nil {
+		hc.Transport = core.ProxyFunc(cfg.Proxy).Transport()
 	}
+	hc.CheckRedirect = core.RefuseRedirects // the password and the token go nowhere else
 	now := cfg.Now
 	if now == nil {
 		now = time.Now

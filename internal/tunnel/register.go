@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -28,7 +27,7 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 		return out, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	status, err := exchange(&http.Client{Transport: rt}, req, 64<<10, &out)
+	status, err := exchange(hubClient(rt), req, 64<<10, &out)
 	switch {
 	case status == 0:
 		return out, err
@@ -37,7 +36,7 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 	case status == http.StatusTooManyRequests:
 		return out, ErrRateLimited
 	case status != http.StatusOK:
-		return out, fmt.Errorf("hub answered HTTP %d to registration", status)
+		return out, answerError(status, "registration")
 	case err != nil || out.Secret == "" || out.Installation == "":
 		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
 	}
@@ -52,14 +51,12 @@ func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret strin
 		return out, err
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
-	status, err := exchange(&http.Client{Transport: rt}, req, 64<<10, &out)
+	status, err := exchange(hubClient(rt), req, 64<<10, &out)
 	switch {
 	case status == 0:
 		return out, err
-	case status == http.StatusUnauthorized:
-		return out, ErrUnauthorized
 	case status != http.StatusOK:
-		return out, fmt.Errorf("hub answered HTTP %d", status)
+		return out, answerError(status, "whoami")
 	case err != nil:
 		return Whoami{}, errors.New("hub sent a malformed answer")
 	}
