@@ -133,3 +133,21 @@ func TestAccountDiscoverHoursFromPricing(t *testing.T) {
 		t.Fatalf("notices: %+v", d.Notices)
 	}
 }
+
+// The no-clubs readiness check asks the CRM every time, not only the
+// token cache: the API being down is noticed with a valid token.
+func TestCheckLoginCallsTheAPI(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	a := newAccount(t, stub, stubPass)
+	ctx := context.Background()
+	if err := a.CheckLogin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stub.FailNext("GET", "/studios", 503, `{}`)
+	if err := a.CheckLogin(ctx); err == nil {
+		t.Fatal("a failing CRM API passed the check on a cached token")
+	}
+	if err := a.CheckLogin(ctx); err != nil || stub.Logins() != 1 {
+		t.Fatalf("recovered: %v, logins %d", err, stub.Logins())
+	}
+}

@@ -36,9 +36,12 @@ func NewAccount(cfg driver.Config) (driver.Account, error) {
 	return &Account{c: c}, nil
 }
 
-// CheckLogin implements driver.Account.
+// CheckLogin implements driver.Account: it logs in if needed and makes
+// one cheap call (GET /studios), so a cached token the CRM no longer
+// accepts, or an unreachable API, is noticed even while no club is
+// configured.
 func (a *Account) CheckLogin(ctx context.Context) error {
-	_, err := a.c.accessToken(ctx)
+	_, err := listStudios(ctx, a.c)
 	return err
 }
 
