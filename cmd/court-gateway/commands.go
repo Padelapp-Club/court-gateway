@@ -175,12 +175,13 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		}
 		return s, nil
 	}
+	// secret returns what was typed as is: spaces may belong to a password
 	secret := func(q string) (string, error) {
 		fmt.Fprintf(w, "%s (не отображается): ", q)
 		if isTerminal() {
 			s, err := readSecret()
 			fmt.Fprintln(w)
-			return strings.TrimSpace(s), err
+			return s, err
 		}
 		s, err := r.ReadString('\n')
 		if err != nil && s == "" {
@@ -217,6 +218,7 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		if in.JoinCode, err = secret("Код подключения"); err != nil {
 			return err
 		}
+		in.JoinCode = strings.TrimSpace(in.JoinCode)
 	}
 	return nil
 }
