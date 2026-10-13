@@ -172,11 +172,7 @@ func TestAgentsVerifyStepStopsOnChecksumMismatch(t *testing.T) {
 		block := fencedBlock(t, "AGENTS.md", "\n"+c.os+"\n", "sh")
 		script := "F=" + c.release + "\n" + block[strings.Index(block, "\n")+1:]
 		for _, right := range []bool{false, true} {
-			w := newInstallWorld(t, c.release, right)
-			for _, f := range []string{c.release, "SHA256SUMS"} {
-				data, _ := os.ReadFile(filepath.Join(w.fixtures, f))
-				_ = os.WriteFile(filepath.Join(w.dir, f), data, 0o644)
-			}
+			w := newInstallWorld(t, c.release, right) // the block downloads both files itself
 			rc, out := w.run(t, "sh", w.dir, script+"[ -x court-gateway ] && ./court-gateway version\n")
 			ok := strings.Contains(out, "checksum-ok")
 			if right != ok || right != (w.ran() == "version\n") || right != (rc == 0) {
@@ -257,6 +253,9 @@ func TestWindowsInstallBlocksCheckTheHashFirst(t *testing.T) {
 		if !strings.HasPrefix(body, "& {") || !strings.HasSuffix(body, "}") || check < 0 ||
 			!strings.Contains(body[check:strings.Index(body[check:], "\n")+check], "throw") {
 			t.Fatalf("%s: the hash check must throw inside one script block:\n%s", doc, block)
+		}
+		if doc == "AGENTS.md" && strings.Count(body[:check], "Invoke-WebRequest") != 2 {
+			t.Fatalf("%s: both files must be downloaded before the hash check:\n%s", doc, block)
 		}
 		for _, use := range []string{"Move-Item", ".exe setup", "court-gateway.exe"} {
 			if i := strings.Index(body, use); i >= 0 && i < check {
