@@ -20,13 +20,15 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-// Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...".
+// Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...
+// -X main.defaultHubURL=..." (scripts/build.sh).
 var (
 	version = "dev"
 	// releaseKey is the base64 ed25519 public key of release manifests.
 	// Empty means a self-built binary: it never updates itself.
 	releaseKey = ""
-	// defaultHubURL is offered by setup when --hub-url is not given.
+	// defaultHubURL is the hub setup connects to when --hub-url is not
+	// given. Releases embed it; a self-built binary needs --hub-url.
 	defaultHubURL = ""
 )
 

@@ -12,6 +12,8 @@ ARG VERSION=
 # publishes it as release.pub); without it the image is self-built and
 # never updates itself
 ARG RELEASE_KEY=
+# the hub a release connects to unless setup is given --hub-url
+ARG DEFAULT_HUB_URL=
 # set by BuildKit (docker buildx build --platform ...); the legacy builder
 # leaves them empty and the build stage's own platform is used
 ARG TARGETOS
@@ -21,7 +23,7 @@ ARG TARGETARCH
 RUN V="${VERSION:-$(cat VERSION)}" && \
     CGO_ENABLED=0 GOOS="${TARGETOS:-$(go env GOOS)}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" GOFLAGS=-mod=readonly GOAMD64=v1 GOARM64=v8.0 \
     go build -trimpath -buildvcs=false \
-      -ldflags "-s -w -buildid= -X main.version=${V} -X main.releaseKey=${RELEASE_KEY}" \
+      -ldflags "-s -w -buildid= -X main.version=${V} -X main.releaseKey=${RELEASE_KEY} -X main.defaultHubURL=${DEFAULT_HUB_URL}" \
       -o /out/court-gateway ./cmd/court-gateway
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab

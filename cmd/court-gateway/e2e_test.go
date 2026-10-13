@@ -178,6 +178,25 @@ func TestSetupNonInteractive(t *testing.T) {
 	}
 }
 
+// A release knows its hub, so the human gives the agent only the Viva login,
+// the password and the join code; a self-built binary needs --hub-url.
+func TestSetupUsesTheEmbeddedHub(t *testing.T) {
+	s := newStack(t)
+	args := []string{"setup", "--non-interactive", "--json", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-ca-file", s.hub.CAFile,
+		"--crm-username", crmUser, "--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
+	getenv := env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб")}.get
+	var out bytes.Buffer
+	if rc := run(args, &out, io.Discard, getenv); rc != 1 || !strings.Contains(decodeSetup(t, out.Bytes()).Error.Message, "--hub-url") {
+		t.Fatalf("self-built, no --hub-url: rc=%d %s", rc, out.String())
+	}
+	defaultHubURL = s.hub.URL()
+	defer func() { defaultHubURL = "" }()
+	out.Reset()
+	if rc := run(args, &out, io.Discard, getenv); rc != 0 || decodeSetup(t, out.Bytes()).Hub != s.hub.URL() {
+		t.Fatalf("release with an embedded hub: rc=%d %s", rc, out.String())
+	}
+}
+
 // The join code and the password come from the environment; neither may
 // appear in the usage text that --help or a mistyped flag prints.
 func TestSetupUsageNeverPrintsSecrets(t *testing.T) {
