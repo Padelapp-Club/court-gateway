@@ -27,7 +27,7 @@ func TestHubJoinCodePrintsPublicURLWithPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if rc := run([]string{"hub", "join-code", "create", "-config", hubCfg, "--club", "club-x", "--name", "Клуб X"}, &out, io.Discard, env{}.get); rc != 0 {
+	if rc := run([]string{"hub", "join-code", "create", "-config", hubCfg, "--installation", "club-x", "--name", "Клуб X"}, &out, io.Discard, env{}.get); rc != 0 {
 		t.Fatalf("rc %d", rc)
 	}
 	printed := out.String()

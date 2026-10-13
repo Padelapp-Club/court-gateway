@@ -13,10 +13,6 @@ import (
 // a hub). It holds no secrets and no CRM data.
 const HealthStatusFile = "health.json"
 
-// HealthStatusMaxAge: an older status file means the service is hung or
-// not running.
-const HealthStatusMaxAge = 2 * time.Minute
-
 // HealthStatus is the content of HealthStatusFile.
 type HealthStatus struct {
 	Time    time.Time `json:"time"`

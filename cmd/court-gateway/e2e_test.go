@@ -157,7 +157,7 @@ func TestSetupNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("written config does not load: %v", err)
 	}
-	if loaded.HasClub || loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") || loaded.Listen != "" {
+	if loaded.ClubID != "" || loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") || loaded.Listen != "" {
 		t.Fatalf("loaded: password ok=%v hub=%v listen=%q", loaded.Driver.Password == crmPass, loaded.Hub != nil, loaded.Listen)
 	}
 
@@ -283,7 +283,7 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	logs := &testkit.SafeBuffer{}
+	logs := &contract.LogBuffer{}
 	done := make(chan int, 1)
 	go func() { done <- serve(ctx, cfg, "", logs, env{}.get) }()
 	defer func() {
@@ -426,7 +426,7 @@ func TestHubJoinCodeCommand(t *testing.T) {
 	hubCfg := filepath.Join(dir, "hub.yaml")
 	_ = os.WriteFile(hubCfg, []byte("state_dir: "+filepath.Join(dir, "state")+"\npublic_url: https://hub.example.test\n"), 0o644)
 	var out bytes.Buffer
-	if rc := run([]string{"hub", "join-code", "create", "-config", hubCfg, "--club", "club-x", "--name", "Клуб X"}, &out, io.Discard, env{}.get); rc != 0 {
+	if rc := run([]string{"hub", "join-code", "create", "-config", hubCfg, "--installation", "club-x", "--name", "Клуб X"}, &out, io.Discard, env{}.get); rc != 0 {
 		t.Fatalf("rc %d", rc)
 	}
 	printed := out.String()
@@ -439,7 +439,7 @@ func TestHubJoinCodeCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	g, secret, err := store.Redeem(code)
-	if err != nil || g.Club != "club-x" || g.Name != "Клуб X" || secret == "" {
+	if err != nil || g.Installation != "club-x" || g.Name != "Клуб X" || secret == "" {
 		t.Fatalf("redeem %q: %+v %v", code, g, err)
 	}
 	if !strings.Contains(printed, "--hub-url https://hub.example.test") {

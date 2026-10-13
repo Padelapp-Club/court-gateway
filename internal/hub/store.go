@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -34,10 +35,6 @@ import (
 // the operator API, so codes are read from disk at redemption time.
 // Gateways and installations are written only by the running hub (the
 // `hub gateway revoke` command only removes a gateway file).
-//
-// Historical names: a gateway record and a join code of a hub from before
-// installations say "club" for the installation id; such an installation
-// serves the one club of the same id written in its gateway.yaml.
 const (
 	codesDir         = "codes"
 	gatewaysDir      = "gateways"
@@ -50,28 +47,19 @@ const DefaultJoinCodeTTL = 24 * time.Hour
 // ErrJoinCode is returned for an unknown, used or expired code alike.
 var ErrJoinCode = errors.New("invalid, used or expired join code")
 
-// GatewayRecord is a registered gateway. Club is the installation id (its
-// historical name, kept on disk and in /hub/status).
+// GatewayRecord is the registered gateway of an installation.
 type GatewayRecord struct {
-	Club         string    `json:"club"`
+	Installation string    `json:"installation"`
 	Name         string    `json:"name"`
 	SecretSHA256 string    `json:"secret_sha256"`
 	RegisteredAt time.Time `json:"registered_at"`
 }
 
 type joinCodeRecord struct {
-	Installation string    `json:"installation,omitempty"`
-	Club         string    `json:"club,omitempty"` // historical: the installation id
+	Installation string    `json:"installation"`
 	Name         string    `json:"name,omitempty"`
 	Created      time.Time `json:"created"`
 	Expires      time.Time `json:"expires"`
-}
-
-func (r joinCodeRecord) installation() string {
-	if r.Installation != "" {
-		return r.Installation
-	}
-	return r.Club
 }
 
 // Installation is one installation of the gateway (one CRM account) and
@@ -149,10 +137,10 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(data, &g); err != nil || !ValidClubID(g.Club) || len(g.SecretSHA256) != 64 {
+		if err := json.Unmarshal(data, &g); err != nil || !ValidClubID(g.Installation) || len(g.SecretSHA256) != 64 {
 			return nil, fmt.Errorf("state_dir: повреждённая запись шлюза %s", e.Name())
 		}
-		s.gateways[g.Club] = &g
+		s.gateways[g.Installation] = &g
 	}
 	return s, nil
 }
@@ -323,16 +311,16 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
 	var rec joinCodeRecord
-	if err := json.Unmarshal(data, &rec); err != nil || !ValidClubID(rec.installation()) {
+	if err := json.Unmarshal(data, &rec); err != nil || !ValidClubID(rec.Installation) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
 	if !s.now().Before(rec.Expires) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
-	id := rec.installation()
+	id := rec.Installation
 	in, ok := s.installs[id]
 	if !ok {
-		in = &Installation{ID: id, Name: firstNonEmpty(rec.Name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
+		in = &Installation{ID: id, Name: cmp.Or(rec.Name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
 		if err := s.saveInstallation(in); err != nil {
 			return GatewayRecord{}, "", err
 		}
@@ -342,78 +330,66 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 	if err != nil {
 		return GatewayRecord{}, "", err
 	}
-	g := &GatewayRecord{Club: id, Name: in.Name, SecretSHA256: secretHash(secret), RegisteredAt: s.now().UTC()}
+	g := &GatewayRecord{Installation: id, Name: in.Name, SecretSHA256: secretHash(secret), RegisteredAt: s.now().UTC()}
 	out, _ := json.Marshal(g)
-	if err := core.WriteFileAtomic(filepath.Join(s.dir, gatewaysDir, g.Club+".json"), out, 0o600); err != nil {
+	if err := core.WriteFileAtomic(filepath.Join(s.dir, gatewaysDir, id+".json"), out, 0o600); err != nil {
 		return GatewayRecord{}, "", err
 	}
-	s.gateways[g.Club] = g
+	s.gateways[id] = g
 	return *g, secret, nil
 }
 
-func firstNonEmpty(v ...string) string {
-	for _, x := range v {
-		if strings.TrimSpace(x) != "" {
-			return strings.TrimSpace(x)
-		}
-	}
-	return ""
-}
-
-// Authenticate maps a gateway secret to its club. Every record is compared
-// in constant time without an early exit. A record whose file has been
-// removed (`hub gateway revoke`) no longer authenticates.
+// Authenticate maps a gateway secret to its installation. Every record is
+// compared in constant time without an early exit. A record whose file has
+// been removed (`hub gateway revoke`) no longer authenticates.
 func (s *Store) Authenticate(secret string) (string, bool) {
 	if secret == "" {
 		return "", false
 	}
 	want, _ := hex.DecodeString(secretHash(secret))
 	s.mu.Lock()
-	var club string
+	var inst string
 	for _, g := range s.gateways {
 		have, _ := hex.DecodeString(g.SecretSHA256)
 		if subtle.ConstantTimeCompare(want, have) == 1 {
-			club = g.Club
+			inst = g.Installation
 		}
 	}
 	s.mu.Unlock()
-	if club == "" {
+	if inst == "" {
 		return "", false
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, gatewaysDir, club+".json")); err != nil {
-		s.mu.Lock()
-		delete(s.gateways, club)
-		s.mu.Unlock()
+	if _, ok := s.Get(inst); !ok {
 		return "", false
 	}
-	return club, true
+	return inst, true
 }
 
-// Get returns a registered gateway. A record whose file has been removed
-// (`hub gateway revoke`) is forgotten here, as in Authenticate.
-func (s *Store) Get(club string) (GatewayRecord, bool) {
+// Get returns the registered gateway of an installation. A record whose
+// file has been removed (`hub gateway revoke`) is forgotten.
+func (s *Store) Get(installation string) (GatewayRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	g, ok := s.gateways[club]
+	g, ok := s.gateways[installation]
 	if !ok {
 		return GatewayRecord{}, false
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, gatewaysDir, club+".json")); err != nil {
-		delete(s.gateways, club)
+	if _, err := os.Stat(filepath.Join(s.dir, gatewaysDir, installation+".json")); err != nil {
+		delete(s.gateways, installation)
 		return GatewayRecord{}, false
 	}
 	return *g, true
 }
 
-// Clubs returns the registered gateways sorted by club id.
-func (s *Store) Clubs() []GatewayRecord {
+// Gateways returns the registered gateways sorted by installation id.
+func (s *Store) Gateways() []GatewayRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]GatewayRecord, 0, len(s.gateways))
 	for _, g := range s.gateways {
 		out = append(out, *g)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Club < out[j].Club })
+	sort.Slice(out, func(i, j int) bool { return out[i].Installation < out[j].Installation })
 	return out
 }
 
@@ -487,7 +463,7 @@ func (s *Store) CreateInstallation(id, name string) (Installation, error) {
 	if _, ok := s.installs[id]; ok {
 		return Installation{}, ErrInstallationExists
 	}
-	in := &Installation{ID: id, Name: firstNonEmpty(name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
+	in := &Installation{ID: id, Name: cmp.Or(name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
 	if err := s.saveInstallation(in); err != nil {
 		return Installation{}, err
 	}
@@ -504,18 +480,6 @@ func (s *Store) Installation(id string) (Installation, bool) {
 		return Installation{}, false
 	}
 	return in.clone(), true
-}
-
-// Installations returns every installation sorted by id.
-func (s *Store) Installations() []Installation {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Installation, 0, len(s.installs))
-	for _, in := range s.installs {
-		out = append(out, in.clone())
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
 }
 
 // DeleteInstallation removes an installation entirely: its clubs, its
@@ -536,7 +500,7 @@ func (s *Store) DeleteInstallation(id string) error {
 		for _, e := range entries {
 			p := filepath.Join(s.dir, codesDir, e.Name())
 			var rec joinCodeRecord
-			if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &rec) == nil && rec.installation() == id {
+			if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &rec) == nil && rec.Installation == id {
 				_ = os.Remove(p)
 			}
 		}
@@ -602,8 +566,7 @@ func (s *Store) DeleteClub(installation, club string) (int64, error) {
 	return in.Version, nil
 }
 
-// ConfigVersion is an installation's config version (0 when it has no
-// record: a gateway from before installations).
+// ConfigVersion is an installation's config version (0 when unknown).
 func (s *Store) ConfigVersion(installation string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -613,23 +576,12 @@ func (s *Store) ConfigVersion(installation string) int64 {
 	return 0
 }
 
-// Route returns the installation that serves club. A club configured on
-// the hub belongs to its installation; otherwise an installation with the
-// club's id and no clubs on the hub serves it (a gateway that keeps its
-// one club in gateway.yaml, as before installations).
+// Route returns the installation that serves club.
 func (s *Store) Route(club string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if inst, ok := s.clubs[club]; ok {
-		return inst, true
-	}
-	if in, ok := s.installs[club]; ok && len(in.Clubs) > 0 {
-		return "", false
-	}
-	if _, ok := s.gateways[club]; ok {
-		return club, true
-	}
-	return "", false
+	inst, ok := s.clubs[club]
+	return inst, ok
 }
 
 // ClubRef is a club as partners see it in the list.
@@ -639,23 +591,13 @@ type ClubRef struct {
 	Installation string
 }
 
-// ClubRefs lists every club partners can reach: those configured on the
-// hub and the gateway.yaml clubs of installations without hub clubs.
+// ClubRefs lists every club configured on the hub, sorted by id.
 func (s *Store) ClubRefs() []ClubRef {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []ClubRef
+	out := make([]ClubRef, 0, len(s.clubs))
 	for club, inst := range s.clubs {
 		out = append(out, ClubRef{ID: club, Name: s.installs[inst].Clubs[club].Name, Installation: inst})
-	}
-	for id, g := range s.gateways {
-		if _, configured := s.clubs[id]; configured {
-			continue
-		}
-		if in, ok := s.installs[id]; ok && len(in.Clubs) > 0 {
-			continue
-		}
-		out = append(out, ClubRef{ID: id, Name: g.Name, Installation: id})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

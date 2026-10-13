@@ -21,7 +21,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
-	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/remote"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
@@ -97,7 +96,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	}
 
 	s.Driver.Logger = log
-	clubs, syncer, _, err := buildInstallation(s, log)
+	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
 		return 2
@@ -238,7 +237,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		go u.Loop(ctx, hint, first, 24*time.Hour, func(res update.Result) { restartTo <- res.Target })
 	}
 
-	log.Info("started", "version", version, "build", build(), "listen", s.Listen, "hub", s.Hub != nil, "crm", s.CRMType, "local_club", s.ClubID)
+	log.Info("started", "version", version, "build", build(), "listen", s.Listen, "hub", s.Hub != nil, "crm", s.CRMType, "club", s.ClubID)
 	code := 0
 	var target string
 	select {
@@ -274,43 +273,37 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	return code
 }
 
-// buildInstallation builds what serve runs: the club of gateway.yaml (if
-// any), the CRM account, the multi-club handler and the syncer that keeps
-// the clubs equal to the installation's config on the hub.
-func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, driver.Account, error) {
-	var local []*core.Server
-	if s.HasClub {
+// buildInstallation builds what serve runs: without a hub the club of
+// gateway.yaml; with a hub the CRM account, the multi-club handler and the
+// syncer that keeps the clubs equal to the installation's config on the
+// hub (nil without a hub).
+func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, error) {
+	if s.Hub == nil {
 		drv, err := core.BuildDriver(s, factories)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
-		srv, err := core.NewServer(s, drv, log)
+		clubs, err := core.NewClubs(s, core.ClubsOptions{Logger: log})
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
-		local = append(local, srv)
+		clubs.Set([]*core.Server{core.NewServer(s, drv, log)})
+		return clubs, nil, nil
 	}
-	var acct driver.Account
-	if f, ok := accounts[s.CRMType]; ok {
-		a, err := f(s.Driver)
-		if err != nil {
-			return nil, nil, nil, &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
-		}
-		acct = a
-	} else if !s.HasClub {
-		return nil, nil, nil, &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
+	f, ok := accounts[s.CRMType]
+	if !ok {
+		return nil, nil, &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
 	}
-	o := core.ClubsOptions{Logger: log}
-	if acct != nil {
-		o.ReadyNoClubs = acct.CheckLogin
-	}
-	clubs, err := core.NewClubs(s, o)
+	acct, err := f(s.Driver)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
+	}
+	clubs, err := core.NewClubs(s, core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
+	if err != nil {
+		return nil, nil, err
 	}
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
-	syncer := remote.New(remote.Options{Base: s, Factories: factories, Clubs: clubs, Local: local, Logger: log})
-	return clubs, syncer, acct, nil
+	return clubs, remote.New(remote.Options{Base: s, Factories: factories, Clubs: clubs, Logger: log}), nil
 }
 
 // sendHeartbeat reports one self-check to the hub. A failed heartbeat is
@@ -481,7 +474,7 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	clubs, _, _, err := buildInstallation(s, nil)
+	clubs, _, err := buildInstallation(s, nil)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

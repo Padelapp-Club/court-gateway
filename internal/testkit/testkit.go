@@ -20,30 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/contract"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
-
-// SafeBuffer is a goroutine-safe log sink.
-type SafeBuffer struct {
-	mu  sync.Mutex
-	buf []byte
-}
-
-func (b *SafeBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	return len(p), nil
-}
-
-// String returns everything written.
-func (b *SafeBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.buf)
-}
 
 // Hub is a running test hub.
 type Hub struct {
@@ -51,7 +32,7 @@ type Hub struct {
 	Settings *hub.Settings
 	StateDir string
 	Opts     hub.Options
-	Logs     *SafeBuffer
+	Logs     *contract.LogBuffer
 
 	mu     sync.Mutex
 	addr   string
@@ -71,7 +52,7 @@ func StartHub(t *testing.T, hubYAML string, env map[string]string, opts hub.Opti
 	if err != nil {
 		t.Fatalf("hub config: %v", err)
 	}
-	h := &Hub{t: t, Settings: settings, StateDir: settings.StateDir, Opts: opts, Logs: &SafeBuffer{}}
+	h := &Hub{t: t, Settings: settings, StateDir: settings.StateDir, Opts: opts, Logs: &contract.LogBuffer{}}
 	if h.Opts.Logger == nil {
 		h.Opts.Logger = core.NewLogger(h.Logs, slog.LevelDebug, settings.Secrets)
 	}
@@ -178,7 +159,10 @@ func (h *Hub) JoinCode(club, name string) string {
 // Transport returns a transport that trusts the test hub only.
 func (h *Hub) Transport() *http.Transport { return tunnel.NewTransport(h.Roots) }
 
-// Register redeems a fresh join code for club and returns the secret.
+// Register makes an installation with the same id as club that serves
+// club, redeems a join code for it and returns the gateway secret. The
+// club is put on the hub only so the hub routes it; the test gateway
+// serves its own copy (a contract.Built), not the hub's.
 func (h *Hub) Register(club, name string) string {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -186,6 +170,11 @@ func (h *Hub) Register(club, name string) string {
 	rr, err := tunnel.Register(ctx, h.Transport(), h.URL(), h.JoinCode(club, name), "test")
 	if err != nil {
 		h.t.Fatalf("register: %v", err)
+	}
+	spec := core.ClubSpec{ID: club, Name: name, Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "00:00-24:00"},
+		Courts: []core.CourtSpec{{ID: "court-1", Name: "Court 1"}}}
+	if _, _, err := h.Server().Store().PutClub(club, spec); err != nil {
+		h.t.Fatalf("put club: %v", err)
 	}
 	return rr.Secret
 }

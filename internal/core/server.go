@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -21,40 +20,26 @@ const ReadyTimeout = 5 * time.Second
 // driverTimeout bounds every driver call made for an API request.
 const driverTimeout = 30 * time.Second
 
-// Server is the CRM-agnostic HTTP API. It is a plain http.Handler factory:
-// it makes no assumption about how or where it is served.
+// Server is the partner API of one club around its driver. Clubs serves
+// every club of an installation and adds health, auth and the club list.
 type Server struct {
 	cfg  *Settings
 	drv  driver.Driver
 	log  *slog.Logger
 	now  func() time.Time
-	auth *auth.Authenticator
 	caps driver.Capabilities
 }
 
-// Option customises a Server.
-type Option func(*Server)
-
-// WithClock overrides the clock (tests).
-func WithClock(now func() time.Time) Option { return func(s *Server) { s.now = now } }
-
-// NewServer builds the API around a driver.
-func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger, opts ...Option) (*Server, error) {
+// NewServer builds the API of one club around its driver.
+func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{cfg: cfg, drv: drv, log: log, now: time.Now, caps: drv.Capabilities()}
-	for _, o := range opts {
-		o(s)
+	now := cfg.Driver.Now
+	if now == nil {
+		now = time.Now
 	}
-	if len(cfg.Partners) > 0 {
-		a, err := auth.New(cfg.Partners, auth.Options{WriteError: writeError, Now: s.now})
-		if err != nil {
-			return nil, err
-		}
-		s.auth = a
-	}
-	return s, nil
+	return &Server{cfg: cfg, drv: drv, log: log, now: now, caps: drv.Capabilities()}
 }
 
 // Settings returns the club's settings.
@@ -63,58 +48,12 @@ func (s *Server) Settings() *Settings { return s.cfg }
 // Driver returns the club's driver.
 func (s *Server) Driver() driver.Driver { return s.drv }
 
-// Handler returns the complete handler: request ids, access log, panic
-// recovery, unauthenticated health endpoints and the partner API behind
-// the auth middleware.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", s.handleLive)
-	mux.HandleFunc("GET /health/ready", s.handleReady)
-	mux.Handle("/health/", methodNotAllowed())
-	if s.auth != nil {
-		mux.Handle("/v1/", s.auth.Wrap(s.APIHandler()))
-	} else {
-		mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "the partner API of this gateway is served through the hub")
-		})
-	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
-	})
-	return s.observe(mux)
-}
-
-// TunnelHandler is the handler a gateway runs for requests that arrive over
-// its own outbound connection to the hub. The hub has already
-// authenticated the partner and checked its scope; the tunnel client puts
-// the partner name into the request context (auth.WithPartnerName). Only
-// the health endpoints and the partner API are reachable.
-func (s *Server) TunnelHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", s.handleLive)
-	mux.HandleFunc("GET /health/ready", s.handleReady)
-	mux.Handle("/health/", methodNotAllowed())
-	api := s.APIHandler()
-	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := auth.PartnerName(r.Context()); !ok {
-			writeError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "the hub did not name the partner")
-			return
-		}
-		api.ServeHTTP(w, r)
-	}))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
-	})
-	return s.observe(mux)
-}
-
-// APIHandler returns the partner API without authentication. It expects the
-// partner name in the request context (see auth.PartnerName) and is meant to
-// be wrapped by the auth middleware.
+// APIHandler returns the club's partner API without authentication. It
+// expects the partner name in the request context (see auth.PartnerName);
+// Clubs routes /v1/clubs/{club}/... here.
 func (s *Server) APIHandler() http.Handler {
 	mux := http.NewServeMux()
 	const club = "/v1/clubs/{club}"
-	mux.HandleFunc("GET /v1/clubs", s.handleClubs)
 	mux.HandleFunc("GET "+club, s.withClub(s.handleClub))
 	mux.HandleFunc("GET "+club+"/courts", s.withClub(s.handleCourts))
 	mux.HandleFunc("GET "+club+"/occupancy", s.withClub(s.handleOccupancy))
@@ -124,14 +63,14 @@ func (s *Server) APIHandler() http.Handler {
 	mux.HandleFunc("GET "+club+"/bookings/{id}", s.withClub(s.handleGet))
 	mux.HandleFunc("DELETE "+club+"/bookings/{id}", s.withClub(s.handleCancel))
 	mux.HandleFunc("POST "+club+"/bookings/{id}/payment", s.withClub(s.handlePayment))
-	for _, p := range []string{"/v1/clubs", club, club + "/courts", club + "/occupancy", club + "/prices",
+	for _, p := range []string{club, club + "/courts", club + "/occupancy", club + "/prices",
 		club + "/quote", club + "/bookings", club + "/bookings/{id}", club + "/bookings/{id}/payment"} {
 		mux.Handle(p, methodNotAllowed())
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	})
-	return s.notePartner(mux)
+	return mux
 }
 
 func methodNotAllowed() http.Handler {
@@ -196,8 +135,6 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-func (s *Server) observe(next http.Handler) http.Handler { return Observe(s.log, s.now, next) }
-
 type upstreamIDKey struct{}
 
 // WithRequestID returns a context carrying a request id assigned upstream
@@ -248,15 +185,6 @@ func Observe(log *slog.Logger, now func() time.Time, next http.Handler) http.Han
 			)
 		}()
 		next.ServeHTTP(rec, r)
-	})
-}
-
-func (s *Server) notePartner(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if name, ok := auth.PartnerName(r.Context()); ok {
-			info(r).partner = name
-		}
-		next.ServeHTTP(w, r)
 	})
 }
 
@@ -330,10 +258,7 @@ func classify(err error) (int, string, string) {
 }
 
 // ReadyReason maps a readiness failure to a short code with no secrets.
-func ReadyReason(err error) string { return readyReason(err) }
-
-// readyReason maps a readiness failure to a short code with no secrets.
-func readyReason(err error) string {
+func ReadyReason(err error) string {
 	var ue *driver.UpstreamError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -352,20 +277,4 @@ func readyReason(err error) string {
 	default:
 		return "CRM_ERROR"
 	}
-}
-
-func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
-}
-
-func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), ReadyTimeout)
-	defer cancel()
-	if err := s.drv.Ready(ctx); err != nil {
-		reason := readyReason(err)
-		s.log.Warn("not ready", "request_id", info(r).id, "reason", reason, "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }

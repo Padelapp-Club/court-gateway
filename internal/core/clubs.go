@@ -156,7 +156,7 @@ func (c *Clubs) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), ReadyTimeout)
 	defer cancel()
 	if err := c.Ready(ctx); err != nil {
-		reason := readyReason(err)
+		reason := ReadyReason(err)
 		c.log.Warn("not ready", "request_id", info(r).id, "reason", reason, "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
 		return

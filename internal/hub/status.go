@@ -119,7 +119,7 @@ func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []by
 	var online, ready int64
 	for _, v := range views {
 		st := v.state
-		id := MetricKey("club", v.Club)
+		id := MetricKey("club", v.Installation)
 		isOnline := st != StateOffline
 		check(id+"_online", isOnline, onlineDetail(v, now, o.offlineAfter))
 		check(id+"_ready", st != StateNotReady, readyDetail(v, o.readyFailures))

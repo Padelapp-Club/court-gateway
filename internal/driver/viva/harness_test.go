@@ -145,7 +145,7 @@ func roomFor(court string) string {
 
 func (f *fixture) env() *contract.Env {
 	return &contract.Env{
-		Handler:      f.built.Server.Handler(),
+		Handler:      f.built.Handler(),
 		Club:         "test-club",
 		ReadKey:      contract.ReadKey,
 		BookKey:      contract.BookKey,

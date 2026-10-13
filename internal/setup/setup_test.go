@@ -38,7 +38,7 @@ func TestRenderedConfigHasNoClub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.HasClub || s.Hub == nil || s.Driver.CRM["username"] != "admin@example.test" {
+	if s.ClubID != "" || s.Hub == nil || s.Driver.CRM["username"] != "admin@example.test" {
 		t.Fatalf("loaded: %+v", s)
 	}
 	for _, w := range []string{"club:", "venue:", "courts:", "studio"} {

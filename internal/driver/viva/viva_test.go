@@ -31,7 +31,7 @@ func call(t *testing.T, f *fixture, method, path, key string, body string) (int,
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	rec := httptest.NewRecorder()
-	f.built.Server.Handler().ServeHTTP(rec, req)
+	f.built.Handler().ServeHTTP(rec, req)
 	var m map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &m)
 	return rec.Code, m, rec.Body.String()

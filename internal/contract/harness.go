@@ -3,6 +3,7 @@ package contract
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
 	"sync"
 	"testing"
 
@@ -29,7 +30,8 @@ func KeyEnv() map[string]string {
 	return map[string]string{"TEST_READ_KEY": ReadKey, "TEST_BOOK_KEY": BookKey, "TEST_OTHER_KEY": OtherBookKey}
 }
 
-// LogBuffer captures log output safely across goroutines.
+// LogBuffer captures log output safely across goroutines (every test
+// harness logs into one).
 type LogBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -48,17 +50,22 @@ func (b *LogBuffer) String() string {
 	return b.buf.String()
 }
 
-// Built is a gateway assembled from a config text.
+// Built is a gateway assembled from a config text: one club served the
+// way serve serves the club of a gateway.yaml without a hub.
 type Built struct {
 	Settings *core.Settings
 	Driver   driver.Driver
 	Server   *core.Server
+	Clubs    *core.Clubs
 	Logs     *LogBuffer
 }
 
+// Handler is the local-port handler (health, partner auth, the API).
+func (b *Built) Handler() http.Handler { return b.Clubs.Handler() }
+
 // Build loads config text with env, builds the driver through factory and
-// wraps it in a server that logs into a buffer. hook may adjust the driver
-// config (e.g. inject an HTTP client) before the driver is built.
+// serves its club, logging into a buffer. hook may adjust the driver config
+// (e.g. inject an HTTP client) before the driver is built.
 func Build(t *testing.T, configYAML string, env map[string]string, crmType string, factory driver.Factory, hook func(*driver.Config)) *Built {
 	t.Helper()
 	s, err := core.Load([]byte(configYAML), func(k string) string { return env[k] })
@@ -75,9 +82,11 @@ func Build(t *testing.T, configYAML string, env map[string]string, crmType strin
 	if err != nil {
 		t.Fatalf("driver: %v", err)
 	}
-	srv, err := core.NewServer(s, d, log)
+	srv := core.NewServer(s, d, log)
+	clubs, err := core.NewClubs(s, core.ClubsOptions{Logger: log, Now: s.Driver.Now})
 	if err != nil {
-		t.Fatalf("server: %v", err)
+		t.Fatalf("clubs: %v", err)
 	}
-	return &Built{Settings: s, Driver: d, Server: srv, Logs: logs}
+	clubs.Set([]*core.Server{srv})
+	return &Built{Settings: s, Driver: d, Server: srv, Clubs: clubs, Logs: logs}
 }

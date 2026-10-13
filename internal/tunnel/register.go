@@ -36,13 +36,7 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 	default:
 		return out, fmt.Errorf("hub answered HTTP %d to registration", resp.StatusCode)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil || out.Secret == "" {
-		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
-	}
-	if out.Installation == "" {
-		out.Installation = out.Club // a hub from before installations
-	}
-	if out.Installation == "" {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil || out.Secret == "" || out.Installation == "" {
 		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
 	}
 	return out, nil
@@ -70,9 +64,6 @@ func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret strin
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
 		return Whoami{}, errors.New("hub sent a malformed answer")
-	}
-	if out.Installation == "" {
-		out.Installation = out.Club
 	}
 	return out, nil
 }

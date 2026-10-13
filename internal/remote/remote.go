@@ -37,7 +37,6 @@ type Syncer struct {
 	base      *core.Settings
 	factories map[string]driver.Factory
 	clubs     *core.Clubs
-	local     []*core.Server
 	fetch     func(context.Context) (tunnel.RemoteConfig, error)
 	log       *slog.Logger
 	hook      func(*driver.Config)
@@ -56,9 +55,6 @@ type Options struct {
 	Base      *core.Settings
 	Factories map[string]driver.Factory
 	Clubs     *core.Clubs
-	// Local are the clubs of gateway.yaml, served next to the hub's; a
-	// club of the hub with the same id replaces one of them.
-	Local []*core.Server
 	// Fetch pulls the config (tunnel.Client.FetchConfig).
 	Fetch  func(context.Context) (tunnel.RemoteConfig, error)
 	Logger *slog.Logger
@@ -69,7 +65,7 @@ type Options struct {
 	Retry time.Duration
 }
 
-// New builds a Syncer and starts serving the local clubs.
+// New builds a Syncer.
 func New(o Options) *Syncer {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
@@ -77,10 +73,8 @@ func New(o Options) *Syncer {
 	if o.Retry <= 0 {
 		o.Retry = 5 * time.Second
 	}
-	s := &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, local: o.Local, fetch: o.Fetch,
+	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch,
 		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), refused: -1}
-	s.clubs.Set(o.Local)
-	return s
 }
 
 // SetFetch sets how the config is pulled (before Run).
@@ -155,14 +149,14 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// Apply validates rc and, if every club is valid, serves exactly its clubs
-// (plus the local ones it does not replace). Otherwise it keeps the
-// previous set and records the reason.
+// Apply validates rc and, if every club is valid, serves exactly its
+// clubs. Otherwise it keeps the previous set and records the reason.
 func (s *Syncer) Apply(rc tunnel.RemoteConfig) error {
-	servers, ids, err := s.build(rc)
+	servers, problems := Build(s.base, s.factories, s.hook, rc)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err != nil {
+	if len(problems) > 0 {
+		err := &core.ConfigError{Problems: problems}
 		msg := err.Error()
 		if len(msg) > maxErrorText {
 			msg = msg[:maxErrorText] + "…"
@@ -173,11 +167,15 @@ func (s *Syncer) Apply(rc tunnel.RemoteConfig) error {
 	}
 	s.clubs.Set(servers)
 	s.applied, s.refused, s.errText = rc.Version, -1, ""
-	s.log.Info("club config applied", "version", rc.Version, "clubs", strings.Join(ids, ","))
+	s.log.Info("club config applied", "version", rc.Version, "clubs", strings.Join(s.clubs.IDs(), ","))
 	return nil
 }
 
-func (s *Syncer) build(rc tunnel.RemoteConfig) ([]*core.Server, []string, error) {
+// Build builds the server of every club in rc with this installation's
+// driver. It returns the servers of the valid clubs and a problem line,
+// in Russian, for every club that does not load. hook adjusts each
+// driver config before the driver is built (tests).
+func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), rc tunnel.RemoteConfig) ([]*core.Server, []string) {
 	var problems []string
 	var servers []*core.Server
 	seen := map[string]bool{}
@@ -192,7 +190,7 @@ func (s *Syncer) build(rc tunnel.RemoteConfig) ([]*core.Server, []string, error)
 			continue
 		}
 		seen[spec.ID] = true
-		srv, err := s.buildClub(spec)
+		srv, err := buildClub(base, factories, hook, spec)
 		if err != nil {
 			var ce *core.ConfigError
 			if errors.As(err, &ce) {
@@ -204,30 +202,18 @@ func (s *Syncer) build(rc tunnel.RemoteConfig) ([]*core.Server, []string, error)
 		}
 		servers = append(servers, srv)
 	}
-	if len(problems) > 0 {
-		return nil, nil, &core.ConfigError{Problems: problems}
-	}
-	for _, l := range s.local {
-		if id := l.Settings().ClubID; !seen[id] {
-			servers = append(servers, l)
-		}
-	}
-	ids := make([]string, len(servers))
-	for i, srv := range servers {
-		ids[i] = srv.Settings().ClubID
-	}
-	return servers, ids, nil
+	return servers, problems
 }
 
-func (s *Syncer) buildClub(spec core.ClubSpec) (*core.Server, error) {
-	st, err := s.base.WithClub(spec)
+func buildClub(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), spec core.ClubSpec) (*core.Server, error) {
+	st, err := base.WithClub(spec)
 	if err != nil {
 		return nil, err
 	}
-	if s.hook != nil {
-		s.hook(&st.Driver)
+	if hook != nil {
+		hook(&st.Driver)
 	}
-	d, err := core.BuildDriver(st, s.factories)
+	d, err := core.BuildDriver(st, factories)
 	if err != nil {
 		var ce *core.ConfigError
 		if errors.As(err, &ce) {
@@ -237,7 +223,7 @@ func (s *Syncer) buildClub(spec core.ClubSpec) (*core.Server, error) {
 		}
 		return nil, err
 	}
-	return core.NewServer(st, d, st.Driver.Logger)
+	return core.NewServer(st, d, st.Driver.Logger), nil
 }
 
 // ---- discovery ----
@@ -245,7 +231,6 @@ func (s *Syncer) buildClub(spec core.ClubSpec) (*core.Server, error) {
 // DiscoverRequest is the body of a discovery request from the hub.
 type DiscoverRequest struct {
 	Studio      string `json:"studio,omitempty"`
-	Days        int    `json:"days,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`
 	SlotMinutes int    `json:"slot_minutes,omitempty"`
 }
@@ -298,16 +283,9 @@ func DiscoverHandler(acct driver.Account, clubs *core.Clubs, log *slog.Logger) h
 			core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed discovery request")
 			return
 		}
-		if req.Days == 0 {
-			req.Days = 28
-		}
-		if req.Days < 1 || req.Days > 90 {
-			core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "days must be 1 to 90")
-			return
-		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
-		d, err := acct.Discover(ctx, driver.DiscoverQuery{Studio: strings.TrimSpace(req.Studio), Days: req.Days})
+		d, err := acct.Discover(ctx, driver.DiscoverQuery{Studio: strings.TrimSpace(req.Studio)})
 		if err != nil {
 			reason := core.ReadyReason(err)
 			log.Warn("discovery failed", "reason", reason, "error", err)

@@ -75,7 +75,6 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
 	inst := fs.String("installation", "", "installation id (one CRM account): lower-case latin letters, digits, dashes")
-	club := fs.String("club", "", "deprecated name of --installation")
 	name := fs.String("name", "", "installation name, used if the code creates the installation")
 	ttl := fs.Duration("ttl", hub.DefaultJoinCodeTTL, "how long the code stays valid")
 	if fs.Parse(args) != nil {
@@ -85,9 +84,6 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
-	}
-	if *inst == "" {
-		*inst = *club
 	}
 	jc, err := hub.CreateJoinCode(s.StateDir, *inst, *name, *ttl, time.Now())
 	switch {
@@ -118,12 +114,8 @@ func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
 	inst := fs.String("installation", "", "installation id")
-	club := fs.String("club", "", "deprecated name of --installation")
 	if fs.Parse(args) != nil {
 		return 2
-	}
-	if *inst == "" {
-		*inst = *club
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {

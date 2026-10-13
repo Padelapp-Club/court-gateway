@@ -45,8 +45,8 @@ func TestMetricSetRejectsMalformedAndRepeated(t *testing.T) {
 func TestStatusDropsCollidingKeys(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	views := []clubView{
-		{GatewayRecord: GatewayRecord{Club: "a-b", Name: "x"}, clubHealth: clubHealth{state: StatePending}},
-		{GatewayRecord: GatewayRecord{Club: "a_b", Name: "y"}, clubHealth: clubHealth{state: StatePending}},
+		{GatewayRecord: GatewayRecord{Installation: "a-b", Name: "x"}, clubHealth: clubHealth{state: StatePending}},
+		{GatewayRecord: GatewayRecord{Installation: "a_b", Name: "y"}, clubHealth: clubHealth{state: StatePending}},
 	}
 	status, metrics, dropped := buildStatus(now, statusOptions{offlineAfter: time.Minute, readyFailures: 3}, views)
 	if strings.Count(string(status), `"club_a_b_online"`) != 1 || strings.Count(string(metrics), "club_a_b_outdated=") != 1 {

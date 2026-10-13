@@ -83,6 +83,9 @@ func NewServer(cfg *Settings, store *Store, opts Options) (*Server, error) {
 // Monitor returns the heartbeat monitor (its Run is started by the caller).
 func (s *Server) Monitor() *Monitor { return s.monitor }
 
+// Store returns the hub's state.
+func (s *Server) Store() *Store { return s.store }
+
 // Broker returns the broker.
 func (s *Server) Broker() *Broker { return s.broker }
 
@@ -131,14 +134,6 @@ func newCallID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func bearer(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
-		return strings.TrimSpace(h[7:])
-	}
-	return ""
-}
-
 // ---- gateway side ----
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -162,19 +157,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusInternalServerError, "INTERNAL", "internal error")
 		return
 	}
-	s.log.Info("gateway registered", "club", g.Club, "version", req.Version)
-	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Club, Club: g.Club, ClubName: g.Name, Secret: secret})
+	s.log.Info("gateway registered", "installation", g.Installation, "version", req.Version)
+	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Installation, Name: g.Name, Secret: secret})
 }
 
 func (s *Server) gateway(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		club, ok := s.store.Authenticate(bearer(r))
+		key, _ := auth.Bearer(r)
+		inst, ok := s.store.Authenticate(key)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel"`)
 			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "unknown gateway secret")
 			return
 		}
-		next(w, r, club)
+		next(w, r, inst)
 	}
 }
 
@@ -248,7 +244,6 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, club st
 }
 
 // handleConfig gives a gateway its installation's club configuration.
-// The club argument of gateway handlers is the installation id.
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, inst string) {
 	out := tunnel.RemoteConfig{Clubs: []json.RawMessage{}}
 	if in, ok := s.store.Installation(inst); ok {
@@ -264,7 +259,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, inst strin
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, inst string) {
 	info := s.broker.Info(inst)
 	h := s.monitor.Health(inst)
-	out := tunnel.Whoami{Installation: inst, Club: inst, Connected: info.Connected, Latest: s.cfg.LatestVersion,
+	out := tunnel.Whoami{Installation: inst, Connected: info.Connected, Latest: s.cfg.LatestVersion,
 		Clubs: []string{}, AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed}
 	if out.ClubsServed == nil {
 		out.ClubsServed = []string{}
@@ -359,13 +354,12 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 
 // ---- operator ----
 
-// ClubStatus is one row of /hub/status: one installation's gateway. Club
-// is the installation id (its historical name).
-type ClubStatus struct {
-	Club      string `json:"club"`
-	Name      string `json:"name"`
-	Connected bool   `json:"connected"`
-	LastSeen  string `json:"last_seen,omitempty"`
+// GatewayStatus is one row of /hub/status: one installation's gateway.
+type GatewayStatus struct {
+	Installation string `json:"installation"`
+	Name         string `json:"name"`
+	Connected    bool   `json:"connected"`
+	LastSeen     string `json:"last_seen,omitempty"`
 	// State is pending, online, not_ready or offline (from heartbeats).
 	State         string `json:"state"`
 	LastHeartbeat string `json:"last_heartbeat,omitempty"`
@@ -395,7 +389,8 @@ func ts(t time.Time) string {
 // compared in constant time.
 func (s *Server) operator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		presented := sha256.Sum256([]byte(bearer(r)))
+		key, _ := auth.Bearer(r)
+		presented := sha256.Sum256([]byte(key))
 		if !s.hasOp || subtle.ConstantTimeCompare(presented[:], s.opKey[:]) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="operator"`)
 			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "operator key required")
@@ -405,11 +400,11 @@ func (s *Server) operator(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) statusRow(g GatewayRecord) ClubStatus {
-	info := s.broker.Info(g.Club)
-	h := s.monitor.Health(g.Club)
-	row := ClubStatus{
-		Club: g.Club, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
+func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
+	info := s.broker.Info(g.Installation)
+	h := s.monitor.Health(g.Installation)
+	row := GatewayStatus{
+		Installation: g.Installation, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
 		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
 		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
@@ -432,11 +427,11 @@ func (s *Server) statusRow(g GatewayRecord) ClubStatus {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	rows := []ClubStatus{}
-	for _, g := range s.store.Clubs() {
+	rows := []GatewayStatus{}
+	for _, g := range s.store.Gateways() {
 		rows = append(rows, s.statusRow(g))
 	}
-	core.WriteJSON(w, http.StatusOK, map[string]any{"time": ts(s.now()), "latest_version": s.cfg.LatestVersion, "clubs": rows})
+	core.WriteJSON(w, http.StatusOK, map[string]any{"time": ts(s.now()), "latest_version": s.cfg.LatestVersion, "gateways": rows})
 }
 
 // failLimiter refuses work after too many failures in a window; it slows
@@ -499,7 +494,7 @@ func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) erro
 	if cfg.TLSCertFile == "" {
 		log.Warn("hub serves plain HTTP: put a TLS-terminating proxy in front of it; gateways only connect over https")
 	}
-	log.Info("hub started", "listen", cfg.Listen, "gateways", len(srv.store.Clubs()))
+	log.Info("hub started", "listen", cfg.Listen, "gateways", len(srv.store.Gateways()))
 	select {
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {

@@ -92,21 +92,16 @@ type RegisterRequest struct {
 	Version string `json:"version,omitempty"`
 }
 
-// RegisterResponse carries the long-lived secret. It is shown once. Club
-// and ClubName are the installation's id and name under their historical
-// names (gateways before installations read them).
+// RegisterResponse carries the long-lived secret. It is shown once.
 type RegisterResponse struct {
 	Installation string `json:"installation_id"`
-	Club         string `json:"club"`
-	ClubName     string `json:"club_name"`
+	Name         string `json:"name"`
 	Secret       string `json:"secret"`
 }
 
-// Whoami is the hub's view of the calling gateway. Club is the
-// installation id under its historical name.
+// Whoami is the hub's view of the calling gateway.
 type Whoami struct {
 	Installation string `json:"installation_id"`
-	Club         string `json:"club"`
 	Connected    bool   `json:"connected"`
 	LastSeen     string `json:"last_seen,omitempty"`
 	Latest       string `json:"latest_version,omitempty"`

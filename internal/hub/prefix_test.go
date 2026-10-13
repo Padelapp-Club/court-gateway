@@ -123,7 +123,7 @@ func TestHubBehindPathPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logs := &testkit.SafeBuffer{}
+	logs := &contract.LogBuffer{}
 	log := core.NewLogger(logs, slog.LevelDebug, settings.Secrets)
 	srv, err := hub.NewServer(settings, store, hub.Options{Version: "1.0.0", Logger: log})
 	if err != nil {
@@ -161,14 +161,17 @@ func TestHubBehindPathPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register through the prefix: %v", err)
 	}
+	if _, _, err := srv.Store().PutClub("demo-club", core.ClubSpec{ID: "demo-club", Name: "Демо-клуб"}); err != nil {
+		t.Fatal(err)
+	}
 
 	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	gw := testkit.StartGateway(t, hubURL, rt, reg.Secret, b.Server.TunnelHandler(), nil)
+	gw := testkit.StartGateway(t, hubURL, rt, reg.Secret, b.Clubs.TunnelHandler(), nil)
 	testkit.WaitFor(t, "gateway connected through the prefix", 10*time.Second, func() bool {
 		return gw.Client.Connected() && srv.Broker().Connected("demo-club")
 	})
 	who, err := tunnel.FetchWhoami(rctx, rt, hubURL, reg.Secret)
-	if err != nil || who.Club != "demo-club" || !who.Connected {
+	if err != nil || who.Installation != "demo-club" || !who.Connected {
 		t.Fatalf("whoami through the prefix: %+v %v", who, err)
 	}
 	if err := gw.Client.SendHeartbeat(rctx, tunnel.Heartbeat{Version: "1.0.0", Build: tunnel.BuildRelease, Ready: true, CheckedAt: time.Now().UTC()}); err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"flag"
@@ -52,11 +53,11 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	in.HubURL = firstSet(in.HubURL, getenv("GATEWAY_HUB_URL"), defaultHubURL)
-	in.Username = firstSet(in.Username, getenv("CRM_USERNAME"))
+	in.HubURL = cmp.Or(in.HubURL, getenv("GATEWAY_HUB_URL"), defaultHubURL)
+	in.Username = cmp.Or(in.Username, getenv("CRM_USERNAME"))
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
-	in.JoinCode = strings.TrimSpace(firstSet(in.JoinCode, getenv("GATEWAY_JOIN_CODE")))
+	in.JoinCode = strings.TrimSpace(cmp.Or(in.JoinCode, getenv("GATEWAY_JOIN_CODE")))
 	if *nonInteractive && in.CRMType == "" {
 		in.CRMType = "viva"
 	}
@@ -92,15 +93,6 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		return 1
 	}
 	return 0
-}
-
-func firstSet(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {

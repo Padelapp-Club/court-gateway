@@ -99,7 +99,7 @@ func (w *world) connect(t *testing.T, hubURL string) {
 
 func (w *world) connectWith(t *testing.T, hubURL, secret string) {
 	t.Helper()
-	w.gw = testkit.StartGateway(t, hubURL, w.hub.Transport(), secret, w.built.Server.TunnelHandler(), nil)
+	w.gw = testkit.StartGateway(t, hubURL, w.hub.Transport(), secret, w.built.Clubs.TunnelHandler(), nil)
 	w.waitConnected(t)
 }
 
@@ -171,7 +171,7 @@ func TestPartnerLimitedToItsClubs(t *testing.T) {
 	env["NARROW_KEY"] = "narrow-key-0123456789abcdef0123"
 	h := testkit.StartHub(t, hubYAML+extra, env, hub.Options{})
 	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	gw := testkit.StartGateway(t, h.URL(), h.Transport(), h.Register("demo-club", "Демо"), b.Server.TunnelHandler(), nil)
+	gw := testkit.StartGateway(t, h.URL(), h.Transport(), h.Register("demo-club", "Демо"), b.Clubs.TunnelHandler(), nil)
 	testkit.WaitFor(t, "connected", 10*time.Second, gw.Client.Connected)
 	r := call(t, h, http.MethodGet, "/v1/clubs/demo-club/courts", "narrow-key-0123456789abcdef0123", "")
 	if r.status != http.StatusNotFound {
@@ -206,7 +206,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("poll with a wrong secret: %d", resp.StatusCode)
 	}
-	gw := testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), "cgs_wrong", w.built.Server.TunnelHandler(), nil)
+	gw := testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), "cgs_wrong", w.built.Clubs.TunnelHandler(), nil)
 	testkit.WaitFor(t, "secret rejected", 5*time.Second, gw.Client.Unauthorized)
 	if gw.Client.Connected() || w.hub.Server().Broker().Connected("demo-club") {
 		t.Fatal("a gateway with a wrong secret counts as connected")
@@ -232,7 +232,7 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 	// typed by hand: lower case, no dashes, O for 0
 	typed := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(code, "-", ""), "0", "O"))
 	rr, err := tunnel.Register(ctx, w.hub.Transport(), w.hub.URL(), typed, "1.0.0")
-	if err != nil || rr.Club != "demo-club" || rr.ClubName != "Демо-клуб" || !strings.HasPrefix(rr.Secret, "cgs_") {
+	if err != nil || rr.Installation != "demo-club" || rr.Name != "Демо-клуб" || !strings.HasPrefix(rr.Secret, "cgs_") {
 		t.Fatalf("first use: %+v %v", rr, err)
 	}
 	if _, err := tunnel.Register(ctx, w.hub.Transport(), w.hub.URL(), code, "1.0.0"); !errors.Is(err, tunnel.ErrJoinCodeRejected) {
@@ -275,7 +275,7 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 	if _, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret1); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("old secret still works: %v", err)
 	}
-	if who, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret2); err != nil || who.Club != "demo-club" {
+	if who, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret2); err != nil || who.Installation != "demo-club" {
 		t.Fatalf("new secret: %+v %v", who, err)
 	}
 	// nothing secret is stored in plain text
@@ -323,7 +323,7 @@ func TestReconnectAfterNetworkFailure(t *testing.T) {
 
 func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
 	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: "x", Handler: b.Server.TunnelHandler()})
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: "x", Handler: b.Clubs.TunnelHandler()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestUpdateHint(t *testing.T) {
 	h := testkit.StartHub(t, hubYAML+"latest_version: 1.2.0\n", hubEnv(), hub.Options{})
 	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
 	c, err := tunnel.NewClient(tunnel.ClientConfig{
-		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Server.TunnelHandler(),
+		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Clubs.TunnelHandler(),
 		Version: "1.0.0", Build: tunnel.BuildRelease, Transport: h.Transport(), PollTimeout: 5 * time.Second,
 		OnHint: func(v string) { mu.Lock(); hint = v; mu.Unlock() },
 	})

@@ -7,9 +7,11 @@ import (
 	"testing"
 )
 
-const hubGateway = `club: { id: c1, name: "Клуб" }
-hub: { url: https://hub.example.test }
+const hubGateway = `hub: { url: https://hub.example.test }
 crm: { type: demo }
+`
+
+const localClub = `club: { id: c1, name: "Клуб" }
 venue: { timezone: Europe/Moscow, slot_minutes: 30, hours: { mon-sun: "07:00-23:00" } }
 courts: [ { id: court-1, name: "Корт 1" } ]
 `
@@ -54,9 +56,13 @@ func TestHubConfigErrors(t *testing.T) {
 		t.Fatalf("plain http hub: %v", err)
 	}
 	// without a hub, partners are still required
-	noHub := strings.Replace(hubGateway, "hub: { url: https://hub.example.test }\n", "", 1)
+	noHub := strings.Replace(hubGateway, "hub: { url: https://hub.example.test }\n", "", 1) + localClub
 	if _, err := Load([]byte(noHub), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "partners") {
 		t.Fatalf("no hub, no partners: %v", err)
+	}
+	// with a hub, a club in gateway.yaml is refused: the hub configures clubs
+	if _, err := Load([]byte(hubGateway+localClub), func(string) string { return "cgs_x" }); err == nil || !strings.Contains(err.Error(), "оператор на хабе") {
+		t.Fatalf("club next to a hub: %v", err)
 	}
 }
 

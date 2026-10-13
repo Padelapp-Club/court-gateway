@@ -12,13 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -66,6 +65,38 @@ var _ driver.Driver = (*Driver)(nil)
 // New is the driver.Factory for crm.type "viva".
 func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 
+// login reads the installation-level keys (the CRM login) shared by the
+// driver of a club and the account, and builds the client; timeout applies
+// when cfg has no HTTP client.
+func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
+	p := cfg.CRM
+	add(p.RejectUnknown("crm", "username", "studio", "auth_url", "api_url", "break_title"))
+	username, err := p.String("crm", "username", true)
+	add(err)
+	endpoint := func(key, def string) string {
+		v, err := p.String("crm", key, false)
+		add(err)
+		if v == "" {
+			return def
+		}
+		add(core.CheckHTTPSURL("crm."+key, v))
+		return v
+	}
+	authURL, apiURL := endpoint("auth_url", DefaultAuthURL), endpoint("api_url", DefaultAPIURL)
+	if cfg.Password == "" {
+		add(errors.New("CRM_PASSWORD: переменная окружения с паролем администратора Viva не задана"))
+	}
+	hc := cfg.HTTPClient
+	if hc == nil {
+		hc = &http.Client{Timeout: timeout}
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &client{authURL: authURL, apiURL: strings.TrimRight(apiURL, "/"), username: username, password: cfg.Password, http: hc, now: now}
+}
+
 // NewDriver validates the driver-specific config and builds the driver.
 func NewDriver(cfg driver.Config) (*Driver, error) {
 	var errs []string
@@ -74,39 +105,21 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 			errs = append(errs, err.Error())
 		}
 	}
+	c := login(cfg, 20*time.Second, add)
 	p := cfg.CRM
-	add(p.RejectUnknown("crm", "username", "studio", "auth_url", "api_url", "break_title"))
-	username, err := p.String("crm", "username", true)
-	add(err)
 	studio, err := p.String("crm", "studio", true)
 	add(err)
 	if studio != "" && !uuidRe.MatchString(studio) {
 		add(fmt.Errorf("crm.studio: «%s» — ожидается идентификатор студии Viva (UUID)", studio))
-	}
-	authURL, err := p.String("crm", "auth_url", false)
-	add(err)
-	if authURL == "" {
-		authURL = DefaultAuthURL
-	} else {
-		add(checkURL("crm.auth_url", authURL))
-	}
-	apiURL, err := p.String("crm", "api_url", false)
-	add(err)
-	if apiURL == "" {
-		apiURL = DefaultAPIURL
-	} else {
-		add(checkURL("crm.api_url", apiURL))
 	}
 	breakTitle, err := p.String("crm", "break_title", false)
 	add(err)
 	if breakTitle == "" {
 		breakTitle = DefaultBreakTitle
 	}
-	if cfg.Password == "" {
-		add(errors.New("CRM_PASSWORD: переменная окружения с паролем администратора Viva не задана"))
-	}
 
 	d := &Driver{
+		c:          c,
 		studio:     studio,
 		breakTitle: breakTitle,
 		slot:       cfg.SlotMinutes,
@@ -114,13 +127,10 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		byCourt:    map[string]court{},
 		services:   map[driver.Kind]*service{},
 		log:        cfg.Logger,
-		now:        cfg.Now,
+		now:        c.now,
 	}
 	if d.log == nil {
 		d.log = slog.New(slog.DiscardHandler)
-	}
-	if d.now == nil {
-		d.now = time.Now
 	}
 	if d.slot <= 0 {
 		d.slot = 30
@@ -145,10 +155,10 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		if pl != "" && !uuidRe.MatchString(pl) {
 			add(fmt.Errorf("%s.price_list: «%s» — ожидается идентификатор прайс-листа Viva (UUID)", path, pl))
 		}
-		c := court{id: cc.ID, room: strings.ToLower(room), priceList: pl}
-		d.courts = append(d.courts, c)
-		d.byRoom[c.room] = cc.ID
-		d.byCourt[cc.ID] = c
+		ct := court{id: cc.ID, room: strings.ToLower(room), priceList: pl}
+		d.courts = append(d.courts, ct)
+		d.byRoom[ct.room] = cc.ID
+		d.byCourt[cc.ID] = ct
 	}
 	for name, sp := range cfg.Services {
 		path := "services." + name
@@ -171,43 +181,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	if len(errs) > 0 {
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
-	hc := cfg.HTTPClient
-	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
-	}
-	d.c = &client{
-		authURL:  authURL,
-		apiURL:   strings.TrimRight(apiURL, "/"),
-		username: username,
-		password: cfg.Password,
-		http:     hc,
-		now:      d.now,
-	}
 	return d, nil
-}
-
-// checkURL accepts https URLs, and plain http only for loopback hosts
-// (local test doubles).
-func checkURL(path, raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("%s: «%s» — неверный адрес", path, raw)
-	}
-	switch u.Scheme {
-	case "https":
-		return nil
-	case "http":
-		host := u.Hostname()
-		if host == "localhost" {
-			return nil
-		}
-		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-			return nil
-		}
-		return fmt.Errorf("%s: «%s» — адрес должен начинаться с https://", path, raw)
-	default:
-		return fmt.Errorf("%s: «%s» — адрес должен начинаться с https://", path, raw)
-	}
 }
 
 // Capabilities: VivaCRM has no payment mark the gateway can set.

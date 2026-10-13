@@ -121,7 +121,7 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 	}
 	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", factory, nil)
 	w.secret = w.hub.Register("demo-club", "Демо-клуб")
-	w.gw = testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), w.secret, b.Server.TunnelHandler(), nil)
+	w.gw = testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), w.secret, b.Clubs.TunnelHandler(), nil)
 	testkit.WaitFor(t, "connected", 10*time.Second, func() bool { return w.hub.Server().Broker().Connected("demo-club") })
 	w.check = &tunnel.SelfCheck{Ready: w.crm.Ready, Reason: core.ReadyReason, Interval: time.Minute,
 		Now: w.clock.Now, Version: "1.0.0", Build: tunnel.BuildRelease}
@@ -552,13 +552,13 @@ func TestStatusAPI(t *testing.T) {
 		t.Fatalf("status: %d %s", r.status, r.body)
 	}
 	var st struct {
-		Clubs []hub.ClubStatus `json:"clubs"`
+		Gateways []hub.GatewayStatus `json:"gateways"`
 	}
-	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Clubs) != 1 {
+	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Gateways) != 1 {
 		t.Fatalf("status body: %s", r.body)
 	}
-	c := st.Clubs[0]
-	if c.Club != "demo-club" || !c.Connected || c.State != hub.StateOnline || c.Version != "1.0.0" || c.Build != "release" ||
+	c := st.Gateways[0]
+	if c.Installation != "demo-club" || !c.Connected || c.State != hub.StateOnline || c.Version != "1.0.0" || c.Build != "release" ||
 		!c.Outdated || c.Ready == nil || !*c.Ready || c.LastSeen == "" || c.LastHeartbeat == "" {
 		t.Fatalf("row: %+v", c)
 	}

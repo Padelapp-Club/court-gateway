@@ -140,7 +140,8 @@ func (a *Authenticator) lookup(key string) *partner {
 	return found
 }
 
-func bearer(r *http.Request) (string, bool) {
+// Bearer returns the token of an "Authorization: Bearer" header.
+func Bearer(r *http.Request) (string, bool) {
 	h := r.Header.Get("Authorization")
 	const prefix = "bearer "
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
@@ -161,7 +162,7 @@ func isWrite(method string) bool {
 // Wrap protects next.
 func (a *Authenticator) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key, ok := bearer(r)
+		key, ok := Bearer(r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
 			a.writeErr(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "missing or malformed Authorization: Bearer header")

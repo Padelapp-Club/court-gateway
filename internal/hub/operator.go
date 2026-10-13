@@ -25,7 +25,7 @@ type InstallationDTO struct {
 	Clubs         []core.ClubSpec `json:"clubs"`
 	// Gateway is the registered gateway's status; null before the first
 	// join code is redeemed.
-	Gateway *ClubStatus `json:"gateway"`
+	Gateway *GatewayStatus `json:"gateway"`
 }
 
 // JoinCodeDTO is a freshly created join code, shown once.
@@ -228,7 +228,7 @@ func (s *Server) handleDeleteClub(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, ClubPutDTO{Installation: inst, Club: club, ConfigVersion: v})
 }
 
-// POST /hub/installations/{inst}/discover {"studio"?, "days"?, "timezone"?, "slot_minutes"?}
+// POST /hub/installations/{inst}/discover {"studio"?, "timezone"?, "slot_minutes"?}
 // runs the CRM discovery on the installation's gateway, through its
 // tunnel, and returns its answer: the account's studios and a draft club
 // config. Nothing is stored.

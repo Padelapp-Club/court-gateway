@@ -108,10 +108,6 @@ var bookingIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 
 func (s *Server) ts(t time.Time) string { return t.In(s.cfg.Location).Format(time.RFC3339) }
 
-func (s *Server) handleClubs(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string][]clubRef{"clubs": {{ID: s.cfg.ClubID, Name: s.cfg.ClubName}}})
-}
-
 func (s *Server) handleClub(w http.ResponseWriter, _ *http.Request) {
 	hours := make(map[string]*hoursDTO, 7)
 	for i, h := range s.cfg.Hours {

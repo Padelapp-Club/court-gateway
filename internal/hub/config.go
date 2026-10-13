@@ -51,11 +51,8 @@ type fileConfig struct {
 	RequestTimeout string `yaml:"request_timeout"`
 	PollWait       string `yaml:"poll_wait"`
 	Partners       []struct {
-		Name            string   `yaml:"name"`
-		KeyEnv          string   `yaml:"key_env"`
-		Scopes          []string `yaml:"scopes"`
-		Clubs           []string `yaml:"clubs"`
-		WritesPerMinute *int     `yaml:"writes_per_minute"`
+		core.PartnerEntry `yaml:",inline"`
+		Clubs             []string `yaml:"clubs"`
 	} `yaml:"partners"`
 	Heartbeat struct {
 		Interval      string `yaml:"interval"`
@@ -93,11 +90,7 @@ type Settings struct {
 	Secrets []string
 }
 
-var (
-	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	partnerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
-	envNameRe     = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
-)
+var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 // ValidClubID reports whether id is a valid club id.
 func ValidClubID(id string) bool { return slugRe.MatchString(id) }
@@ -189,41 +182,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("heartbeat.ready_failures: %d — от 1 до 100", s.ReadyFailures)
 	}
 
-	seenName, seenKey := map[string]bool{}, map[string]string{}
+	entries := make([]core.PartnerEntry, len(fc.Partners))
 	for i, p := range fc.Partners {
+		entries[i] = p.PartnerEntry
 		path := fmt.Sprintf("partners[%d]", i)
-		name := strings.TrimSpace(p.Name)
-		switch {
-		case !partnerNameRe.MatchString(name):
-			add("%s.name: «%s» — строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
-		case seenName[name]:
-			add("%s.name: партнёр «%s» указан дважды", path, name)
-		}
-		seenName[name] = true
-		envName := strings.TrimSpace(p.KeyEnv)
-		var key string
-		if !envNameRe.MatchString(envName) {
-			add("%s.key_env: «%s» — имя переменной окружения заглавными латинскими буквами, цифрами и _", path, envName)
-		} else if key = strings.TrimSpace(getenv(envName)); len(key) < minKeyLength {
-			add("%s.key_env: ключ в %s не задан или короче %d символов", path, envName, minKeyLength)
-		} else if other, dup := seenKey[key]; dup {
-			add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
-		} else {
-			seenKey[key] = name
-			s.Secrets = append(s.Secrets, key)
-		}
-		var scopes []auth.Scope
-		if len(p.Scopes) == 0 {
-			add("%s.scopes: укажите права: [read] или [read, book]", path)
-		}
-		for _, sc := range p.Scopes {
-			switch auth.Scope(sc) {
-			case auth.ScopeRead, auth.ScopeBook:
-				scopes = append(scopes, auth.Scope(sc))
-			default:
-				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
-			}
-		}
 		if len(p.Clubs) == 0 {
 			add("%s.clubs: укажите клубы партнёра списком или [\"*\"] — все клубы", path)
 		}
@@ -232,16 +194,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 				add("%s.clubs: «%s» — не идентификатор клуба", path, c)
 			}
 		}
-		rate := core.DefaultWritesPerMinute
-		if p.WritesPerMinute != nil {
-			rate = *p.WritesPerMinute
-			if rate < 1 || rate > 6000 {
-				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
-			}
-		}
-		s.Partners = append(s.Partners, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
-		s.PartnerClubs[name] = append([]string(nil), p.Clubs...)
+		s.PartnerClubs[strings.TrimSpace(p.Name)] = append([]string(nil), p.Clubs...)
 	}
+	partners, keys := core.ParsePartners(entries, getenv, add)
+	s.Partners, s.Secrets = partners, append(s.Secrets, keys...)
 
 	if env := strings.TrimSpace(fc.Alerts.WebhookURLEnv); env != "" {
 		s.WebhookURL = strings.TrimSpace(getenv(env))

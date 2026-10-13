@@ -29,8 +29,6 @@ type DiscoverQuery struct {
 	// calls it a studio). Empty asks the driver to list the studios it can
 	// see.
 	Studio string
-	// Days of future occupancy to scan for courts (default 28).
-	Days int
 }
 
 // Studio is one club of the account as the CRM names it.
@@ -41,8 +39,7 @@ type Studio struct {
 
 // DiscoveredCourt is a court candidate.
 type DiscoveredCourt struct {
-	Name     string
-	Bookings int
+	Name string
 	// Params are the driver-specific keys of the court entry.
 	Params Params
 }

@@ -28,7 +28,7 @@ func TestContract(t *testing.T) {
 		b := contract.Build(t, demoConfig, contract.KeyEnv(), "demo", demo.New, nil)
 		d := b.Driver.(*demo.Driver)
 		return &contract.Env{
-			Handler:      b.Server.Handler(),
+			Handler:      b.Handler(),
 			Club:         "demo-club",
 			ReadKey:      contract.ReadKey,
 			BookKey:      contract.BookKey,

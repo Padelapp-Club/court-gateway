@@ -6,6 +6,7 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -217,22 +218,13 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(in.Password, reg.Secret, d.CRMType)), 0o600); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", envPath, err))
 	}
-	if err := core.WriteFileAtomic(cfgPath, []byte(d.render(reg.Installation, reg.ClubName)), 0o644); err != nil {
+	if err := core.WriteFileAtomic(cfgPath, []byte(d.render(reg.Installation, reg.Name)), 0o644); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", cfgPath, err))
 	}
 	res.OK = true
 	res.Config, res.EnvFile, res.Hub = cfgPath, envPath, d.HubURL
-	res.Installation = &InstallationRef{ID: reg.Installation, Name: firstNonEmpty(reg.ClubName, reg.Installation)}
+	res.Installation = &InstallationRef{ID: reg.Installation, Name: cmp.Or(strings.TrimSpace(reg.Name), reg.Installation)}
 	return res, nil
-}
-
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
-		}
-	}
-	return ""
 }
 
 // envFor is the environment a written config will see.

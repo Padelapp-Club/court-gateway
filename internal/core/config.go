@@ -79,12 +79,83 @@ type fileConfig struct {
 		Rest map[string]any `yaml:",inline"`
 	} `yaml:"courts"`
 	Services map[string]map[string]any `yaml:"services"`
-	Partners []struct {
-		Name            string   `yaml:"name"`
-		KeyEnv          string   `yaml:"key_env"`
-		Scopes          []string `yaml:"scopes"`
-		WritesPerMinute *int     `yaml:"writes_per_minute"`
-	} `yaml:"partners"`
+	Partners []PartnerEntry            `yaml:"partners"`
+}
+
+// PartnerEntry is a partner as gateway.yaml and hub.yaml list it.
+type PartnerEntry struct {
+	Name            string   `yaml:"name"`
+	KeyEnv          string   `yaml:"key_env"`
+	Scopes          []string `yaml:"scopes"`
+	WritesPerMinute *int     `yaml:"writes_per_minute"`
+}
+
+// ParsePartners validates partner entries and reads their keys with
+// getenv; problems go to add, in Russian. It returns the partners and
+// their keys (secrets for the log redaction).
+func ParsePartners(entries []PartnerEntry, getenv func(string) string, add func(string, ...any)) ([]auth.Partner, []string) {
+	var out []auth.Partner
+	var keys []string
+	seenName := map[string]bool{}
+	seenKey := map[string]string{}
+	for i, p := range entries {
+		path := fmt.Sprintf("partners[%d]", i)
+		name := strings.TrimSpace(p.Name)
+		switch {
+		case name == "":
+			add("%s.name: параметр обязателен", path)
+		case !partnerNameRe.MatchString(name):
+			add("%s.name: «%s» — допустимы строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
+		case seenName[name]:
+			add("%s.name: партнёр «%s» указан дважды", path, name)
+		}
+		seenName[name] = true
+		var key string
+		envName := strings.TrimSpace(p.KeyEnv)
+		switch {
+		case envName == "":
+			add("%s.key_env: параметр обязателен — имя переменной окружения с ключом партнёра (например PARTNER_KEY_1)", path)
+		case !envNameRe.MatchString(envName):
+			add("%s.key_env: «%s» — имя переменной окружения пишется заглавными латинскими буквами, цифрами и _", path, envName)
+		case envName == PasswordEnv:
+			add("%s.key_env: переменная %s занята паролем CRM", path, PasswordEnv)
+		default:
+			key = strings.TrimSpace(getenv(envName))
+			switch {
+			case key == "":
+				add("%s.key_env: переменная окружения %s не задана или пуста", path, envName)
+			case len(key) < minKeyLength:
+				add("%s.key_env: ключ в %s слишком короткий — нужно не меньше %d символов", path, envName, minKeyLength)
+			default:
+				if other, dup := seenKey[key]; dup {
+					add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
+				}
+				seenKey[key] = name
+				keys = append(keys, key)
+			}
+		}
+		var scopes []auth.Scope
+		if len(p.Scopes) == 0 {
+			add("%s.scopes: укажите права: [read] — только сверка, [read, book] — сверка и бронирование", path)
+		}
+		for _, sc := range p.Scopes {
+			switch auth.Scope(sc) {
+			case auth.ScopeRead, auth.ScopeBook:
+				scopes = append(scopes, auth.Scope(sc))
+			default:
+				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
+			}
+		}
+		rate := DefaultWritesPerMinute
+		if p.WritesPerMinute != nil {
+			rate = *p.WritesPerMinute
+			if rate < 1 || rate > 6000 {
+				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
+			}
+		}
+		out = append(out, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
+	}
+	return out, keys
 }
 
 // Court is a configured court as exposed by the API.
@@ -117,14 +188,10 @@ type UpdateSettings struct {
 }
 
 // Settings is a validated configuration: the installation (CRM type and
-// login, hub, partners, local port) and, when HasClub, one club served by
-// it. With a hub the clubs of an installation are configured on the hub
-// (see ClubSpec and WithClub) and gateway.yaml normally has no club; a
-// club written in gateway.yaml is still served, and is the only way
-// without a hub.
+// login, hub, partners, local port) and, without a hub, the one club of
+// gateway.yaml. With a hub gateway.yaml has no club: the clubs of the
+// installation are configured on the hub (see ClubSpec and WithClub).
 type Settings struct {
-	// HasClub is true when the club fields below are set.
-	HasClub  bool
 	ClubID   string
 	ClubName string
 	// Listen is the local HTTP address; empty means no local port.
@@ -294,13 +361,13 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("crm.type: параметр обязателен (тип CRM клуба)")
 	}
 
-	// the club of gateway.yaml: required without a hub; with a hub the
-	// clubs normally come from the hub
+	// the club: in gateway.yaml without a hub; with a hub every club comes
+	// from the hub (WithClub)
 	s.installCRM = driver.Params(fc.CRM.Rest)
 	if s.installCRM == nil {
 		s.installCRM = driver.Params{}
 	}
-	if s.Hub == nil || fc.Club != nil || fc.Venue != nil || len(fc.Courts) > 0 || fc.Services != nil {
+	if s.Hub == nil {
 		spec := ClubSpec{Services: fc.Services}
 		if fc.Club != nil {
 			spec.ID, spec.Name = fc.Club.ID, fc.Club.Name
@@ -313,6 +380,9 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		}
 		errs = append(errs, applyClub(s, spec, filePaths)...)
 	} else {
+		if fc.Club != nil || fc.Venue != nil || len(fc.Courts) > 0 || fc.Services != nil {
+			add("club, venue, courts, services: с хабом клубы настраивает оператор на хабе — уберите эти разделы из gateway.yaml")
+		}
 		s.Driver.CRM = driver.Params{}
 		for k, v := range s.installCRM {
 			s.Driver.CRM[k] = v
@@ -324,65 +394,8 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	if len(fc.Partners) == 0 && s.Hub == nil {
 		add("partners: нужен хотя бы один партнёр с ключом доступа (или раздел hub — тогда ключи партнёров хранит хаб)")
 	}
-	seenName := map[string]bool{}
-	seenKey := map[string]string{}
-	for i, p := range fc.Partners {
-		path := fmt.Sprintf("partners[%d]", i)
-		name := strings.TrimSpace(p.Name)
-		switch {
-		case name == "":
-			add("%s.name: параметр обязателен", path)
-		case !partnerNameRe.MatchString(name):
-			add("%s.name: «%s» — допустимы строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
-		case seenName[name]:
-			add("%s.name: партнёр «%s» указан дважды", path, name)
-		}
-		seenName[name] = true
-		var key string
-		envName := strings.TrimSpace(p.KeyEnv)
-		switch {
-		case envName == "":
-			add("%s.key_env: параметр обязателен — имя переменной окружения с ключом партнёра (например PARTNER_KEY_1)", path)
-		case !envNameRe.MatchString(envName):
-			add("%s.key_env: «%s» — имя переменной окружения пишется заглавными латинскими буквами, цифрами и _", path, envName)
-		case envName == PasswordEnv:
-			add("%s.key_env: переменная %s занята паролем CRM", path, PasswordEnv)
-		default:
-			key = strings.TrimSpace(getenv(envName))
-			switch {
-			case key == "":
-				add("%s.key_env: переменная окружения %s не задана или пуста", path, envName)
-			case len(key) < minKeyLength:
-				add("%s.key_env: ключ в %s слишком короткий — нужно не меньше %d символов", path, envName, minKeyLength)
-			default:
-				if other, dup := seenKey[key]; dup {
-					add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
-				}
-				seenKey[key] = name
-				s.Secrets = append(s.Secrets, key)
-			}
-		}
-		var scopes []auth.Scope
-		if len(p.Scopes) == 0 {
-			add("%s.scopes: укажите права: [read] — только сверка, [read, book] — сверка и бронирование", path)
-		}
-		for _, sc := range p.Scopes {
-			switch auth.Scope(sc) {
-			case auth.ScopeRead, auth.ScopeBook:
-				scopes = append(scopes, auth.Scope(sc))
-			default:
-				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
-			}
-		}
-		rate := DefaultWritesPerMinute
-		if p.WritesPerMinute != nil {
-			rate = *p.WritesPerMinute
-			if rate < 1 || rate > 6000 {
-				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
-			}
-		}
-		s.Partners = append(s.Partners, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
-	}
+	partners, keys := ParsePartners(fc.Partners, getenv, add)
+	s.Partners, s.Secrets = partners, append(s.Secrets, keys...)
 
 	password := getenv(PasswordEnv)
 	if password != "" {

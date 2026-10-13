@@ -234,7 +234,6 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths) []string {
 	s.Driver.CRM = crm
 	s.Driver.Timezone = s.Location
 	s.Driver.SlotMinutes = s.SlotMinutes
-	s.HasClub = true
 	return errs
 }
 
@@ -263,25 +262,6 @@ func ValidateClubSpec(c ClubSpec) error {
 		return &ConfigError{Problems: errs}
 	}
 	return nil
-}
-
-// BuildClub builds the server of one club of an installation.
-func BuildClub(base *Settings, c ClubSpec, factories map[string]driver.Factory, opts ...Option) (*Server, error) {
-	s, err := base.WithClub(c)
-	if err != nil {
-		return nil, err
-	}
-	d, err := BuildDriver(s, factories)
-	if err != nil {
-		var ce *ConfigError
-		if errors.As(err, &ce) {
-			for i := range ce.Problems {
-				ce.Problems[i] = "клуб «" + s.ClubID + "»: " + ce.Problems[i]
-			}
-		}
-		return nil, err
-	}
-	return NewServer(s, d, s.Driver.Logger, opts...)
 }
 
 // ---- drafts ----

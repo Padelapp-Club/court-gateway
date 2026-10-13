@@ -289,16 +289,16 @@ func (m *Monitor) Tick(ctx context.Context) {
 	now := m.now()
 	var views []clubView
 	var alerts []Alert
-	clubs := m.store.Clubs()
+	gateways := m.store.Gateways()
 	connected := map[string]bool{}
 	if m.broker != nil {
-		for _, g := range clubs {
-			connected[g.Club] = m.broker.Connected(g.Club)
+		for _, g := range gateways {
+			connected[g.Installation] = m.broker.Connected(g.Installation)
 		}
 	}
 	m.mu.Lock()
-	for _, g := range clubs {
-		h := m.health(g.Club)
+	for _, g := range gateways {
+		h := m.health(g.Installation)
 		st := m.evaluate(h, g.RegisteredAt, now)
 		prev, prevSince := h.state, h.stateSince
 		if st != prev {
@@ -307,7 +307,7 @@ func (m *Monitor) Tick(ctx context.Context) {
 				alerts = append(alerts, a)
 			}
 		}
-		views = append(views, clubView{GatewayRecord: g, clubHealth: *h, connected: connected[g.Club]})
+		views = append(views, clubView{GatewayRecord: g, clubHealth: *h, connected: connected[g.Installation]})
 	}
 	m.mu.Unlock()
 
@@ -330,33 +330,33 @@ func (m *Monitor) Tick(ctx context.Context) {
 // a club (prev empty) alerts only when it is already bad; pending never
 // alerts.
 func (m *Monitor) transition(g GatewayRecord, h clubHealth, prev string, prevSince, now time.Time) (Alert, bool) {
-	a := Alert{Club: g.Club, ClubName: g.Name, Time: now}
+	a := Alert{Club: g.Installation, ClubName: g.Name, Time: now}
 	switch h.state {
 	case StateOffline:
 		since := m.silentSince(&h, g.RegisteredAt)
 		a.Event = EventOffline
 		a.Text = fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s): последний сигнал %s UTC, %s назад.",
-			g.Name, g.Club, since.UTC().Format("02.01 15:04"), minutes(now.Sub(since)))
+			g.Name, g.Installation, since.UTC().Format("02.01 15:04"), minutes(now.Sub(since)))
 		if h.lastBeat.IsZero() {
 			a.Text = fmt.Sprintf("court-gateway: НЕТ СВЯЗИ со шлюзом клуба «%s» (%s): ни одного сигнала за %s.",
-				g.Name, g.Club, minutes(now.Sub(since)))
+				g.Name, g.Installation, minutes(now.Sub(since)))
 		}
 		return a, true
 	case StateNotReady:
 		a.Event = EventNotReady
 		a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) на связи, но НЕ ГОТОВ: %s (%d проверки подряд).",
-			g.Name, g.Club, h.reason, h.notReady)
+			g.Name, g.Installation, h.reason, h.notReady)
 		return a, true
 	case StateOnline:
 		switch prev {
 		case StateOffline:
 			a.Event = EventOnline
 			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова на связи (не было связи %s).",
-				g.Name, g.Club, minutes(now.Sub(prevSince)))
+				g.Name, g.Installation, minutes(now.Sub(prevSince)))
 			return a, true
 		case StateNotReady:
 			a.Event = EventReady
-			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова готов.", g.Name, g.Club)
+			a.Text = fmt.Sprintf("court-gateway: шлюз клуба «%s» (%s) снова готов.", g.Name, g.Installation)
 			return a, true
 		}
 	}

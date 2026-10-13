@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -26,44 +25,15 @@ var _ driver.Account = (*Account)(nil)
 // here (it belongs to a club).
 func NewAccount(cfg driver.Config) (driver.Account, error) {
 	var errs []string
-	add := func(err error) {
+	c := login(cfg, 30*time.Second, func(err error) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
-	}
-	p := cfg.CRM
-	add(p.RejectUnknown("crm", "username", "studio", "auth_url", "api_url", "break_title"))
-	username, err := p.String("crm", "username", true)
-	add(err)
-	authURL, err := p.String("crm", "auth_url", false)
-	add(err)
-	if authURL == "" {
-		authURL = DefaultAuthURL
-	} else {
-		add(checkURL("crm.auth_url", authURL))
-	}
-	apiURL, err := p.String("crm", "api_url", false)
-	add(err)
-	if apiURL == "" {
-		apiURL = DefaultAPIURL
-	} else {
-		add(checkURL("crm.api_url", apiURL))
-	}
-	if cfg.Password == "" {
-		add(errors.New("CRM_PASSWORD: переменная окружения с паролем администратора Viva не задана"))
-	}
+	})
 	if len(errs) > 0 {
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
-	now := cfg.Now
-	if now == nil {
-		now = time.Now
-	}
-	hc := cfg.HTTPClient
-	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
-	}
-	return &Account{c: &client{authURL: authURL, apiURL: strings.TrimRight(apiURL, "/"), username: username, password: cfg.Password, http: hc, now: now}}, nil
+	return &Account{c: c}, nil
 }
 
 // CheckLogin implements driver.Account.

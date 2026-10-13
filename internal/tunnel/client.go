@@ -57,7 +57,6 @@ type Client struct {
 	http     *http.Client
 	log      *slog.Logger
 	okPolls  atomic.Int32
-	everOK   atomic.Bool
 	lastHint atomic.Value // string
 	authFail atomic.Bool
 	mu       sync.Mutex
@@ -192,7 +191,6 @@ func (c *Client) poller(ctx context.Context) {
 		rq, err := c.poll(ctx, func() {
 			failures = 0
 			c.authFail.Store(false)
-			c.everOK.Store(true)
 			setHealthy(true, nil)
 		})
 		if err != nil {

@@ -5,7 +5,6 @@ package doctor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/remote"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 	"github.com/Padelapp-Club/court-gateway/internal/version"
@@ -114,7 +114,7 @@ func Run(ctx context.Context, o Options) Report {
 	s, err := core.LoadFile(o.ConfigPath, getenv)
 	var local driver.Driver
 	var acct driver.Account
-	if err == nil && s.HasClub {
+	if err == nil && s.Hub == nil {
 		if o.DriverHook != nil {
 			o.DriverHook(&s.Driver)
 		}
@@ -123,13 +123,13 @@ func Run(ctx context.Context, o Options) Report {
 	if err == nil {
 		if f, ok := o.Accounts[s.CRMType]; ok {
 			cfg := s.Driver
-			if o.DriverHook != nil && !s.HasClub {
+			if o.DriverHook != nil && s.Hub != nil {
 				o.DriverHook(&cfg)
 			}
 			if acct, err = f(cfg); err != nil {
 				err = &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
 			}
-		} else if !s.HasClub {
+		} else if s.Hub != nil {
 			err = &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
 		}
 	}
@@ -140,7 +140,7 @@ func Run(ctx context.Context, o Options) Report {
 		return finish(r)
 	}
 	r.Club = s.ClubID
-	if s.HasClub {
+	if s.Hub == nil {
 		add(Check{Code: CodeConfig, Status: OK, Message: fmt.Sprintf("клуб %s, CRM %s, кортов: %d", s.ClubID, s.CRMType, len(s.Courts))})
 	} else {
 		add(Check{Code: CodeConfig, Status: OK, Message: fmt.Sprintf("установка с CRM %s; клубы настраиваются на хабе", s.CRMType)})
@@ -281,9 +281,6 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	case err != nil:
 		out = append(out, Check{Code: CodeHubAuth, Status: Fail, Message: "хаб ответил ошибкой"})
 		return skipRest(2, "нет доступа к хабу"), nil
-	case s.HasClub && len(who.Clubs) == 0 && who.Installation != s.ClubID:
-		out = append(out, Check{Code: CodeHubAuth, Status: Fail, Message: fmt.Sprintf("секрет выдан установке %s, а в gateway.yaml клуб %s", who.Installation, s.ClubID), Hint: "уберите клуб из gateway.yaml (клубы задаёт хаб) или выполните setup заново"})
-		return skipRest(2, "клуб не совпадает"), nil
 	}
 	r.Installation, r.ConfigVersion, r.AppliedConfigVersion = who.Installation, who.ConfigVersion, who.AppliedConfigVersion
 	r.Clubs, r.ClubsServed = append(r.Clubs[:0], who.Clubs...), append(r.ClubsServed[:0], who.ClubsServed...)
@@ -304,34 +301,15 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	if err != nil {
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов с хаба не получена"}), nil
 	}
-	var problems []string
+	servers, problems := remote.Build(s, o.Factories, o.DriverHook, rc)
 	var clubs []clubDriver
-	for _, raw := range rc.Clubs {
-		var spec core.ClubSpec
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			problems = append(problems, err.Error())
-			continue
+	ids := make([]string, len(servers))
+	for i, srv := range servers {
+		cd := clubDriver{id: srv.Settings().ClubID, drv: srv.Driver()}
+		for _, ct := range srv.Settings().Courts {
+			cd.courts = append(cd.courts, ct.ID)
 		}
-		st, err := s.WithClub(spec)
-		if err == nil {
-			if o.DriverHook != nil {
-				o.DriverHook(&st.Driver)
-			}
-			var d driver.Driver
-			if d, err = core.BuildDriver(st, o.Factories); err == nil {
-				cd := clubDriver{id: st.ClubID, drv: d}
-				for _, ct := range st.Courts {
-					cd.courts = append(cd.courts, ct.ID)
-				}
-				clubs = append(clubs, cd)
-				continue
-			}
-		}
-		problems = append(problems, "клуб «"+spec.ID+"»: "+err.Error())
-	}
-	ids := make([]string, len(clubs))
-	for i, cd := range clubs {
-		ids[i] = cd.id
+		clubs, ids[i] = append(clubs, cd), cd.id
 	}
 	switch {
 	case len(problems) > 0:

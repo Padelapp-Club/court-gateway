@@ -171,7 +171,7 @@ func TestDiscoveryReturnsDraft(t *testing.T) {
 		t.Fatalf("enabled studios: %+v", resp.Studios)
 	}
 	resp.Draft = nil
-	_ = json.Unmarshal(h.MustOperator(t, http.StatusOK, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{"studio": "demo-south", "days": 14}), &resp)
+	_ = json.Unmarshal(h.MustOperator(t, http.StatusOK, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{"studio": "demo-south"}), &resp)
 	if resp.Draft == nil || len(resp.Draft.Courts) != 3 || resp.Draft.CRM["studio"] != "demo-south" || resp.Draft.Name != "Демо Юг" {
 		t.Fatalf("draft: %+v", resp.Draft)
 	}
@@ -182,7 +182,6 @@ func TestDiscoveryReturnsDraft(t *testing.T) {
 	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-3/clubs/club-south", resp.Draft)
 	in.WaitServing(t, "club-north", "club-south")
 	// bad input and an unknown studio
-	h.MustOperator(t, http.StatusBadRequest, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{"days": 500})
 	h.MustOperator(t, http.StatusBadRequest, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{"bogus": 1})
 	h.MustOperator(t, http.StatusBadGateway, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{"studio": "nope"})
 	// a gateway that is not connected
@@ -288,7 +287,7 @@ func TestOperatorJoinCodes(t *testing.T) {
 		t.Fatalf("code: %+v %v", jc, err)
 	}
 	rr, err := tunnel.Register(ctx, h.Transport(), h.URL(), jc.Code, "1.0.0")
-	if err != nil || rr.Installation != "inst-1" || rr.Club != "inst-1" || rr.ClubName != "Сеть Один" {
+	if err != nil || rr.Installation != "inst-1" || rr.Name != "Сеть Один" {
 		t.Fatalf("register: %+v %v", rr, err)
 	}
 	if _, err := tunnel.Register(ctx, h.Transport(), h.URL(), jc.Code, ""); !errors.Is(err, tunnel.ErrJoinCodeRejected) {

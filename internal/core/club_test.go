@@ -26,7 +26,7 @@ func TestInstallationConfigWithoutClub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.HasClub || s.ClubID != "" || s.Driver.CRM["username"] != "admin" {
+	if s.ClubID != "" || s.Driver.CRM["username"] != "admin" {
 		t.Fatalf("%+v", s)
 	}
 	// without a hub the club stays required
@@ -61,7 +61,7 @@ func TestClubSpecJSONAndWithClub(t *testing.T) {
 	if s.ClubID != "club-a" || s.Driver.CRM["studio"] != "s-1" || s.Driver.CRM["username"] != "admin" || len(s.Courts) != 2 {
 		t.Fatalf("club settings: %+v", s)
 	}
-	if base.HasClub || base.Driver.CRM["studio"] != nil {
+	if base.ClubID != "" || base.Driver.CRM["studio"] != nil {
 		t.Fatal("WithClub changed the installation settings")
 	}
 	if s.Driver.Courts[0].Params["room"] != "r-1" || s.Driver.Services["booking"]["direction"] != 12 {
