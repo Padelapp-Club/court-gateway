@@ -308,20 +308,27 @@ func TestRollbackWhenNewVersionFailsOnStart(t *testing.T) {
 	}
 }
 
-// A failing update goes back to the version before it, not past it.
-func TestRollbackToThePreviousVersion(t *testing.T) {
+// confirmedThenOffered is a gateway installed at 1.0.0 that updated to
+// 1.1.0 and confirmed it, with 1.2.0 now offered (not yet checked).
+func confirmedThenOffered(t *testing.T) (*release, *rig) {
+	t.Helper()
 	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
 	g := newRig(t, r, "1.0.0")
-	ok := func(context.Context) error { return nil }
-	if _, err := g.u.Check(context.Background()); err != nil {
-		t.Fatal(err)
+	if installed, err := g.u.Check(context.Background()); err != nil || installed != "1.1.0" {
+		t.Fatalf("install 1.1.0: %q %v", installed, err)
 	}
-	if again, err := Confirm(context.Background(), g.v, "1.1.0", ok, nil, nil); err != nil || again {
+	if again, err := Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return nil }, nil, nil); err != nil || again {
 		t.Fatalf("confirm 1.1.0: %v %v", again, err)
 	}
 	r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
 	r.binary = []byte("NEW BINARY 1.2.0")
 	g.u.Current = "1.1.0"
+	return r, g
+}
+
+// A failing update goes back to the version before it, not past it.
+func TestRollbackToThePreviousVersion(t *testing.T) {
+	_, g := confirmedThenOffered(t)
 	if installed, err := g.u.Check(context.Background()); err != nil || installed != "1.2.0" {
 		t.Fatalf("install 1.2.0: %q %v", installed, err)
 	}
@@ -378,17 +385,7 @@ func TestInterruptedUpdateLeavesARunnableBinary(t *testing.T) {
 	errCrash := errors.New("simulated crash")
 	for _, at := range []string{"download", "place", "previous", "current", "prune", "none"} {
 		t.Run(at, func(t *testing.T) {
-			r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
-			g := newRig(t, r, "1.0.0")
-			if _, err := g.u.Check(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if again, err := Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return nil }, nil, nil); err != nil || again {
-				t.Fatal(err)
-			}
-			r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
-			r.binary = []byte("NEW BINARY 1.2.0")
-			g.u.Current = "1.1.0"
+			r, g := confirmedThenOffered(t)
 			if at == "download" {
 				r.binary = r.binary[:5] // the connection broke mid-download
 			}
@@ -427,15 +424,7 @@ func TestInterruptedUpdateLeavesARunnableBinary(t *testing.T) {
 }
 
 func TestLaunchSkipsChangedAndBadVersions(t *testing.T) {
-	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
-	g := newRig(t, r, "1.0.0")
-	if _, err := g.u.Check(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return nil }, nil, nil)
-	r.setManifest(t, "1.2.0", []byte("NEW BINARY 1.2.0"))
-	r.binary = []byte("NEW BINARY 1.2.0")
-	g.u.Current = "1.1.0"
+	_, g := confirmedThenOffered(t)
 	if _, err := g.u.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}

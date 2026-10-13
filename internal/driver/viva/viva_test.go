@@ -692,19 +692,7 @@ func TestQuoteAcrossSkippedMidnight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const studio = "00000000-0000-4000-8000-000000000001"
-	const room = "00000000-0000-4000-8000-000000000002"
-	const pricing = "00000000-0000-4000-8000-000000000003"
-	stub := vivastub.New("synthetic-user", "synthetic-password", studio)
-	stub.Zone = loc
-	stub.AddRoom(room, "Court")
-	stub.SetPricing(pricing, `{"basePrices":[{"condition":{"type":"NONE"},"valueFrom":2000}]}`)
-	hs := httptest.NewServer(stub)
-	defer hs.Close()
-	d, err := viva.NewDriver(driver.Config{CRM: driver.Params{"username": "synthetic-user", "studio": studio, "auth_url": hs.URL + "/token", "api_url": hs.URL + "/api/v1"}, Password: "synthetic-password", Timezone: loc, Courts: []driver.CourtConfig{{ID: "court-1", Params: driver.Params{"viva_room": room, "price_list": pricing}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	d, _ := newDriver(t, loc)
 	cfg := &core.Settings{ClubID: "c", Location: loc, SlotMinutes: 30, Courts: []core.Court{{ID: "court-1", Name: "Court"}}}
 	api := core.NewServer(cfg, d, nil).APIHandler()
 	req := httptest.NewRequest("GET", "/v1/clubs/c/quote?court=court-1&start=2030-09-07T23:30:00-04:00&end=2030-09-08T01:30:00-03:00", nil)
@@ -761,16 +749,7 @@ func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 // Readiness validates the items it reads as occupancy does: an answer
 // occupancy refuses is not ready.
 func TestReadinessRefusesUnusableItems(t *testing.T) {
-	const studio = "00000000-0000-4000-8000-000000000001"
-	const room = "00000000-0000-4000-8000-000000000002"
-	stub := vivastub.New("synthetic-user", "synthetic-password", studio)
-	stub.AddRoom(room, "Court")
-	hs := httptest.NewServer(stub)
-	defer hs.Close()
-	d, err := viva.NewDriver(driver.Config{CRM: driver.Params{"username": "synthetic-user", "studio": studio, "auth_url": hs.URL + "/token", "api_url": hs.URL + "/api/v1"}, Password: "synthetic-password", Timezone: time.FixedZone("UTC+3", 3*3600), Courts: []driver.CourtConfig{{ID: "court-1", Params: driver.Params{"viva_room": room}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	d, stub := newDriver(t, time.FixedZone("UTC+3", 3*3600))
 	if err := d.Ready(context.Background()); err != nil {
 		t.Fatalf("clean account: %v", err)
 	}
@@ -781,4 +760,22 @@ func TestReadinessRefusesUnusableItems(t *testing.T) {
 			t.Fatalf("%s answering [{}]: readiness error %v, want UpstreamInvalid", kind, err)
 		}
 	}
+}
+
+// newDriver builds the driver of a one-court club (room1, a flat price
+// list) on a fresh stub whose studio is in loc.
+func newDriver(t *testing.T, loc *time.Location) (*viva.Driver, *vivastub.Stub) {
+	t.Helper()
+	stub := vivastub.New(stubUser, stubPass, studio)
+	stub.Zone = loc
+	stub.AddRoom(room1, "Court")
+	stub.SetPricing(priceList, `{"basePrices":[{"condition":{"type":"NONE"},"valueFrom":2000}]}`)
+	hs := httptest.NewServer(stub)
+	t.Cleanup(hs.Close)
+	d, err := viva.NewDriver(driver.Config{CRM: driver.Params{"username": stubUser, "studio": studio, "auth_url": hs.URL + "/token", "api_url": hs.URL + "/api/v1"},
+		Password: stubPass, Timezone: loc, Courts: []driver.CourtConfig{{ID: "court-1", Params: driver.Params{"viva_room": room1, "price_list": priceList}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, stub
 }

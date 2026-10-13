@@ -39,22 +39,7 @@ func call(t *testing.T, h *testkit.Hub, method, path, key string, body string) p
 	if body != "" {
 		rd = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.URL()+path, rd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := (&http.Client{Transport: h.Transport(), Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	resp, data := h.Do(t, 30*time.Second, method, path, key, rd)
 	out := partnerResp{status: resp.StatusCode, body: data, header: resp.Header}
 	_ = json.Unmarshal(data, &out.json)
 	return out

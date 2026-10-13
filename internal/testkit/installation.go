@@ -57,23 +57,31 @@ func (h *Hub) Operator(t *testing.T, key, method, path string, body any) (int, [
 		}
 		rd = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, h.URL()+path, rd)
+	resp, data := h.Do(t, 90*time.Second, method, path, key, rd)
+	return resp.StatusCode, data
+}
+
+// Do sends a request to the hub, with key as a Bearer token (if any) and
+// body as JSON (if any), and returns the answer with its body read.
+func (h *Hub) Do(t *testing.T, timeout time.Duration, method, path, key string, body io.Reader) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(method, h.URL()+path, body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	if rd != nil {
+	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := (&http.Client{Transport: h.Transport(), Timeout: 90 * time.Second}).Do(req)
+	resp, err := (&http.Client{Transport: h.Transport(), Timeout: timeout}).Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, data
+	return resp, data
 }
 
 // MustOperator is Operator that fails the test unless the status is want.
