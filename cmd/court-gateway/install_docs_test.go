@@ -282,3 +282,28 @@ func TestToolchainPinnedEverywhere(t *testing.T) {
 		t.Fatalf("toolchain go%s is not the Dockerfile's and README's Go", ver)
 	}
 }
+
+// The partner guidance after a timed-out create must not promise what the
+// gateway cannot know: an empty read is no proof, a cancel no identity.
+func TestRetryGuidanceStaysUncertain(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "hub.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	i := strings.Index(text, "**Повтор после таймаута.**")
+	if i < 0 {
+		t.Fatal("no retry guidance")
+	}
+	para := text[i : i+strings.Index(text[i:], "\n\n")]
+	for _, must := range []string{"исход неизвестен", "может создать вторую бронь", "сверьтесь со своими записями", "не что это"} {
+		if !strings.Contains(para, must) {
+			t.Fatalf("retry guidance lacks %q:\n%s", must, para)
+		}
+	}
+	for _, mustNot := range []string{"не создана, повторите", "бронь была ваша"} {
+		if strings.Contains(para, mustNot) {
+			t.Fatalf("retry guidance promises %q:\n%s", mustNot, para)
+		}
+	}
+}
