@@ -173,13 +173,17 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 		return driver.Booking{}, err
 	}
 	prefix := id[:2]
-	iv, _, err := d.interval(kind, prefix, slot{ID: s.ID, TimeFrom: s.TimeFrom, TimeTo: s.TimeTo, Room: s.Room}, d.byRoom)
+	if s.Room == nil || s.Room.ID == "" {
+		return driver.Booking{}, driver.ErrNotFound // not on a court
+	}
+	ivs, err := d.intervals(kind, prefix, slot{ID: s.ID, TimeFrom: s.TimeFrom, TimeTo: s.TimeTo, Room: s.Room}, d.byRoom)
 	if err != nil {
 		return driver.Booking{}, err
 	}
-	if iv.Court == "" {
+	if len(ivs) == 0 {
 		return driver.Booking{}, driver.ErrNotFound // a room that is not a configured court
 	}
+	iv := ivs[0]
 	status := driver.StatusActive
 	if s.Canceled != nil && *s.Canceled {
 		status = driver.StatusCancelled

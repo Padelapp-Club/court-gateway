@@ -25,16 +25,11 @@ type slot struct {
 	Canceled *bool `json:"canceled"`
 }
 
-// parseTime accepts RFC3339 and, as an assumption, a zone-less ISO
-// timestamp, which is taken as UTC.
+// parseTime accepts RFC3339 only. A timestamp without a zone is refused
+// (the answer is invalid): nothing observed says which zone it would be in.
 func parseTime(s string) (time.Time, bool) {
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, true
-	}
-	if t, err := time.ParseInLocation("2006-01-02T15:04:05.999999999", s, time.UTC); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t, err == nil
 }
 
 // formatTime writes UTC with milliseconds, like JavaScript toISOString().
@@ -145,47 +140,56 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 			prefix = "b-"
 		}
 		for _, it := range items {
-			iv, keep, err := d.interval(kind, prefix, it, rooms)
+			ivs, err := d.intervals(kind, prefix, it, rooms)
 			if err != nil {
 				return driver.Occupancy{}, err
 			}
-			if keep && iv.Start.Before(q.To) && iv.End.After(q.From) {
-				occ.Intervals = append(occ.Intervals, iv)
+			for _, iv := range ivs {
+				if iv.Start.Before(q.To) && iv.End.After(q.From) {
+					occ.Intervals = append(occ.Intervals, iv)
+				}
 			}
 		}
 	}
 	return occ, nil
 }
 
-// interval validates one list item. Anything structurally wrong makes the
+// intervals validates one list item and returns the courts it occupies
+// among rooms (room id -> court). Anything structurally wrong makes the
 // whole answer invalid: silently dropping an item would show a busy court
-// as free.
-func (d *Driver) interval(kind, prefix string, it slot, rooms map[string]string) (driver.Interval, bool, error) {
-	bad := func(what string) (driver.Interval, bool, error) {
-		return driver.Interval{}, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": item "+what, nil)
+// as free. A break without a room closes the whole studio, so it occupies
+// every court asked about; an exercise without one is invalid.
+func (d *Driver) intervals(kind, prefix string, it slot, rooms map[string]string) ([]driver.Interval, error) {
+	bad := func(what string) ([]driver.Interval, error) {
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": item "+what, nil)
 	}
 	if !uuidRe.MatchString(it.ID) {
 		return bad("has no valid id")
 	}
-	if it.Room == nil || it.Room.ID == "" {
+	roomless := it.Room == nil || it.Room.ID == ""
+	if roomless && kind != "breaks" {
 		return bad("has no room")
 	}
 	start, ok1 := parseTime(it.TimeFrom)
 	end, ok2 := parseTime(it.TimeTo)
 	if !ok1 || !ok2 {
-		return bad("has unparseable timeFrom/timeTo")
+		return bad("has unparseable or zone-less timeFrom/timeTo")
 	}
 	if !end.After(start) {
 		return bad("ends before it starts")
 	}
 	if it.Canceled != nil && *it.Canceled {
-		return driver.Interval{}, false, nil
+		return nil, nil
 	}
-	court, ok := rooms[strings.ToLower(it.Room.ID)]
-	if !ok {
-		return driver.Interval{}, false, nil // a room that is not a configured court
+	iv := driver.Interval{ID: prefix + strings.ToLower(it.ID), Start: start, End: end}
+	var out []driver.Interval
+	for room, court := range rooms {
+		if roomless || room == strings.ToLower(it.Room.ID) {
+			iv.Court = court
+			out = append(out, iv)
+		}
 	}
-	return driver.Interval{ID: prefix + strings.ToLower(it.ID), Court: court, Start: start, End: end}, true, nil
+	return out, nil // a room that is not a configured court occupies none
 }
 
 func minTime(a, b time.Time) time.Time {
@@ -196,15 +200,24 @@ func minTime(a, b time.Time) time.Time {
 }
 
 // Ready checks the club's config against the account (CheckConfig, which
-// logs in) and reads today's exercises and breaks of the first court.
+// logs in) and reads today's exercises and breaks of the first court,
+// validating every item as occupancy does: an answer occupancy would
+// refuse is not ready.
 func (d *Driver) Ready(ctx context.Context) error {
 	if err := d.CheckConfig(ctx); err != nil {
 		return err
 	}
 	today := d.day(d.now())
+	rooms := map[string]string{d.courts[0].room: ""}
 	for _, kind := range []string{"exercises", "breaks"} {
-		if _, err := d.list(ctx, kind, d.courts[0].room, today, today); err != nil {
+		items, err := d.list(ctx, kind, d.courts[0].room, today, today)
+		if err != nil {
 			return err
+		}
+		for _, it := range items {
+			if _, err := d.intervals(kind, "", it, rooms); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -191,14 +191,14 @@ func TestOccupancyInThePastIsIncomplete(t *testing.T) {
 func TestMalformedUpstreamIsNeverFree(t *testing.T) {
 	d := futureDay()
 	cases := map[string]string{
-		"object instead of array": `{"content": []}`,
-		"null":                    `null`,
-		"html":                    `<html>maintenance</html>`,
-		"item without room":       `[{"id": "00000000-0000-4000-8000-000000000001", "timeFrom": "2030-01-01T10:00:00Z", "timeTo": "2030-01-01T11:00:00Z"}]`,
-		"item with bad time":      `[{"id": "00000000-0000-4000-8000-000000000001", "timeFrom": "soon", "timeTo": "later", "room": {"id": "` + room1 + `"}}]`,
-		"item without id":         `[{"timeFrom": "2030-01-01T10:00:00Z", "timeTo": "2030-01-01T11:00:00Z", "room": {"id": "` + room1 + `"}}]`,
-		"item with wrong types":   `[{"id": 5, "timeFrom": 1, "timeTo": 2, "room": "x"}]`,
-		"end before start":        `[{"id": "00000000-0000-4000-8000-000000000001", "timeFrom": "2030-01-01T11:00:00Z", "timeTo": "2030-01-01T10:00:00Z", "room": {"id": "` + room1 + `"}}]`,
+		"object instead of array":  `{"content": []}`,
+		"null":                     `null`,
+		"html":                     `<html>maintenance</html>`,
+		"item with zone-less time": `[{"id": "00000000-0000-4000-8000-000000000001", "timeFrom": "2030-01-01T10:00:00", "timeTo": "2030-01-01T11:00:00", "room": {"id": "` + room1 + `"}}]`,
+		"item with bad time":       `[{"id": "00000000-0000-4000-8000-000000000001", "timeFrom": "soon", "timeTo": "later", "room": {"id": "` + room1 + `"}}]`,
+		"item without id":          `[{"timeFrom": "2030-01-01T10:00:00Z", "timeTo": "2030-01-01T11:00:00Z", "room": {"id": "` + room1 + `"}}]`,
+		"item with wrong types":    `[{"id": 5, "timeFrom": 1, "timeTo": 2, "room": "x"}]`,
+		"end before start":         `[{"id": "00000000-0000-4000-8000-000000000001", "timeFrom": "2030-01-01T11:00:00Z", "timeTo": "2030-01-01T10:00:00Z", "room": {"id": "` + room1 + `"}}]`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -715,5 +715,56 @@ func TestQuoteAcrossSkippedMidnight(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("quote did not finish")
+	}
+}
+
+// A break without a room closes the studio: it occupies every court
+// asked about instead of failing the whole answer.
+func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
+	d := futureDay()
+	f := newFixture(t, fixtureOpts{})
+	from, to := d.Add(10*time.Hour), d.Add(11*time.Hour)
+	f.stub.FailNext(http.MethodGet, "/breaks", http.StatusOK, `[{"id": "00000000-0000-4000-8000-0000000000b1", "timeFrom": "`+from.UTC().Format(time.RFC3339)+`", "timeTo": "`+to.UTC().Format(time.RFC3339)+`", "room": null}]`)
+	status, m, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(24*time.Hour)), contract.ReadKey, "")
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, raw)
+	}
+	courts := map[string]bool{}
+	for _, it := range m["intervals"].([]any) {
+		iv := it.(map[string]any)
+		courts[iv["court"].(string)] = true
+	}
+	if !courts["court-1"] || !courts["court-2"] {
+		t.Fatalf("a room-less break did not block every court: %s", raw)
+	}
+	// and an exercise without a room is still invalid
+	f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, `[{"id": "00000000-0000-4000-8000-0000000000e1", "timeFrom": "`+from.UTC().Format(time.RFC3339)+`", "timeTo": "`+to.UTC().Format(time.RFC3339)+`"}]`)
+	if st, m, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(24*time.Hour)), contract.ReadKey, ""); st != http.StatusBadGateway || m["code"] != "UPSTREAM_INVALID" {
+		t.Fatalf("room-less exercise: %d %s", st, raw)
+	}
+}
+
+// Readiness validates the items it reads as occupancy does: an answer
+// occupancy refuses is not ready.
+func TestReadinessRefusesUnusableItems(t *testing.T) {
+	const studio = "00000000-0000-4000-8000-000000000001"
+	const room = "00000000-0000-4000-8000-000000000002"
+	stub := vivastub.New("synthetic-user", "synthetic-password", studio)
+	stub.AddRoom(room, "Court")
+	hs := httptest.NewServer(stub)
+	defer hs.Close()
+	d, err := viva.NewDriver(driver.Config{CRM: driver.Params{"username": "synthetic-user", "studio": studio, "auth_url": hs.URL + "/token", "api_url": hs.URL + "/api/v1"}, Password: "synthetic-password", Timezone: time.FixedZone("UTC+3", 3*3600), Courts: []driver.CourtConfig{{ID: "court-1", Params: driver.Params{"viva_room": room}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ready(context.Background()); err != nil {
+		t.Fatalf("clean account: %v", err)
+	}
+	for _, kind := range []string{"/exercises", "/breaks"} {
+		stub.FailNext(http.MethodGet, kind, http.StatusOK, `[{}]`)
+		var ue *driver.UpstreamError
+		if err := d.Ready(context.Background()); !errors.As(err, &ue) || ue.Kind != driver.UpstreamInvalid {
+			t.Fatalf("%s answering [{}]: readiness error %v, want UpstreamInvalid", kind, err)
+		}
 	}
 }

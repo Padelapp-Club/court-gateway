@@ -52,14 +52,16 @@ func TestWindow(t *testing.T) {
 }
 
 func TestParseTime(t *testing.T) {
-	for _, s := range []string{"2030-03-10T12:00:00Z", "2030-03-10T15:00:00+03:00", "2030-03-10T12:00:00.000Z", "2030-03-10T12:00:00"} {
+	for _, s := range []string{"2030-03-10T12:00:00Z", "2030-03-10T15:00:00+03:00", "2030-03-10T12:00:00.000Z"} {
 		got, ok := parseTime(s)
 		if !ok || !got.Equal(ts("2030-03-10T12:00:00Z")) {
 			t.Fatalf("parseTime(%q) = %v, %v", s, got, ok)
 		}
 	}
-	if _, ok := parseTime("10.03.2030 12:00"); ok {
-		t.Fatal("unexpected parse")
+	for _, s := range []string{"10.03.2030 12:00", "2030-03-10T12:00:00"} { // no zone: refused
+		if _, ok := parseTime(s); ok {
+			t.Fatalf("parseTime(%q) accepted", s)
+		}
 	}
 }
 
