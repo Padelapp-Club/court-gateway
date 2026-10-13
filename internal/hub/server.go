@@ -354,8 +354,8 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 		return
 	}
-	g, registered := s.store.Get(inst)
-	if !registered || !s.broker.Connected(inst) {
+	g, err := s.store.Gateway(inst)
+	if err != nil || !s.broker.Connected(inst) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_OFFLINE", "the club's gateway is not connected")
 		return

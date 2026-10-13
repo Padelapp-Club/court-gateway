@@ -229,10 +229,9 @@ func LaunchEnv(installed string) []string {
 	return append(baseEnv(), LaunchedEnv+"=1", InstalledEnv+"="+installed)
 }
 
-// RestartEnv is the environment for starting the installed binary again,
-// which then picks the version to run.
-func RestartEnv() []string { return baseEnv() }
-
+// baseEnv is this process's environment without the hand-over variables:
+// also the environment for starting the installed binary again, which
+// then picks the version to run.
 func baseEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {

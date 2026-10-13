@@ -16,5 +16,5 @@ func Handover(_ context.Context, path string, args, env []string) (int, error) {
 // Restart starts the installed binary again in place of this process; it
 // then runs the version that is current. It returns only when that fails.
 func Restart(installed string, args []string) error {
-	return syscall.Exec(installed, append([]string{installed}, args...), RestartEnv())
+	return syscall.Exec(installed, append([]string{installed}, args...), baseEnv())
 }

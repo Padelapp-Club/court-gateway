@@ -258,7 +258,7 @@ func (m *Monitor) evaluate(h *installationHealth, registered, now time.Time) str
 // Health returns the monitor's view of installation.
 func (m *Monitor) Health(installation string) Health {
 	now := m.now()
-	g, _ := m.store.Get(installation)
+	g, _ := m.store.Gateway(installation)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	h, ok := m.state[installation]

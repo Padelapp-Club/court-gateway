@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"time"
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
@@ -46,8 +45,6 @@ func build() string {
 	}
 	return tunnel.BuildRelease
 }
-
-func platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
@@ -105,7 +102,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	case "hub":
 		return cmdHub(args[1:], stdout, stderr, getenv)
 	case "version":
-		fmt.Fprintf(stdout, "court-gateway %s (%s, %s)\n", version, build(), platform())
+		fmt.Fprintf(stdout, "court-gateway %s (%s, %s)\n", version, build(), update.Platform())
 		if running := update.RunningVersion(core.StateDir(defaultConfig, getenv), version, time.Now()); running != version {
 			fmt.Fprintf(stdout, "служба работает на версии %s (этот файл — установленный запускающий)\n", running)
 		}

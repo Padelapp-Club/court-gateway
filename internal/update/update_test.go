@@ -470,7 +470,7 @@ func TestLaunchAndRestartEnvironments(t *testing.T) {
 	}
 	// a restart starts the installed binary as the service manager does:
 	// it must pick the version again
-	if env := strings.Join(RestartEnv(), "\n"); strings.Contains(env, LaunchedEnv+"=") || strings.Contains(env, InstalledEnv+"=") {
+	if env := strings.Join(baseEnv(), "\n"); strings.Contains(env, LaunchedEnv+"=") || strings.Contains(env, InstalledEnv+"=") {
 		t.Fatalf("restart env: %s", env)
 	}
 	if InstalledPath() != "/opt/example/court-gateway" {

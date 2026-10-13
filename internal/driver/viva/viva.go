@@ -99,9 +99,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	if hc == nil {
 		hc = &http.Client{Timeout: timeout}
 		if cfg.Proxy != nil {
-			t := http.DefaultTransport.(*http.Transport).Clone()
-			t.Proxy = cfg.Proxy
-			hc.Transport = t
+			hc.Transport = core.ProxyFunc(cfg.Proxy).Transport()
 		}
 	}
 	now := cfg.Now

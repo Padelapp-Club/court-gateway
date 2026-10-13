@@ -104,7 +104,7 @@ func (s *Server) storeError(w http.ResponseWriter, r *http.Request, err error) {
 
 func (s *Server) installationDTO(in Installation) InstallationDTO {
 	out := InstallationDTO{ID: in.ID, Name: in.Name, CreatedAt: ts(in.Created), ConfigVersion: in.Version, Clubs: in.ClubList()}
-	if g, ok := s.store.Get(in.ID); ok {
+	if g, err := s.store.Gateway(in.ID); err == nil {
 		row := s.statusRow(g)
 		out.Gateway = &row
 	}
@@ -253,8 +253,8 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed JSON body")
 		return
 	}
-	g, registered := s.store.Get(inst)
-	if !registered || !s.broker.Connected(inst) {
+	g, err := s.store.Gateway(inst)
+	if err != nil || !s.broker.Connected(inst) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_OFFLINE", "the installation's gateway is not connected")
 		return

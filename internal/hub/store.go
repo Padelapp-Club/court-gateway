@@ -406,12 +406,6 @@ func (s *Store) Gateway(installation string) (GatewayRecord, error) {
 	return *g, nil
 }
 
-// Get is Gateway for callers that only ask whether a gateway is usable.
-func (s *Store) Get(installation string) (GatewayRecord, bool) {
-	g, err := s.Gateway(installation)
-	return g, err == nil
-}
-
 // Gateways returns the registered gateways sorted by installation id.
 func (s *Store) Gateways() []GatewayRecord {
 	s.mu.Lock()

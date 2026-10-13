@@ -124,7 +124,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	}
 	client, err := tunnel.NewClient(tunnel.ClientConfig{
 		HubURL: s.Hub.URL, Secret: s.Hub.Secret, Polls: s.Hub.Polls, Handler: clubs.TunnelHandler(),
-		Version: version, Build: build(), Platform: platform(), Logger: log,
+		Version: version, Build: build(), Platform: update.Platform(), Logger: log,
 		Transport: tunnel.NewTransport(roots, s.Hub.Proxy), OnConfigVersion: syncer.Notify,
 		OnHint: func(string) {
 			select {
