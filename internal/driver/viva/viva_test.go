@@ -526,3 +526,52 @@ func TestPriceImpactOffTheGrid(t *testing.T) {
 		t.Fatalf("prices: %d %s", st, raw)
 	}
 }
+
+// Two partners book the same court and hour at the same moment, through
+// two clubs (or two configs, as during a reload) that map a court to the
+// same room. The occupancy check and the create are serialised per room:
+// exactly one create reaches the CRM, the other partner gets 409.
+func TestConcurrentCreatesOfOneRoom(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	stub.AddRoom(room1, "Room one")
+	stub.AddRoom(room2, "Room two")
+	stub.SetPricing(priceList, pricingJSON)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/breaks") {
+			time.Sleep(300 * time.Millisecond) // CRM latency on create
+		}
+		stub.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	env := contract.KeyEnv()
+	env["CRM_PASSWORD"] = stubPass
+	build := func() http.Handler {
+		return contract.Build(t, configYAML(srv.URL, fixtureOpts{}), env, "viva", viva.New, func(c *driver.Config) { c.HTTPClient = srv.Client() }).Handler()
+	}
+	handlers := []http.Handler{build(), build()} // two drivers, one room
+	d := futureDay().Add(10 * time.Hour)
+	body := `{"court":"court-1","start":"` + d.Format(time.RFC3339) + `","end":"` + d.Add(time.Hour).Format(time.RFC3339) + `","kind":"game"}`
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i, key := range []string{contract.BookKey, contract.OtherBookKey} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/v1/clubs/test-club/bookings", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+key)
+			rec := httptest.NewRecorder()
+			handlers[i].ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}()
+	}
+	wg.Wait()
+	posts := 0
+	for _, c := range stub.Calls() {
+		if strings.HasPrefix(c, "POST /breaks") {
+			posts++
+		}
+	}
+	if posts != 1 || codes[0]+codes[1] != http.StatusCreated+http.StatusConflict {
+		t.Fatalf("creates sent to the CRM: %d, answers %v; want exactly one create, 201 and 409", posts, codes)
+	}
+}

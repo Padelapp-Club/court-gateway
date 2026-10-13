@@ -189,6 +189,11 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	return d, nil
 }
 
+// Resource implements driver.Resourcer: the Viva room behind the court.
+func (d *Driver) Resource(court string) string {
+	return "viva " + d.c.apiURL + " " + d.byCourt[court].room
+}
+
 // Capabilities: VivaCRM has no payment mark the gateway can set.
 func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: false} }
 

@@ -335,6 +335,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// no other create of this court may run between our check and our write
+	lctx, lcancel := context.WithTimeout(r.Context(), driverTimeout)
+	unlock, err := createLocks.lock(lctx, resourceKey(s.drv, req.Court))
+	lcancel()
+	if err != nil {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, r, http.StatusServiceUnavailable, "BUSY", "another booking of this court is in progress, retry")
+		return
+	}
+	defer unlock()
 	occ, err := s.occupancy(r.Context(), []string{req.Court}, start, end)
 	if err != nil {
 		s.driverError(w, r, "create.check", err)

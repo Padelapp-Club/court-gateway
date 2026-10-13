@@ -188,6 +188,17 @@ type Config struct {
 // club administrator (in Russian).
 type Factory func(Config) (Driver, error)
 
+// Resourcer is implemented by drivers whose courts are resources of the
+// CRM account (a Viva room). Resource names the resource behind a court,
+// the same for every club and every config that maps a court to it. The
+// core holds a lock per resource from the occupancy check to the end of
+// the create, so two partners, two clubs or a config reload can never book
+// one interval twice through this gateway. Without it the lock is per
+// driver and court.
+type Resourcer interface {
+	Resource(court string) string
+}
+
 // LoginChecker is implemented by drivers that can check the CRM login on
 // its own, separately from a data read (used by `doctor`).
 type LoginChecker interface {
