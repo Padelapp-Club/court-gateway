@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/hub"
 )
 
 func noEnv(string) string { return "" }
@@ -84,12 +85,24 @@ func TestHealthcheck(t *testing.T) {
 
 // The example shipped in the repository must stay a valid config.
 func TestExampleConfigIsValid(t *testing.T) {
-	env := map[string]string{"CRM_PASSWORD": "example-password", "PARTNER_KEY_1": strings.Repeat("k", 32)}
+	env := map[string]string{"CRM_PASSWORD": "example-password", "GATEWAY_HUB_SECRET": "cgs_example"}
 	s, err := core.LoadFile("../../gateway.example.yaml", func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := core.BuildDriver(s, factories); err != nil {
+		t.Fatal(err)
+	}
+	if s.Listen != "" || s.Hub == nil {
+		t.Fatalf("the example must show the hub mode with no local port: listen=%q", s.Listen)
+	}
+}
+
+// The hub example must stay a valid hub config.
+func TestHubExampleConfigIsValid(t *testing.T) {
+	env := map[string]string{"HUB_OPERATOR_KEY": strings.Repeat("o", 32), "PARTNER_KEY_1": strings.Repeat("k", 32),
+		"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "-1"}
+	if _, err := hub.LoadFile("../../hub.example.yaml", func(k string) string { return env[k] }); err != nil {
 		t.Fatal(err)
 	}
 }

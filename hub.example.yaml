@@ -1,0 +1,29 @@
+# Пример конфигурации хаба (для оператора). Секреты — в переменных окружения или в .env рядом.
+listen: ":8443"
+public_url: https://hub.example.com        # показывается в выводе join-code create
+tls:                                       # или без tls — тогда TLS снимает прокси перед хабом
+  cert_file: /etc/court-gateway-hub/tls.crt
+  key_file: /etc/court-gateway-hub/tls.key
+state_dir: /var/lib/court-gateway-hub      # зарегистрированные шлюзы (хеши секретов) и коды подключения
+operator_key_env: HUB_OPERATOR_KEY         # ключ для GET /hub/status
+# latest_version: 0.1.0                    # хаб подсказывает шлюзам обновиться и помечает устаревшие
+# request_timeout: 30s                     # сколько хаб ждёт ответа шлюза на запрос партнёра
+# poll_wait: 25s                           # сколько держится один long-poll шлюза
+
+partners:
+  - name: aggregator
+    key_env: PARTNER_KEY_1
+    scopes: [read, book]                   # read — сверка; book — ещё и бронирование
+    clubs: ["*"]                           # или список: [my-club, other-club]
+    # writes_per_minute: 60
+
+heartbeat:
+  interval: 60s                            # как часто хаб проверяет каждый шлюз
+  offline_after: 3m                        # алерт, если шлюза нет дольше
+  ready_failures: 3                        # алерт после стольких неудачных проверок готовности подряд
+
+alerts:
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env: TELEGRAM_CHAT_ID
+  # webhook_url_env: ALERT_WEBHOOK_URL     # POST JSON {event, club, club_name, text, time}
