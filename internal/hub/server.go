@@ -84,6 +84,9 @@ func NewServer(cfg *Settings, store *Store, opts Options) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, store: store, log: opts.Logger, now: opts.Now, regLim: newFailLimiter(20, time.Minute)}
 	s.broker = NewBroker(cfg.PollWait, opts.Now)
+	store.mu.Lock()
+	store.retire = s.broker.Retire
+	store.mu.Unlock()
 	s.monitor = NewMonitor(store, s.broker, MonitorConfig{
 		Interval: cfg.Interval, OfflineAfter: cfg.OfflineAfter, ReadyFailures: cfg.ReadyFailures,
 		LatestVersion: cfg.LatestVersion, Version: opts.Version, StatusDir: cfg.StatusDir,
@@ -185,16 +188,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Installation, Name: g.Name, Secret: secret})
 }
 
-func (s *Server) gateway(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+func (s *Server) gateway(next func(http.ResponseWriter, *http.Request, GatewayRecord)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, _ := auth.Bearer(r)
-		inst, ok := s.store.Authenticate(key)
-		if !ok {
+		g, err := s.store.Authenticate(key)
+		switch {
+		case errors.Is(err, ErrStateUnavailable):
+			// not a verdict on the secret: the gateway retries, keeps it
+			s.log.Error("cannot check a gateway secret", "error", err)
+			w.Header().Set("Retry-After", "10")
+			core.WriteError(w, r, http.StatusServiceUnavailable, "HUB_UNAVAILABLE", "the hub cannot check the secret right now, retry")
+			return
+		case err != nil:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="tunnel"`)
 			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "unknown gateway secret")
 			return
 		}
-		next(w, r, inst)
+		next(w, r, g)
 	}
 }
 
@@ -221,26 +231,26 @@ func meta(r *http.Request) ConnMeta {
 // handlePoll answers 200 at once and flushes the headers, so the gateway
 // knows it is connected without waiting; the body follows when a request
 // arrives (a JSON tunnel.Request) or the wait ends (an empty body).
-func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, club string) {
+func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
 	m := meta(r)
 	if s.cfg.LatestVersion != "" && m.Build == tunnel.BuildRelease && version.Newer(s.cfg.LatestVersion, m.Version) {
 		w.Header().Set(tunnel.HeaderUpdateHint, s.cfg.LatestVersion)
 	}
-	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(club), 10))
+	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_ = http.NewResponseController(w).Flush()
-	rq := s.broker.Poll(r.Context(), club, m)
+	rq := s.broker.Poll(r.Context(), g.Installation, g.gen, m)
 	if rq == nil {
 		return
 	}
 	if err := json.NewEncoder(w).Encode(rq); err != nil {
-		s.log.Warn("poll answer not delivered", "club", club, "request_id", rq.RequestID)
+		s.log.Warn("poll answer not delivered", "installation", g.Installation, "request_id", rq.RequestID)
 	}
 }
 
-func (s *Server) handleReply(w http.ResponseWriter, r *http.Request, club string) {
+func (s *Server) handleReply(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
 	var resp tunnel.Response
 	body := http.MaxBytesReader(w, r.Body, tunnel.MaxResponseBody*4/3+64<<10)
 	if err := json.NewDecoder(body).Decode(&resp); err != nil || resp.ID == "" || resp.Status < 100 || resp.Status > 599 {
@@ -252,7 +262,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request, club string
 			Header: map[string]string{"Content-Type": "application/json; charset=utf-8"},
 			Body:   []byte(`{"code":"RESPONSE_TOO_LARGE","message":"the gateway response is too large"}`)}
 	}
-	if !s.broker.Reply(club, resp) {
+	if !s.broker.Reply(g.Installation, resp) {
 		core.WriteError(w, r, http.StatusGone, "NO_WAITER", "nobody waits for this reply")
 		return
 	}
@@ -261,21 +271,21 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request, club string
 
 // handleHeartbeat records a gateway's report of its own self-check. The
 // hub never asks a gateway for its readiness: the gateway reports it.
-func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, club string) {
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
 	var hb tunnel.Heartbeat
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, tunnel.MaxHeartbeatBody)).Decode(&hb); err != nil {
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed heartbeat")
 		return
 	}
-	s.monitor.Heartbeat(club, hb)
-	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(club), 10))
+	s.monitor.Heartbeat(g.Installation, hb)
+	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10))
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleConfig gives a gateway its installation's club configuration.
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, inst string) {
+func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayRecord) {
 	out := tunnel.RemoteConfig{Clubs: []json.RawMessage{}}
-	if in, ok := s.store.Installation(inst); ok {
+	if in, ok := s.store.Installation(g.Installation); ok {
 		out.Version = in.Version
 		for _, c := range in.ClubList() {
 			raw, _ := json.Marshal(c)
@@ -285,15 +295,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, inst strin
 	core.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, inst string) {
-	info := s.broker.Info(inst)
-	h := s.monitor.Health(inst)
-	out := tunnel.Whoami{Installation: inst, Connected: info.Connected,
+func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
+	info := s.broker.Info(g.Installation)
+	h := s.monitor.Health(g.Installation)
+	out := tunnel.Whoami{Installation: g.Installation, Connected: info.Connected,
 		Clubs: []string{}, AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed}
 	if out.ClubsServed == nil {
 		out.ClubsServed = []string{}
 	}
-	if in, ok := s.store.Installation(inst); ok {
+	if in, ok := s.store.Installation(g.Installation); ok {
 		out.ConfigVersion = in.Version
 		out.Clubs = core.SortedClubIDs(in.ClubList())
 	}
@@ -344,7 +354,8 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 		return
 	}
-	if _, registered := s.store.Get(inst); !registered || !s.broker.Connected(inst) {
+	g, registered := s.store.Get(inst)
+	if !registered || !s.broker.Connected(inst) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_OFFLINE", "the club's gateway is not connected")
 		return
@@ -374,7 +385,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 			rq.Header[h] = v
 		}
 	}
-	resp, err := s.broker.Do(r.Context(), inst, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
+	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):
 		w.Header().Set("Retry-After", "60")

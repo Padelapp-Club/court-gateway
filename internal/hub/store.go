@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +53,9 @@ type GatewayRecord struct {
 	Name         string    `json:"name"`
 	SecretSHA256 string    `json:"secret_sha256"`
 	RegisteredAt time.Time `json:"registered_at"`
+	// gen numbers this registration within the running hub, growing: a
+	// replaced or removed registration is retired in the broker by it.
+	gen uint64
 }
 
 type joinCodeRecord struct {
@@ -100,6 +104,10 @@ type Store struct {
 	gateways map[string]*GatewayRecord
 	installs map[string]*Installation
 	clubs    map[string]string // club id -> installation id
+	seq      uint64            // the last registration generation issued
+	// retire, when set, ends a replaced or removed registration's polls
+	// (Broker.Retire); it is called with s.mu held.
+	retire func(installation string, below uint64)
 }
 
 func ensureDirs(dir string) error {
@@ -139,6 +147,8 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 		if err := json.Unmarshal(data, &g); err != nil || !core.ValidID(g.Installation) || len(g.SecretSHA256) != 64 {
 			return nil, fmt.Errorf("state_dir: повреждённая запись шлюза %s", e.Name())
 		}
+		s.seq++
+		g.gen = s.seq
 		s.gateways[g.Installation] = &g
 	}
 	return s, nil
@@ -202,6 +212,9 @@ var (
 	ErrUnknownClub         = errors.New("no such club")
 	ErrClubTaken           = errors.New("the club id is already served by another installation")
 	ErrNotRegistered       = errors.New("no gateway is registered for this installation")
+	// ErrStateUnavailable: the state directory cannot be read right now;
+	// nothing is forgotten because of it.
+	ErrStateUnavailable = errors.New("the hub's state directory is unavailable")
 )
 
 func validName(name string) bool {
@@ -326,16 +339,28 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 	if err := core.WriteFileAtomic(filepath.Join(s.dir, gatewaysDir, id+".json"), out, 0o600); err != nil {
 		return GatewayRecord{}, "", err
 	}
+	g.gen = s.nextGen(id)
 	s.gateways[id] = g
 	return *g, secret, nil
 }
 
-// Authenticate maps a gateway secret to its installation. Every record is
+// nextGen issues a new registration generation and retires every older
+// one of installation; s.mu must be held.
+func (s *Store) nextGen(installation string) uint64 {
+	s.seq++
+	if s.retire != nil {
+		s.retire(installation, s.seq)
+	}
+	return s.seq
+}
+
+// Authenticate maps a gateway secret to its registration. Every record is
 // compared in constant time without an early exit. A record whose file has
-// been removed (`hub gateway revoke`) no longer authenticates.
-func (s *Store) Authenticate(secret string) (string, bool) {
+// been removed (`hub gateway revoke`) no longer authenticates
+// (ErrNotRegistered); ErrStateUnavailable means the check itself failed.
+func (s *Store) Authenticate(secret string) (GatewayRecord, error) {
 	if secret == "" {
-		return "", false
+		return GatewayRecord{}, ErrNotRegistered
 	}
 	want, _ := hex.DecodeString(secretHash(secret))
 	s.mu.Lock()
@@ -348,28 +373,42 @@ func (s *Store) Authenticate(secret string) (string, bool) {
 	}
 	s.mu.Unlock()
 	if inst == "" {
-		return "", false
+		return GatewayRecord{}, ErrNotRegistered
 	}
-	if _, ok := s.Get(inst); !ok {
-		return "", false
+	g, err := s.Gateway(inst)
+	if err == nil && g.SecretSHA256 != secretHash(secret) {
+		return GatewayRecord{}, ErrNotRegistered // re-registered meanwhile
 	}
-	return inst, true
+	return g, err
 }
 
-// Get returns the registered gateway of an installation. A record whose
-// file has been removed (`hub gateway revoke`) is forgotten.
-func (s *Store) Get(installation string) (GatewayRecord, bool) {
+// Gateway returns the registered gateway of an installation. A record
+// whose file has been removed (`hub gateway revoke`) is forgotten and its
+// polls retired (ErrNotRegistered). Any other failure to check the file is
+// ErrStateUnavailable and forgets nothing.
+func (s *Store) Gateway(installation string) (GatewayRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.gateways[installation]
 	if !ok {
-		return GatewayRecord{}, false
+		return GatewayRecord{}, ErrNotRegistered
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, gatewaysDir, installation+".json")); err != nil {
+	_, err := os.Stat(filepath.Join(s.dir, gatewaysDir, installation+".json"))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		delete(s.gateways, installation)
-		return GatewayRecord{}, false
+		s.nextGen(installation)
+		return GatewayRecord{}, ErrNotRegistered
+	case err != nil:
+		return GatewayRecord{}, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
-	return *g, true
+	return *g, nil
+}
+
+// Get is Gateway for callers that only ask whether a gateway is usable.
+func (s *Store) Get(installation string) (GatewayRecord, bool) {
+	g, err := s.Gateway(installation)
+	return g, err == nil
 }
 
 // Gateways returns the registered gateways sorted by installation id.
@@ -487,6 +526,7 @@ func (s *Store) DeleteInstallation(id string) error {
 		return err
 	}
 	delete(s.gateways, id)
+	s.nextGen(id)
 	if entries, err := os.ReadDir(filepath.Join(s.dir, codesDir)); err == nil {
 		for _, e := range entries {
 			p := filepath.Join(s.dir, codesDir, e.Name())

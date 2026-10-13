@@ -9,8 +9,15 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-// Broker hands partner requests to the long polls of the club's gateway
-// and routes the replies back.
+// Broker hands partner requests to the long polls of an installation's
+// gateway and routes the replies back.
+//
+// Every registration of a gateway has a generation (Store numbers them,
+// growing). Polls and requests carry the generation they were
+// authenticated or routed under, and the broker serves only the newest one:
+// once a registration is replaced or removed (Retire), its open polls end
+// empty, it can no longer pick up a request, and a request routed to it is
+// ErrOffline. A request it had already picked up still runs to its end.
 type Broker struct {
 	now      func() time.Time
 	pollWait time.Duration
@@ -22,10 +29,14 @@ type Broker struct {
 
 	mu    sync.Mutex
 	conns map[string]*gwConn
+	// retired[inst]: generations below it are replaced or removed.
+	retired map[string]uint64
 }
 
 type gwConn struct {
-	pending  chan *call // unbuffered: a send succeeds only into a waiting poll
+	gen      uint64
+	dead     chan struct{} // closed, under Broker.mu, when gen is retired
+	pending  chan *call    // unbuffered: a send succeeds only into a waiting poll
 	inflight map[string]*call
 	active   int
 	lastSeen time.Time
@@ -64,25 +75,63 @@ func NewBroker(pollWait time.Duration, now func() time.Time) *Broker {
 	if now == nil {
 		now = time.Now
 	}
-	return &Broker{now: now, pollWait: pollWait, grace: 3 * time.Second, conns: map[string]*gwConn{}}
+	return &Broker{now: now, pollWait: pollWait, grace: 3 * time.Second, conns: map[string]*gwConn{}, retired: map[string]uint64{}}
 }
 
-func (b *Broker) conn(club string) *gwConn {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	c, ok := b.conns[club]
-	if !ok {
-		c = &gwConn{pending: make(chan *call), inflight: map[string]*call{}}
-		b.conns[club] = c
+func isDead(c *gwConn) bool {
+	select {
+	case <-c.dead:
+		return true
+	default:
+		return false
 	}
+}
+
+// pollConn returns the connection of generation gen of inst, replacing an
+// older one; nil when gen is retired or older than the current one.
+// b.mu must be held.
+func (b *Broker) pollConn(inst string, gen uint64) *gwConn {
+	if gen < b.retired[inst] {
+		return nil
+	}
+	c, ok := b.conns[inst]
+	switch {
+	case ok && c.gen == gen:
+		return c
+	case ok && c.gen > gen:
+		return nil
+	case ok:
+		close(c.dead)
+	}
+	c = &gwConn{gen: gen, dead: make(chan struct{}), pending: make(chan *call), inflight: map[string]*call{}}
+	b.conns[inst] = c
 	return c
 }
 
-// Poll waits up to pollWait for a request for club. It returns nil when
-// none came or the gateway went away.
-func (b *Broker) Poll(ctx context.Context, club string, meta ConnMeta) *tunnel.Request {
-	c := b.conn(club)
+// Retire ends every generation of inst below gen: their polls return
+// empty and requests routed to them are ErrOffline. The store calls it,
+// under its own lock, when a registration is replaced or removed.
+func (b *Broker) Retire(inst string, gen uint64) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if gen > b.retired[inst] {
+		b.retired[inst] = gen
+	}
+	if c, ok := b.conns[inst]; ok && c.gen < gen {
+		close(c.dead)
+		delete(b.conns, inst)
+	}
+}
+
+// Poll waits up to pollWait for a request for generation gen of inst. It
+// returns nil when none came, the gateway went away or gen was retired.
+func (b *Broker) Poll(ctx context.Context, inst string, gen uint64, meta ConnMeta) *tunnel.Request {
+	b.mu.Lock()
+	c := b.pollConn(inst, gen)
+	if c == nil {
+		b.mu.Unlock()
+		return nil
+	}
 	c.active++
 	c.lastSeen = b.now()
 	c.meta = meta
@@ -103,11 +152,13 @@ func (b *Broker) Poll(ctx context.Context, club string, meta ConnMeta) *tunnel.R
 		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		if cl.abandoned {
-			return nil // nobody waits: do not run it, do not keep it
+		if cl.abandoned || isDead(c) {
+			return nil // nobody waits, or not for this registration: do not run it
 		}
 		c.inflight[cl.req.ID] = cl
 		return &cl.req
+	case <-c.dead:
+		return nil
 	case <-t.C:
 		return nil
 	case <-ctx.Done():
@@ -118,8 +169,12 @@ func (b *Broker) Poll(ctx context.Context, club string, meta ConnMeta) *tunnel.R
 // Reply delivers a gateway response. It is false when no partner waits
 // for that id from that club (late, duplicate or foreign reply).
 func (b *Broker) Reply(club string, r tunnel.Response) bool {
-	c := b.conn(club)
 	b.mu.Lock()
+	c, ok := b.conns[club]
+	if !ok {
+		b.mu.Unlock()
+		return false
+	}
 	cl, ok := c.inflight[r.ID]
 	delete(c.inflight, r.ID)
 	b.mu.Unlock()
@@ -161,18 +216,26 @@ func (b *Broker) Info(club string) ConnInfo {
 	return ConnInfo{Connected: connected, LastSeen: c.lastSeen, Meta: c.meta}
 }
 
-// Do sends req to club's gateway and waits for the reply. pickup bounds the
-// wait for a free poll, wait bounds the wait for the reply after pickup.
-func (b *Broker) Do(ctx context.Context, club string, req tunnel.Request, pickup, wait time.Duration) (tunnel.Response, error) {
+// Do sends req to generation gen of club's gateway and waits for the
+// reply. pickup bounds the wait for a free poll, wait bounds the wait for
+// the reply after pickup.
+func (b *Broker) Do(ctx context.Context, club string, gen uint64, req tunnel.Request, pickup, wait time.Duration) (tunnel.Response, error) {
 	if !b.Connected(club) {
 		return tunnel.Response{}, ErrOffline
 	}
-	c := b.conn(club)
+	b.mu.Lock()
+	c, ok := b.conns[club]
+	b.mu.Unlock()
+	if !ok || c.gen != gen {
+		return tunnel.Response{}, ErrOffline
+	}
 	cl := &call{req: req, resp: make(chan tunnel.Response, 1)}
 	pt := time.NewTimer(pickup)
 	defer pt.Stop()
 	select {
 	case c.pending <- cl:
+	case <-c.dead:
+		return tunnel.Response{}, ErrOffline
 	case <-pt.C:
 		if !b.Connected(club) {
 			return tunnel.Response{}, ErrOffline
@@ -189,14 +252,31 @@ func (b *Broker) Do(ctx context.Context, club string, req tunnel.Request, pickup
 		delete(c.inflight, req.ID)
 		b.mu.Unlock()
 	}
-	select {
-	case r := <-cl.resp:
-		return r, nil
-	case <-wt.C:
-		drop()
-		return tunnel.Response{}, ErrTimeout
-	case <-ctx.Done():
-		drop()
-		return tunnel.Response{}, ctx.Err()
+	dead := c.dead
+	for {
+		select {
+		case r := <-cl.resp:
+			return r, nil
+		case <-dead:
+			// retired between the handoff and the poll recording the call:
+			// the poll drops it, so it never ran
+			b.mu.Lock()
+			_, picked := c.inflight[req.ID]
+			if !picked {
+				cl.abandoned = true
+			}
+			b.mu.Unlock()
+			if !picked {
+				return tunnel.Response{}, ErrOffline
+			}
+			dead = nil // picked up before the retirement: it runs to its end
+			continue
+		case <-wt.C:
+			drop()
+			return tunnel.Response{}, ErrTimeout
+		case <-ctx.Done():
+			drop()
+			return tunnel.Response{}, ctx.Err()
+		}
 	}
 }

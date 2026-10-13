@@ -251,7 +251,8 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed JSON body")
 		return
 	}
-	if _, registered := s.store.Get(inst); !registered || !s.broker.Connected(inst) {
+	g, registered := s.store.Get(inst)
+	if !registered || !s.broker.Connected(inst) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_OFFLINE", "the installation's gateway is not connected")
 		return
@@ -262,7 +263,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		ID: newCallID(), RequestID: core.RequestID(r), Method: http.MethodPost, Path: tunnel.PathDiscover,
 		Header: map[string]string{"Content-Type": "application/json"}, Body: body, TimeoutMS: int(timeout / time.Millisecond),
 	}
-	resp, err := s.broker.Do(r.Context(), inst, rq, 10*time.Second, timeout+5*time.Second)
+	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, timeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):
 		w.Header().Set("Retry-After", "60")
