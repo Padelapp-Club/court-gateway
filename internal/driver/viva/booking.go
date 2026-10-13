@@ -192,16 +192,12 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	return driver.Booking{ID: iv.ID, Court: iv.Court, Start: iv.Start, End: iv.End, Status: status}, nil
 }
 
-// Cancel implements driver.Driver. The record is read first, and the
-// gateway cancels it only when it can see that the record is the
-// caller's: its comment, as read back, must start with the caller's
-// marker ("[cg:<partner>]", written by Create), and only before it starts
-// (ErrStarted). Anything else is refused
-// (NOT_OWNED) — a comment without the marker or with another partner's,
-// a record read without a comment, an exercise with a client booking or
-// clients. The break title is never evidence: it is one text for every
-// partner and anyone can type it. A record that is gone (404) or already
-// cancelled counts as cancelled.
+// Cancel implements driver.Driver: it deletes a record only when, read
+// back, its comment starts with the caller's marker (checkOwnership; the
+// break title is never evidence) and it has not started. A record that
+// is gone or already cancelled counts as cancelled. Viva has no
+// conditional delete: a change between the read and the DELETE is not
+// seen (docs/hub.md).
 func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	kind, uuid, ok := parseID(id)
 	if !ok {

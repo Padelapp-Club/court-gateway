@@ -310,3 +310,26 @@ func TestRetryGuidanceStaysUncertain(t *testing.T) {
 		}
 	}
 }
+
+// The booking guidance names its limits: one-at-a-time creates do not
+// cover a create that timed out, and a cancel is a read then a delete.
+func TestBookingGuidanceStatesItsLimits(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "hub.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	para := func(start string) string {
+		i := strings.Index(text, start)
+		if i < 0 {
+			t.Fatalf("docs/hub.md: no %q", start)
+		}
+		return text[i : i+strings.Index(text[i:], "\n- ")]
+	}
+	if p := para("**Одновременные брони.**"); !strings.Contains(p, "кроме случая") || !strings.Contains(p, "таймаут") {
+		t.Fatalf("concurrent creates promise too much:\n%s", p)
+	}
+	if p := para("При отмене:"); !strings.Contains(p, "между проверкой и удалением") {
+		t.Fatalf("cancel does not say it is a read then a delete:\n%s", p)
+	}
+}
