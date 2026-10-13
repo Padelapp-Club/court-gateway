@@ -2,6 +2,7 @@ package viva_test
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -186,19 +187,45 @@ func TestContractBreaksOnly(t *testing.T) {
 	})
 }
 
-// And with a CRM that does not return comments on read. VivaCRM does
-// return the comment of an exercise (observed), and an exercise read
-// without one is refused; what a break read returns is not observed, so
-// bookings here are breaks (no service configured) and ownership falls
-// back to the break title.
-func TestContractNoCommentOnRead(t *testing.T) {
-	contract.Run(t, func(t *testing.T) *contract.Env {
+// A CRM that answers a read without the comment gives no evidence of
+// ownership: nothing is cancelled, not even the caller's own booking, and
+// the record stays in the CRM.
+func TestCancelRefusedWithoutTheComment(t *testing.T) {
+	for _, kind := range []string{"game", "tournament"} {
+		f := newFixture(t, fixtureOpts{services: bookingService}) // game: exercise, tournament: break
+		start := futureDay().Add(12 * time.Hour)
+		st, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, createBody(start, kind, ""))
+		if st != http.StatusCreated {
+			t.Fatalf("%s: create: %d %s", kind, st, raw)
+		}
+		id := m["id"].(string)
+		f.stub.OmitCommentOnRead = true
+		for _, key := range []string{contract.BookKey, contract.OtherBookKey} {
+			if st, m, raw := call(t, f, http.MethodDelete, "/v1/clubs/test-club/bookings/"+id, key, ""); st != http.StatusForbidden || m["code"] != "NOT_OWNED" {
+				t.Fatalf("%s: cancel without a comment on read: %d %s", kind, st, raw)
+			}
+		}
+		rec := f.stub.Break(id[2:])
+		if id[:2] == "e-" {
+			rec = f.stub.Exercise(id[2:])
+		}
+		if rec["canceled"] != false {
+			t.Fatalf("%s: the record was cancelled: %v", kind, rec)
+		}
+	}
+	// another partner's break, read back with the shared title or none
+	for _, title := range []string{"", viva.DefaultBreakTitle} {
 		f := newFixture(t, fixtureOpts{})
 		f.stub.OmitCommentOnRead = true
-		env := f.env()
-		env.NoPartnerIsolation = "the CRM returns no comment on read, so the ownership marker cannot be checked"
-		return env
-	})
+		id := f.stub.SeedBreak(map[string]any{"room": map[string]any{"id": room1}, "title": title, "comment": "[cg:other]", "canceled": false,
+			"timeFrom": futureDay().Add(9 * time.Hour).Format(time.RFC3339), "timeTo": futureDay().Add(10 * time.Hour).Format(time.RFC3339)})
+		if st, _, raw := call(t, f, http.MethodDelete, "/v1/clubs/test-club/bookings/b-"+id, contract.BookKey, ""); st != http.StatusForbidden {
+			t.Fatalf("title %q: %d %s", title, st, raw)
+		}
+		if f.stub.Break(id)["canceled"] != false {
+			t.Fatalf("title %q: another partner's break was cancelled", title)
+		}
+	}
 }
 
 func containsAny(s string, subs []string) string {

@@ -51,10 +51,6 @@ type Env struct {
 	Logs func() string
 	// PrivacyMarkers must never appear in any response or log line.
 	PrivacyMarkers []string
-	// NoPartnerIsolation, when set, names the reason this configuration
-	// cannot tell one partner's booking from another's; the cross-partner
-	// cancel check is then skipped with that reason, visibly.
-	NoPartnerIsolation string
 }
 
 // Setup builds a fresh Env for one subtest.
@@ -442,9 +438,6 @@ func testForeignCancel(t *testing.T, env *Env) {
 }
 
 func testOtherPartnerCancel(t *testing.T, env *Env) {
-	if env.NoPartnerIsolation != "" {
-		t.Skip("known residual: " + env.NoPartnerIsolation)
-	}
 	c := &client{t: t, env: env}
 	d := day(env)
 	r := c.create(env.BookKey, env.Courts[0], at(d, 14, 0), at(d, 15, 0), "game", "")

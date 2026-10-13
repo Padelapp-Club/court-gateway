@@ -179,25 +179,14 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 }
 
 // Cancel implements driver.Driver. The record is read first, and the
-// gateway refuses unless it can tell the record is the caller's:
-//
-//   - an exercise with a client booking (masterServiceBooking) or with
-//     clients (clientsCount > 0) is the club's;
-//
-//   - a record whose comment is present but lacks the caller's marker is not
-//     the caller's;
-//
-//   - a break with no comment but a title that is neither the gateway's break
-//     title nor marked is not the caller's.
-//
-//   - an exercise read without a comment field is not the caller's: VivaCRM
-//     returns comment on GET /exercises/{id} (observed on a live account),
-//     so a missing field means an answer the check cannot trust.
-//
-// If the CRM returns neither comment nor title for a break, the check
-// cannot be made and the cancel is allowed (documented residual risk: what
-// GET /breaks/{id} returns has not been observed). A record that is gone
-// (404) or already cancelled counts as cancelled.
+// gateway cancels it only when it can see that the record is the
+// caller's: its comment, as read back, must end with the caller's marker
+// ("[cg:<partner>]", written by Create). Anything else is refused
+// (NOT_OWNED) — a comment without the marker or with another partner's,
+// a record read without a comment, an exercise with a client booking or
+// clients. The break title is never evidence: it is one text for every
+// partner and anyone can type it. A record that is gone (404) or already
+// cancelled counts as cancelled.
 func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	kind, uuid, ok := parseID(id)
 	if !ok {
@@ -259,41 +248,16 @@ func (d *Driver) checkOwnership(kind string, raw map[string]json.RawMessage, par
 			}
 		}
 	}
-	textField := func(name string) (string, bool, error) {
-		r, ok := raw[name]
-		if !ok {
-			return "", false, nil
-		}
-		if isNull(r) {
-			return "", true, nil
-		}
-		var s string
-		if err := json.Unmarshal(r, &s); err != nil {
-			return "", true, invalid(name + " is not a string")
-		}
-		return s, true, nil
-	}
-	comment, hasComment, err := textField("comment")
-	if err != nil {
-		return err
-	}
-	if hasComment {
-		if !hasMarker(comment, partner) {
-			return driver.ErrNotOwned
-		}
-		return nil
-	}
-	if kind == "exercises" {
+	r, ok := raw["comment"]
+	if !ok || isNull(r) {
 		return driver.ErrNotOwned
 	}
-	if kind == "breaks" {
-		title, hasTitle, err := textField("title")
-		if err != nil {
-			return err
-		}
-		if hasTitle && !hasMarker(title, partner) && strings.TrimSpace(title) != d.breakTitle {
-			return driver.ErrNotOwned
-		}
+	var comment string
+	if err := json.Unmarshal(r, &comment); err != nil {
+		return invalid("comment is not a string")
+	}
+	if !hasMarker(comment, partner) {
+		return driver.ErrNotOwned
 	}
 	return nil
 }

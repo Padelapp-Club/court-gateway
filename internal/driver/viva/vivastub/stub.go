@@ -45,8 +45,6 @@ type Stub struct {
 	Now func() time.Time
 	// OmitCommentOnRead removes "comment" from reads by id.
 	OmitCommentOnRead bool
-	// OmitTitleOnRead removes "title" from reads by id.
-	OmitTitleOnRead bool
 	// StudioName, StudioOffset (hours from UTC) and WorkTime (weekday name
 	// -> {from, to} as "HH:MM+03:00"; nil omits workTime) describe Studio
 	// in GET /studios.
@@ -507,9 +505,6 @@ func (s *Stub) handleRead(w http.ResponseWriter, kind, id string) {
 	}
 	if s.OmitCommentOnRead {
 		delete(out, "comment")
-	}
-	if s.OmitTitleOnRead {
-		delete(out, "title")
 	}
 	writeJSON(w, http.StatusOK, out)
 }

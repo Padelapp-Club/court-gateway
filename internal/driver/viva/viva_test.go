@@ -347,41 +347,43 @@ func TestCancelOwnershipRules(t *testing.T) {
 		name    string
 		id      string
 		omitCmt bool
-		omitTtl bool
 		want    error
 	}{
-		{"club booking with client record", "e-" + seedEx(map[string]any{"masterServiceBooking": map[string]any{"client": map[string]any{}}, "comment": "x [cg:booker]"}), false, false, driver.ErrNotOwned},
-		{"exercise with clients", "e-" + seedEx(map[string]any{"clientsCount": 2, "comment": "[cg:booker]"}), false, false, driver.ErrNotOwned},
-		{"comment without marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "club note"}), false, false, driver.ErrNotOwned},
-		{"null comment", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": nil}), false, false, driver.ErrNotOwned},
-		{"another partner's marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:other]"}), false, false, driver.ErrNotOwned},
-		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, false, driver.ErrNotOwned},
-		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), false, false, nil},
-		{"exercise read without comment: refused", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), true, false, driver.ErrNotOwned},
-		{"own break", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:booker]"}), false, false, nil},
-		{"club break, other comment", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "repairs"}), false, false, driver.ErrNotOwned},
-		{"club break, no comment returned, foreign title", "b-" + seedBr(map[string]any{"title": "Repairs", "comment": "x"}), true, false, driver.ErrNotOwned},
-		{"break, no comment returned, gateway title", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "x"}), true, false, nil},
-		{"break, nothing returned: residual, allowed", "b-" + seedBr(map[string]any{"title": "Repairs", "comment": "x"}), true, true, nil},
-		{"unknown id is already gone", "e-00000000-0000-4000-8000-00000000dead", false, false, nil},
-		{"malformed id", "e-nope", false, false, driver.ErrNotFound},
+		{"club booking with client record", "e-" + seedEx(map[string]any{"masterServiceBooking": map[string]any{"client": map[string]any{}}, "comment": "x [cg:booker]"}), false, driver.ErrNotOwned},
+		{"exercise with clients", "e-" + seedEx(map[string]any{"clientsCount": 2, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
+		{"comment without marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "club note"}), false, driver.ErrNotOwned},
+		{"null comment", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": nil}), false, driver.ErrNotOwned},
+		{"another partner's marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:other]"}), false, driver.ErrNotOwned},
+		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
+		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), false, nil},
+		{"exercise read without comment: refused", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), true, driver.ErrNotOwned},
+		{"own break", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:booker]"}), false, nil},
+		{"club break, other comment", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "repairs"}), false, driver.ErrNotOwned},
+		{"another partner's break with the gateway title", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:other]"}), false, driver.ErrNotOwned},
+		{"break read without a comment: refused even with the gateway title", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:booker]"}), true, driver.ErrNotOwned},
+		{"break read without a comment and without a title: refused", "b-" + seedBr(map[string]any{"comment": "[cg:booker]"}), true, driver.ErrNotOwned},
+		{"title with the caller's marker is not evidence", "b-" + seedBr(map[string]any{"title": "[cg:booker]", "comment": "repairs"}), false, driver.ErrNotOwned},
+		{"unknown id is already gone", "e-00000000-0000-4000-8000-00000000dead", false, nil},
+		{"malformed id", "e-nope", false, driver.ErrNotFound},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f.stub.OmitCommentOnRead, f.stub.OmitTitleOnRead = c.omitCmt, c.omitTtl
+			f.stub.OmitCommentOnRead = c.omitCmt
 			err := f.drv.Cancel(ctx, c.id, "booker")
 			if (c.want == nil && err != nil) || (c.want != nil && !errors.Is(err, c.want)) {
 				t.Fatalf("err = %v, want %v", err, c.want)
 			}
-			if _, uuid, ok := strings.Cut(c.id, "-"); ok && strings.HasPrefix(c.id, "e-") {
-				rec := f.stub.Exercise(uuid)
-				if rec != nil && (rec["canceled"] == true) != (c.want == nil) {
-					t.Fatalf("canceled = %v, want %v", rec["canceled"], c.want == nil)
-				}
+			kind, uuid, _ := strings.Cut(c.id, "-")
+			rec := f.stub.Exercise(uuid)
+			if kind == "b" {
+				rec = f.stub.Break(uuid)
+			}
+			if rec != nil && (rec["canceled"] == true) != (c.want == nil) {
+				t.Fatalf("canceled = %v, want %v", rec["canceled"], c.want == nil)
 			}
 		})
 	}
-	f.stub.OmitCommentOnRead, f.stub.OmitTitleOnRead = false, false
+	f.stub.OmitCommentOnRead = false
 
 	// A malformed read is refused, not treated as "not owned" or "gone".
 	id := seedEx(map[string]any{"clientsCount": "many", "comment": "[cg:booker]"})
