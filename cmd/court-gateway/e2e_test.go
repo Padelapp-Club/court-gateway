@@ -172,16 +172,31 @@ func TestSetupNonInteractive(t *testing.T) {
 	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.Error.Code != "CONFIG_EXISTS" {
 		t.Fatalf("existing config: rc=%d %s", rc, out.String())
 	}
-	// inputs of older versions are accepted, ignored and named
-	out.Reset()
-	rc = run(s.setupArgs("--force", "--club-id", "typed-by-hand", "--crm-studio", studio), &out, &errb,
-		env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get)
-	r = decodeSetup(t, out.Bytes())
-	if rc != 0 || r.Installation.ID != "club-one" || !hasWarning(r, "INPUT_IGNORED") || !strings.Contains(r.Warnings[0].Message, "--club-id") {
-		t.Fatalf("old flags: rc=%d %s", rc, out.String())
+	// flags of the pre-installation setup no longer exist
+	if rc := run(s.setupArgs("--force", "--club-id", "x"), &out, &errb, env{}.get); rc != 2 {
+		t.Fatalf("removed flag accepted: rc=%d", rc)
 	}
-	if cfg, _ := os.ReadFile(r.Config); strings.Contains(string(cfg), "typed-by-hand") {
-		t.Fatalf("a typed club id reached the config:\n%s", cfg)
+}
+
+// The join code and the password come from the environment; neither may
+// appear in the usage text that --help or a mistyped flag prints.
+func TestSetupUsageNeverPrintsSecrets(t *testing.T) {
+	const code, pass, user = "SECRET-JOIN-CODE-SENTINEL", "SECRET-PASSWORD-SENTINEL", "login-sentinel@example.test"
+	getenv := env{"GATEWAY_JOIN_CODE": code, "CRM_PASSWORD": pass, "CRM_USERNAME": user, "GATEWAY_HUB_URL": "https://hub.example.test"}.get
+	for _, arg := range []string{"--help", "--no-such-flag"} {
+		var out, errb bytes.Buffer
+		if rc := run([]string{"setup", arg}, &out, &errb, getenv); rc != 2 && rc != 0 {
+			t.Fatalf("%s: rc=%d", arg, rc)
+		}
+		all := out.String() + errb.String()
+		if !strings.Contains(all, "-join-code") {
+			t.Fatalf("%s: no usage printed: %q", arg, all)
+		}
+		for _, secret := range []string{code, pass, user} {
+			if strings.Contains(all, secret) {
+				t.Errorf("%s: usage output contains an environment value", arg)
+			}
+		}
 	}
 }
 

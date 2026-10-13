@@ -39,30 +39,24 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	passwordStdin := fs.Bool("password-stdin", false, "read the CRM password from the first line of stdin")
 	fs.StringVar(&in.ConfigPath, "config", defaultConfig, "where to write gateway.yaml (.env goes next to it)")
 	fs.BoolVar(&in.Force, "force", false, "overwrite existing gateway.yaml and .env")
-	fs.StringVar(&in.HubURL, "hub-url", firstSet(getenv("GATEWAY_HUB_URL"), defaultHubURL), "hub address (env GATEWAY_HUB_URL)")
+	// Flags have no environment defaults: the flag package prints defaults
+	// in --help and in the error for a mistyped flag, and the join code is a
+	// secret. The environment is read after parsing.
+	fs.StringVar(&in.HubURL, "hub-url", "", "hub address (env GATEWAY_HUB_URL)")
 	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "extra CA certificate for a self-hosted hub")
-	fs.StringVar(&in.JoinCode, "join-code", getenv("GATEWAY_JOIN_CODE"), "one-time join code (env GATEWAY_JOIN_CODE)")
+	fs.StringVar(&in.JoinCode, "join-code", "", "one-time join code (env GATEWAY_JOIN_CODE)")
 	fs.StringVar(&in.CRMType, "crm", "", "CRM type: viva (default) or demo")
-	fs.StringVar(&in.Username, "crm-username", getenv("CRM_USERNAME"), "CRM administrator login (env CRM_USERNAME)")
+	fs.StringVar(&in.Username, "crm-username", "", "CRM administrator login (env CRM_USERNAME)")
 	fs.StringVar(&in.AuthURL, "crm-auth-url", "", "CRM login endpoint override (test doubles)")
 	fs.StringVar(&in.APIURL, "crm-api-url", "", "CRM API endpoint override (test doubles)")
-	// Inputs of older versions: accepted so old scripts keep working, and
-	// ignored — the hub assigns the installation and configures its clubs.
-	for _, name := range []string{"club-id", "club-name", "crm-studio", "timezone", "slot-minutes"} {
-		fs.String(name, "", "deprecated, ignored: clubs are configured on the hub")
-	}
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "club-id", "club-name", "crm-studio", "timezone", "slot-minutes":
-			in.Ignored = append(in.Ignored, "--"+f.Name)
-		}
-	})
+	in.HubURL = firstSet(in.HubURL, getenv("GATEWAY_HUB_URL"), defaultHubURL)
+	in.Username = firstSet(in.Username, getenv("CRM_USERNAME"))
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
-	in.JoinCode = strings.TrimSpace(in.JoinCode)
+	in.JoinCode = strings.TrimSpace(firstSet(in.JoinCode, getenv("GATEWAY_JOIN_CODE")))
 	if *nonInteractive && in.CRMType == "" {
 		in.CRMType = "viva"
 	}

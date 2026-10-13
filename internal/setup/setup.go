@@ -35,11 +35,6 @@ type Input struct {
 	Password   string
 	AuthURL    string // optional CRM endpoint overrides (test doubles)
 	APIURL     string
-
-	// Ignored names inputs of older versions that were given and are no
-	// longer used (club id and name, studio, time zone, grid): the hub
-	// assigns the installation and configures its clubs.
-	Ignored []string
 }
 
 // Deps are injectable for tests.
@@ -131,10 +126,6 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	if deps.Accounts == nil {
 		deps.Accounts = DefaultAccounts
-	}
-	if len(in.Ignored) > 0 {
-		res.Warnings = append(res.Warnings, Warning{Code: "INPUT_IGNORED", Message: fmt.Sprintf(
-			"не используется и пропущено: %s — клубы, корты и часы работы настраивает оператор на хабе", strings.Join(in.Ignored, ", "))})
 	}
 	if m := in.Missing(); len(m) > 0 {
 		return fail(problem("MISSING_INPUT", "не хватает: %s", strings.Join(m, ", ")))
