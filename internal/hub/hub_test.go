@@ -22,16 +22,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-const gatewayConfig = `club: { id: demo-club, name: "Демо-клуб" }
-crm: { type: demo }
-venue:
-  timezone: Europe/Moscow
-  slot_minutes: 30
-  hours: { mon-sun: "07:00-23:00" }
-courts:
-  - { id: court-1, name: "Корт 1" }
-  - { id: court-2, name: "Корт 2" }
-` + contract.PartnersYAML
+var demoSpec = testkit.Club("demo-club", "Демо-клуб", "Корт 1", "Корт 2")
 
 const operatorKey = "test-operator-key-0123456789abcdef"
 
@@ -87,7 +78,7 @@ type world struct {
 func newWorld(t *testing.T, opts hub.Options, extraHub string) *world {
 	t.Helper()
 	h := testkit.StartHub(t, hubYAML+extraHub, hubEnv(), opts)
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	return &world{hub: h, built: b, drv: b.Driver.(*demo.Driver)}
 }
 
@@ -99,7 +90,7 @@ func (w *world) connect(t *testing.T, hubURL string) {
 
 func (w *world) connectWith(t *testing.T, hubURL, secret string) {
 	t.Helper()
-	w.gw = testkit.StartGateway(t, hubURL, w.hub.Transport(), secret, w.built.Clubs.TunnelHandler(), nil)
+	w.gw = testkit.StartGateway(t, testkit.ClientConfig(hubURL, w.hub.Transport(), secret, w.built.Clubs.TunnelHandler(), nil))
 	w.waitConnected(t)
 }
 
@@ -170,8 +161,8 @@ func TestPartnerLimitedToItsClubs(t *testing.T) {
 	env := hubEnv()
 	env["NARROW_KEY"] = "narrow-key-0123456789abcdef0123"
 	h := testkit.StartHub(t, hubYAML+extra, env, hub.Options{})
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	gw := testkit.StartGateway(t, h.URL(), h.Transport(), h.Register("demo-club", "Демо"), b.Clubs.TunnelHandler(), nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
+	gw := testkit.StartGateway(t, testkit.ClientConfig(h.URL(), h.Transport(), h.Register("demo-club", "Демо"), b.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "connected", 10*time.Second, gw.Client.Connected)
 	r := call(t, h, http.MethodGet, "/v1/clubs/demo-club/courts", "narrow-key-0123456789abcdef0123", "")
 	if r.status != http.StatusNotFound {
@@ -206,7 +197,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("poll with a wrong secret: %d", resp.StatusCode)
 	}
-	gw := testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), "cgs_wrong", w.built.Clubs.TunnelHandler(), nil)
+	gw := testkit.StartGateway(t, testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), "cgs_wrong", w.built.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "secret rejected", 5*time.Second, gw.Client.Unauthorized)
 	if gw.Client.Connected() || w.hub.Server().Broker().Connected("demo-club") {
 		t.Fatal("a gateway with a wrong secret counts as connected")
@@ -322,7 +313,7 @@ func TestReconnectAfterNetworkFailure(t *testing.T) {
 }
 
 func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: "x", Handler: b.Clubs.TunnelHandler()})
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +338,7 @@ func TestUpdateHint(t *testing.T) {
 	var mu sync.Mutex
 	var hint string
 	h := testkit.StartHub(t, hubYAML+"latest_version: 1.2.0\n", hubEnv(), hub.Options{})
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	c, err := tunnel.NewClient(tunnel.ClientConfig{
 		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Clubs.TunnelHandler(),
 		Version: "1.0.0", Build: tunnel.BuildRelease, Transport: h.Transport(), PollTimeout: 5 * time.Second,

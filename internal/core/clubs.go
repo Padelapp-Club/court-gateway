@@ -18,18 +18,14 @@ import (
 // restart and without disturbing requests in flight: each request is
 // served by the set that was current when it arrived.
 type Clubs struct {
-	log  *slog.Logger
-	now  func() time.Time
-	auth *auth.Authenticator
-	cur  atomic.Pointer[clubTable]
+	log *slog.Logger
+	now func() time.Time
+	cur atomic.Pointer[clubTable]
 	// readyNoClubs answers readiness while no club is configured (the
 	// CRM login of the account); nil means ready.
 	readyNoClubs func(context.Context) error
-	// gatewayAPI serves /gateway/ on the tunnel handler only.
+	// gatewayAPI serves /gateway/ (the operator's requests).
 	gatewayAPI http.Handler
-	// notReady names a reason, beyond the CRM, why the installation is not
-	// ready (its hub connection or config); "" when there is none.
-	notReady atomic.Pointer[func() string]
 }
 
 type clubEntry struct {
@@ -53,40 +49,24 @@ type ClubsOptions struct {
 	Now    func() time.Time
 	// ReadyNoClubs is the readiness check while no club is configured.
 	ReadyNoClubs func(context.Context) error
-	// GatewayAPI serves /gateway/... requests that arrive from the hub
-	// through the tunnel (e.g. CRM discovery). It is never reachable on
-	// the local port.
-	GatewayAPI http.Handler
 }
 
-// NewClubs builds an empty set; partner keys for the local port come from
-// base.Partners.
-func NewClubs(base *Settings, o ClubsOptions) (*Clubs, error) {
+// NewClubs builds an empty set.
+func NewClubs(o ClubsOptions) *Clubs {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	c := &Clubs{log: o.Logger, now: o.Now, readyNoClubs: o.ReadyNoClubs, gatewayAPI: o.GatewayAPI}
-	if len(base.Partners) > 0 {
-		a, err := auth.New(base.Partners, auth.Options{WriteError: writeError, Now: o.Now})
-		if err != nil {
-			return nil, err
-		}
-		c.auth = a
-	}
+	c := &Clubs{log: o.Logger, now: o.Now, readyNoClubs: o.ReadyNoClubs}
 	c.cur.Store(&clubTable{byID: map[string]clubEntry{}})
-	return c, nil
+	return c
 }
 
-// SetGatewayAPI sets the handler of /gateway/... on the tunnel handler; it
-// must be called before TunnelHandler.
+// SetGatewayAPI sets the handler of /gateway/... (the operator's requests,
+// e.g. CRM discovery); it must be called before TunnelHandler.
 func (c *Clubs) SetGatewayAPI(h http.Handler) { c.gatewayAPI = h }
-
-// SetNotReady sets what /health/ready asks besides the CRM: f returns a
-// reason code when the installation is not ready for another cause.
-func (c *Clubs) SetNotReady(f func() string) { c.notReady.Store(&f) }
 
 // Set replaces the served clubs. unavailable are clubs of the config that
 // are not served because their config does not load: partners get 503
@@ -162,19 +142,19 @@ func (c *Clubs) APIHandler() http.Handler {
 		p := r.URL.Path
 		if p == "/v1/clubs" {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				writeError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
+				WriteError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
 				return
 			}
 			list := make([]clubRef, 0, len(t.ids))
 			for _, id := range t.ids {
 				list = append(list, clubRef{ID: id, Name: t.byID[id].srv.cfg.ClubName})
 			}
-			writeJSON(w, http.StatusOK, map[string][]clubRef{"clubs": list})
+			WriteJSON(w, http.StatusOK, map[string][]clubRef{"clubs": list})
 			return
 		}
 		rest, ok := strings.CutPrefix(p, "/v1/clubs/")
 		if !ok {
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
+			WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 			return
 		}
 		club, _, _ := strings.Cut(rest, "/")
@@ -183,73 +163,28 @@ func (c *Clubs) APIHandler() http.Handler {
 		case ok:
 		case !t.loaded:
 			w.Header().Set("Retry-After", "10")
-			writeError(w, r, http.StatusServiceUnavailable, "CONFIG_PENDING", "the gateway has not received its club configuration yet")
+			WriteError(w, r, http.StatusServiceUnavailable, "CONFIG_PENDING", "the gateway has not received its club configuration yet")
 			return
 		case t.unavailable[club]:
 			w.Header().Set("Retry-After", "60")
-			writeError(w, r, http.StatusServiceUnavailable, "CLUB_UNAVAILABLE", "the club's configuration does not load on its gateway")
+			WriteError(w, r, http.StatusServiceUnavailable, "CLUB_UNAVAILABLE", "the club's configuration does not load on its gateway")
 			return
 		default:
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
+			WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 			return
 		}
 		e.api.ServeHTTP(w, r)
 	})
 }
 
-func (c *Clubs) handleReady(w http.ResponseWriter, r *http.Request) {
-	if f := c.notReady.Load(); f != nil {
-		if reason := (*f)(); reason != "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
-			return
-		}
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), ReadyTimeout)
-	defer cancel()
-	if err := c.Ready(ctx); err != nil {
-		reason := ReadyReason(err)
-		c.log.Warn("not ready", "request_id", info(r).id, "reason", reason, "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
-}
-
-func (c *Clubs) health(mux *http.ServeMux) {
-	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
-	})
-	mux.HandleFunc("GET /health/ready", c.handleReady)
-	mux.Handle("/health/", methodNotAllowed())
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
-	})
-}
-
-// Handler is the local-port handler: health and, when gateway.yaml lists
-// partners, the partner API behind their keys.
-func (c *Clubs) Handler() http.Handler {
-	mux := http.NewServeMux()
-	c.health(mux)
-	if c.auth != nil {
-		mux.Handle("/v1/", c.auth.Wrap(c.APIHandler()))
-	} else {
-		mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "the partner API of this gateway is served through the hub")
-		})
-	}
-	return Observe(c.log, c.now, mux)
-}
-
-// TunnelHandler serves requests from the hub: health, the partner API
-// (the hub names the partner) and the gateway API for the operator.
+// TunnelHandler serves what the hub sends through the tunnel: the partner
+// API (the hub names the partner) and the gateway API for the operator.
 func (c *Clubs) TunnelHandler() http.Handler {
 	mux := http.NewServeMux()
-	c.health(mux)
 	api := c.APIHandler()
 	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := auth.PartnerName(r.Context()); !ok {
-			writeError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "the hub did not name the partner")
+			WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "the hub did not name the partner")
 			return
 		}
 		api.ServeHTTP(w, r)
@@ -257,5 +192,8 @@ func (c *Clubs) TunnelHandler() http.Handler {
 	if c.gatewayAPI != nil {
 		mux.Handle("/gateway/", c.gatewayAPI)
 	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
+	})
 	return Observe(c.log, c.now, mux)
 }

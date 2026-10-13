@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
@@ -135,7 +136,7 @@ func TestEarlyMorningIsIncomplete(t *testing.T) {
 		t.Fatalf("after the overnight window: %s", raw)
 	}
 	// and the window is configurable per club
-	g := newFixture(t, fixtureOpts{now: clock, extraCRM: "  overnight_minutes: 0\n"})
+	g := newFixture(t, fixtureOpts{now: clock, clubCRM: map[string]any{"overnight_minutes": 0}})
 	if _, m, raw := call(t, g, http.MethodGet, occupancyPath(from, to), contract.ReadKey, ""); m["complete"] != true {
 		t.Fatalf("overnight_minutes 0: %s", raw)
 	}
@@ -305,18 +306,24 @@ func TestTokenCachedUntilExpiryMinus30s(t *testing.T) {
 }
 
 func TestReadyReasons(t *testing.T) {
-	f := newFixture(t, fixtureOpts{})
-	if st, m, raw := call(t, f, http.MethodGet, "/health/ready", "", ""); st != 200 || m["status"] != "ready" {
-		t.Fatalf("ready: %d %s", st, raw)
+	ready := func(f *fixture) (string, string) {
+		err := f.built.Clubs.Ready(context.Background())
+		if err == nil {
+			return "", ""
+		}
+		return core.ReadyReason(err), err.Error()
+	}
+	if reason, _ := ready(newFixture(t, fixtureOpts{})); reason != "" {
+		t.Fatalf("ready: %s", reason)
 	}
 
 	bad := newFixture(t, fixtureOpts{password: "wrong-password-0000"})
-	st, m, raw := call(t, bad, http.MethodGet, "/health/ready", "", "")
-	if st != http.StatusServiceUnavailable || m["reason"] != "CRM_AUTH_FAILED" {
-		t.Fatalf("wrong password: %d %s", st, raw)
+	reason, text := ready(bad)
+	if reason != "CRM_AUTH_FAILED" {
+		t.Fatalf("wrong password: %s", reason)
 	}
-	if strings.Contains(raw, "wrong-password-0000") || strings.Contains(raw, stubUser) {
-		t.Fatalf("ready leaks credentials: %s", raw)
+	if strings.Contains(text, "wrong-password-0000") || strings.Contains(text, stubUser) {
+		t.Fatalf("ready leaks credentials: %s", text)
 	}
 	if strings.Contains(bad.built.Logs.String(), "wrong-password-0000") {
 		t.Fatal("password in logs")
@@ -324,16 +331,14 @@ func TestReadyReasons(t *testing.T) {
 
 	down := newFixture(t, fixtureOpts{})
 	down.srv.Close()
-	st, m, raw = call(t, down, http.MethodGet, "/health/ready", "", "")
-	if st != http.StatusServiceUnavailable || m["reason"] != "CRM_UNREACHABLE" {
-		t.Fatalf("stub down: %d %s", st, raw)
+	if reason, _ := ready(down); reason != "CRM_UNREACHABLE" {
+		t.Fatalf("stub down: %s", reason)
 	}
 
 	broken := newFixture(t, fixtureOpts{})
 	broken.stub.FailNext(http.MethodPost, vivastub.TokenPath, http.StatusOK, `{"no":"token"}`)
-	st, m, raw = call(t, broken, http.MethodGet, "/health/ready", "", "")
-	if st != http.StatusServiceUnavailable || m["reason"] != "CRM_INVALID_RESPONSE" {
-		t.Fatalf("broken login: %d %s", st, raw)
+	if reason, _ := ready(broken); reason != "CRM_INVALID_RESPONSE" {
+		t.Fatalf("broken login: %s", reason)
 	}
 }
 
@@ -345,7 +350,7 @@ func createBody(start time.Time, kind, note string) string {
 }
 
 func TestCreatePayloads(t *testing.T) {
-	f := newFixture(t, fixtureOpts{services: "services:\n  booking: { direction: 12, type: 3 }\n  tournament: { direction: 12, type: 7 }\n"})
+	f := newFixture(t, fixtureOpts{services: map[string]map[string]any{"booking": {"direction": 12, "type": 3}, "tournament": {"direction": 12, "type": 7}}})
 	start := futureDay().Add(9 * time.Hour)
 	st, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, createBody(start, "game", "Ivan"))
 	if st != http.StatusCreated {
@@ -371,7 +376,7 @@ func TestCreatePayloads(t *testing.T) {
 		t.Fatalf("tournament exercise: %v", rec)
 	}
 
-	g := newFixture(t, fixtureOpts{extraCRM: "  break_title: \"Внешняя бронь\"\n"})
+	g := newFixture(t, fixtureOpts{installCRM: ", break_title: \"Внешняя бронь\""})
 	st, m, raw = call(t, g, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, createBody(start, "game", ""))
 	if st != http.StatusCreated || !strings.HasPrefix(m["id"].(string), "b-") {
 		t.Fatalf("no service must create a break: %d %s", st, raw)
@@ -623,10 +628,9 @@ func TestConcurrentCreatesOfOneRoom(t *testing.T) {
 		stub.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
-	env := contract.KeyEnv()
-	env["CRM_PASSWORD"] = stubPass
+	env := map[string]string{"CRM_PASSWORD": stubPass}
 	build := func() http.Handler {
-		return contract.Build(t, configYAML(srv.URL, fixtureOpts{}), env, "viva", viva.New, func(c *driver.Config) { c.HTTPClient = srv.Client() }).Handler()
+		return contract.Build(t, crmYAML(srv.URL, ""), testClub(fixtureOpts{}), env, "viva", viva.New, func(c *driver.Config) { c.HTTPClient = srv.Client() }).Handler()
 	}
 	handlers := []http.Handler{build(), build()} // two drivers, one room
 	d := futureDay().Add(10 * time.Hour)

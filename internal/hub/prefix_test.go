@@ -165,8 +165,8 @@ func TestHubBehindPathPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	gw := testkit.StartGateway(t, hubURL, rt, reg.Secret, b.Clubs.TunnelHandler(), nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
+	gw := testkit.StartGateway(t, testkit.ClientConfig(hubURL, rt, reg.Secret, b.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "gateway connected through the prefix", 10*time.Second, func() bool {
 		return gw.Client.Connected() && srv.Broker().Connected("demo-club")
 	})

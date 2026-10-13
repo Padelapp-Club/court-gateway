@@ -186,14 +186,20 @@ type Gateway struct {
 	done   chan struct{}
 }
 
-// StartGateway connects handler to the hub at hubURL with secret.
-func StartGateway(t *testing.T, hubURL string, rt http.RoundTripper, secret string, handler http.Handler, log *slog.Logger) *Gateway {
-	t.Helper()
-	c, err := tunnel.NewClient(tunnel.ClientConfig{
+// ClientConfig is the tunnel client config test gateways use: two polls,
+// fast reconnects.
+func ClientConfig(hubURL string, rt http.RoundTripper, secret string, handler http.Handler, log *slog.Logger) tunnel.ClientConfig {
+	return tunnel.ClientConfig{
 		HubURL: hubURL, Secret: secret, Polls: 2, Handler: handler, Version: "1.0.0", Build: tunnel.BuildRelease,
 		Platform: "test", Logger: log, Transport: rt, MinBackoff: 20 * time.Millisecond, MaxBackoff: 200 * time.Millisecond,
 		PollTimeout: 5 * time.Second,
-	})
+	}
+}
+
+// StartGateway runs a tunnel client with cfg until the test ends.
+func StartGateway(t *testing.T, cfg tunnel.ClientConfig) *Gateway {
+	t.Helper()
+	c, err := tunnel.NewClient(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

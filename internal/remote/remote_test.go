@@ -27,10 +27,7 @@ func installation(t *testing.T, gatewayYAML string, env map[string]string) (*cor
 	if err != nil {
 		t.Fatal(err)
 	}
-	clubs, err := core.NewClubs(s, core.ClubsOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	clubs := core.NewClubs(core.ClubsOptions{})
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs})
 }
 

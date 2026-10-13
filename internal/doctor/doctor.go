@@ -28,7 +28,6 @@ const (
 	CodeHubAuth    = "HUB_AUTH"
 	CodeTunnel     = "TUNNEL_CONNECTED"
 	CodeVersion    = "VERSION_CURRENT"
-	CodeLocalPort  = "LOCAL_PORT"
 	CodeSecretFile = "SECRETS_FILE"
 	// CodeHubConfig: the installation's club config on the hub loads with
 	// this gateway's CRM driver, and the running service applied it.
@@ -59,8 +58,6 @@ type Report struct {
 	OK      bool   `json:"ok"`
 	Version string `json:"version"`
 	Build   string `json:"build"`
-	// Club is the club written in gateway.yaml, if any.
-	Club string `json:"club,omitempty"`
 	// Installation, ConfigVersion and Clubs are the hub's view: the
 	// installation id, its club config version and its clubs. ClubsServed
 	// and AppliedConfigVersion are what the running service last reported.
@@ -112,24 +109,17 @@ func Run(ctx context.Context, o Options) Report {
 		return finish(r)
 	}
 	s, err := core.LoadFile(o.ConfigPath, getenv)
-	var local driver.Driver
 	var acct driver.Account
-	if err == nil && s.Hub == nil {
-		if o.DriverHook != nil {
-			o.DriverHook(&s.Driver)
-		}
-		local, err = core.BuildDriver(s, o.Factories)
-	}
 	if err == nil {
 		if f, ok := o.Accounts[s.CRMType]; ok {
 			cfg := s.Driver
-			if o.DriverHook != nil && s.Hub != nil {
+			if o.DriverHook != nil {
 				o.DriverHook(&cfg)
 			}
 			if acct, err = f(cfg); err != nil {
 				err = &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
 			}
-		} else if s.Hub != nil {
+		} else {
 			err = &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
 		}
 	}
@@ -139,77 +129,40 @@ func Run(ctx context.Context, o Options) Report {
 		r.Checks = append(r.Checks, versionCheck(ctx, o, nil))
 		return finish(r)
 	}
-	r.Club = s.ClubID
-	if s.Hub == nil {
-		add(Check{Code: CodeConfig, Status: OK, Message: fmt.Sprintf("клуб %s, CRM %s, кортов: %d", s.ClubID, s.CRMType, len(s.Courts))})
-	} else {
-		add(Check{Code: CodeConfig, Status: OK, Message: fmt.Sprintf("установка с CRM %s; клубы настраиваются на хабе", s.CRMType)})
-	}
+	add(Check{Code: CodeConfig, Status: OK, Message: fmt.Sprintf("установка с CRM %s; клубы настраиваются на хабе", s.CRMType)})
 	add(secretsFileCheck(o.ConfigPath))
 
 	// CRM login, the hub and the occupancy each get their own timeout: one
 	// slow step does not eat the next one's
 	loginOK := true
-	var login func(context.Context) error
-	if acct != nil {
-		login = acct.CheckLogin
-	} else if lc, ok := local.(driver.LoginChecker); ok {
-		login = lc.CheckLogin
-	}
-	if login == nil {
-		add(Check{Code: CodeCRMLogin, Status: Skip, Message: "у этого типа CRM нет входа"})
-	} else if err := withTimeout(ctx, o.Timeout, login); err != nil {
+	if err := withTimeout(ctx, o.Timeout, acct.CheckLogin); err != nil {
 		loginOK = false
 		add(Check{Code: CodeCRMLogin, Status: Fail, Message: "вход в CRM не удался: " + core.ReadyReason(err), Hint: crmHint(err)})
 	} else {
 		add(Check{Code: CodeCRMLogin, Status: OK, Message: "вход в CRM выполнен"})
 	}
 
-	// hub (before occupancy: the clubs to read may come from the hub)
-	var hubChecksOut []Check
-	var remoteClubs []clubDriver
-	if s.Hub == nil {
-		for _, c := range []string{CodeHubReach, CodeHubAuth, CodeTunnel, CodeHubConfig} {
-			hubChecksOut = append(hubChecksOut, Check{Code: c, Status: Skip, Message: "хаб не настроен (раздел hub в gateway.yaml)"})
-		}
-	} else {
-		hubChecksOut, remoteClubs = hubChecks(ctx, o, s, &r)
-	}
+	// the hub (before occupancy: the clubs to read come from the hub)
+	hubChecksOut, remoteClubs := hubChecks(ctx, o, s, &r)
 
 	// occupancy of one club
-	target, targetName := local, s.ClubID
-	if target == nil && len(remoteClubs) > 0 {
-		target, targetName = remoteClubs[0].drv, remoteClubs[0].id
-	}
 	switch {
 	case !loginOK:
 		add(Check{Code: CodeOccupancy, Status: Skip, Message: "нет входа в CRM"})
-	case target == nil:
+	case len(remoteClubs) == 0:
 		add(Check{Code: CodeOccupancy, Status: Skip, Message: "клубов пока нет: оператор ещё не подключил клубы на хабе"})
 	default:
-		now := time.Now()
-		var ids []string
-		if target == local {
-			for _, c := range s.Courts {
-				ids = append(ids, c.ID)
-			}
-		} else {
-			ids = remoteClubs[0].courts
-		}
+		now, c := time.Now(), remoteClubs[0]
 		if err := withTimeout(ctx, o.Timeout, func(ctx context.Context) error {
-			_, err := target.Occupancy(ctx, driver.OccupancyQuery{Courts: ids, From: now, To: now.Add(24 * time.Hour)})
+			_, err := c.drv.Occupancy(ctx, driver.OccupancyQuery{Courts: c.courts, From: now, To: now.Add(24 * time.Hour)})
 			return err
 		}); err != nil {
-			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + targetName + " не читается: " + core.ReadyReason(err), Hint: crmHint(err)})
+			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + c.id + " не читается: " + core.ReadyReason(err), Hint: crmHint(err)})
 		} else {
-			add(Check{Code: CodeOccupancy, Status: OK, Message: "занятость клуба " + targetName + " на сутки вперёд читается"})
+			add(Check{Code: CodeOccupancy, Status: OK, Message: "занятость клуба " + c.id + " на сутки вперёд читается"})
 		}
 	}
 	r.Checks = append(r.Checks, hubChecksOut...)
-	if s.Listen != "" {
-		add(Check{Code: CodeLocalPort, Status: Warn, Message: "открыт локальный порт " + s.Listen,
-			Hint: "для работы через хаб порт не нужен; не пробрасывайте его наружу"})
-	}
 	r.Checks = append(r.Checks, versionCheck(ctx, o, s))
 	return finish(r)
 }
@@ -241,7 +194,7 @@ func crmHint(err error) string {
 	case "CRM_AUTH_FAILED":
 		return "проверьте логин в gateway.yaml и пароль CRM_PASSWORD в .env"
 	case "CRM_REJECTED":
-		return "проверьте идентификатор студии и комнат в gateway.yaml"
+		return "сообщите оператору хаба: CRM не принимает настройки клуба"
 	default:
 		return "проверьте интернет на этом компьютере; если CRM недоступна у всех — подождите"
 	}

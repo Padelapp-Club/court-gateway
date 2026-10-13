@@ -209,7 +209,6 @@ func Run(t *testing.T, setup Setup) {
 	t.Run("payment follows capabilities", func(t *testing.T) { testPayment(t, setup(t)) })
 	t.Run("prices and quote", func(t *testing.T) { testPrices(t, setup(t)) })
 	t.Run("privacy: foreign data never leaks", func(t *testing.T) { testPrivacy(t, setup(t)) })
-	t.Run("health", func(t *testing.T) { testHealth(t, setup(t)) })
 }
 
 func testDiscovery(t *testing.T, env *Env) {
@@ -571,15 +570,5 @@ func testPrivacy(t *testing.T, env *Env) {
 		if strings.Contains(logs, k) {
 			t.Fatalf("logs leak an API key")
 		}
-	}
-}
-
-func testHealth(t *testing.T, env *Env) {
-	c := &client{t: t, env: env}
-	expect(t, c.do(http.MethodGet, "/health/live", "", nil), http.StatusOK, "")
-	r := c.do(http.MethodGet, "/health/ready", "", nil)
-	expect(t, r, http.StatusOK, "")
-	if r.JSON["status"] != "ready" {
-		t.Fatalf("ready = %s", r.Body)
 	}
 }

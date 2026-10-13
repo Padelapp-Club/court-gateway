@@ -1,7 +1,7 @@
 package demo_test
 
 import (
-	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -12,73 +12,53 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
-const demoConfig = `club: { id: demo-club, name: "Демо-клуб" }
-crm: { type: demo }
-venue:
-  timezone: Europe/Moscow
-  slot_minutes: 30
-  hours: { mon-fri: "07:00-23:00", sat-sun: "08:00-23:00" }
-courts:
-  - { id: court-1, name: "Корт 1" }
-  - { id: court-2, name: "Корт 2" }
-` + contract.PartnersYAML
+// demoEnv is the suite's environment for one demo club served by handler.
+func demoEnv(handler http.Handler, club string, others []string, srv *core.Server, logs func() string) *contract.Env {
+	d := srv.Driver().(*demo.Driver)
+	return &contract.Env{
+		Handler:      handler,
+		Club:         club,
+		OtherClubs:   others,
+		ReadKey:      contract.ReadKey,
+		BookKey:      contract.BookKey,
+		OtherBookKey: contract.OtherBookKey,
+		Courts:       []string{"court-1", "court-2"},
+		Location:     srv.Settings().Location,
+		SlotMinutes:  30,
+		SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
+			return d.Seed(court, start, end)
+		},
+		Price: func(day time.Time) contract.PriceCase {
+			// 2000/h base; 10:00-11:30 is never in the evening surcharge.
+			s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
+			return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: 3000}
+		},
+		Logs: logs,
+		// The demo driver keeps no personal data; the markers are still
+		// sent in a note and must not come back.
+		PrivacyMarkers: []string{"PRIVACY-MARKER-NOTE-7f3a"},
+	}
+}
 
+var demoClub = testkit.Club("demo-club", "Демо-клуб", "Корт 1", "Корт 2")
+
+// The suite against the club's API with the partner middleware in front,
+// no hub: what the API itself promises.
 func TestContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		b := contract.Build(t, demoConfig, contract.KeyEnv(), "demo", demo.New, nil)
-		d := b.Driver.(*demo.Driver)
-		return &contract.Env{
-			Handler:      b.Handler(),
-			Club:         "demo-club",
-			ReadKey:      contract.ReadKey,
-			BookKey:      contract.BookKey,
-			OtherBookKey: contract.OtherBookKey,
-			Courts:       []string{"court-1", "court-2"},
-			Location:     b.Settings.Location,
-			SlotMinutes:  30,
-			SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
-				return d.Seed(court, start, end)
-			},
-			Price: func(day time.Time) contract.PriceCase {
-				// 2000/h base; 10:00-11:30 is never in the evening surcharge.
-				s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-				return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: 3000}
-			},
-			Logs: b.Logs.String,
-			// The demo driver keeps no personal data; the markers are
-			// still sent in a note and must not come back.
-			PrivacyMarkers: []string{"PRIVACY-MARKER-NOTE-7f3a"},
-		}
+		b := contract.Build(t, testkit.DemoCRM, demoClub, nil, "demo", demo.New, nil)
+		return demoEnv(b.Handler(), "demo-club", nil, b.Server, b.Logs.String)
 	})
 }
 
 // The same suite through the hub: partner -> hub -> outbound tunnel ->
 // gateway -> driver, over real TLS. Keys, scopes and rate limits live on
-// the hub here; the gateway has no port of its own.
+// the hub here.
 func TestContractThroughHub(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		b := contract.Build(t, demoConfig, contract.KeyEnv(), "demo", demo.New, nil)
-		d := b.Driver.(*demo.Driver)
+		b := contract.Build(t, testkit.DemoCRM, demoClub, nil, "demo", demo.New, nil)
 		handler, logs := testkit.ThroughHub(t, b)
-		return &contract.Env{
-			Handler:      handler,
-			Club:         "demo-club",
-			ReadKey:      contract.ReadKey,
-			BookKey:      contract.BookKey,
-			OtherBookKey: contract.OtherBookKey,
-			Courts:       []string{"court-1", "court-2"},
-			Location:     b.Settings.Location,
-			SlotMinutes:  30,
-			SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
-				return d.Seed(court, start, end)
-			},
-			Price: func(day time.Time) contract.PriceCase {
-				s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-				return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: 3000}
-			},
-			Logs:           logs,
-			PrivacyMarkers: []string{"PRIVACY-MARKER-NOTE-7f3a"},
-		}
+		return demoEnv(handler, "demo-club", nil, b.Server, logs)
 	})
 }
 
@@ -89,38 +69,15 @@ func TestContractMultiClubThroughHub(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
 		h := testkit.StartHub(t, "poll_wait: 2s\n"+testkit.OperatorYAML+testkit.HubPartnersYAML, testkit.HubEnv(), hub.Options{})
 		club := func(id, studio string, courts ...string) core.ClubSpec {
-			c := core.ClubSpec{ID: id, Name: "Клуб " + id, Timezone: "Europe/Moscow", SlotMinutes: 30,
-				Hours: map[string]string{"mon-fri": "07:00-23:00", "sat-sun": "08:00-23:00"}, CRM: map[string]any{"studio": studio}}
-			for i, n := range courts {
-				c.Courts = append(c.Courts, core.CourtSpec{ID: fmt.Sprintf("court-%d", i+1), Name: n})
-			}
+			c := testkit.Club(id, "Клуб "+id, courts...)
+			c.CRM = map[string]any{"studio": studio}
 			return c
 		}
 		in := testkit.StartInstallation(t, h, "demo-net", testkit.InstallationOptions{
-			CRMYAML: "crm: { type: demo }\n", CRMType: "demo", Factory: demo.New, Account: demo.NewAccount,
+			CRMYAML: testkit.DemoCRM, CRMType: "demo", Factory: demo.New, Account: demo.NewAccount,
 			Clubs: []core.ClubSpec{club("club-north", "demo-north", "Корт 1", "Корт 2"), club("club-south", "demo-south", "Корт A", "Корт B")},
 		})
 		srv, _ := in.Clubs.Server("club-south")
-		d := srv.Driver().(*demo.Driver)
-		return &contract.Env{
-			Handler:      h.Forwarder(t),
-			Club:         "club-south",
-			OtherClubs:   []string{"club-north"},
-			ReadKey:      contract.ReadKey,
-			BookKey:      contract.BookKey,
-			OtherBookKey: contract.OtherBookKey,
-			Courts:       []string{"court-1", "court-2"},
-			Location:     srv.Settings().Location,
-			SlotMinutes:  30,
-			SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
-				return d.Seed(court, start, end)
-			},
-			Price: func(day time.Time) contract.PriceCase {
-				s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-				return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: 3000}
-			},
-			Logs:           func() string { return in.Logs.String() + h.Logs.String() },
-			PrivacyMarkers: []string{"PRIVACY-MARKER-NOTE-7f3a"},
-		}
+		return demoEnv(h.Forwarder(t), "club-south", []string{"club-north"}, srv, func() string { return in.Logs.String() + h.Logs.String() })
 	})
 }

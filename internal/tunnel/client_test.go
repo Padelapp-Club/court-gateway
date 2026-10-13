@@ -65,7 +65,7 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("served " + r.URL.Path))
 	})})
-	for _, p := range []string{"/hub/status", "/debug/pprof/", "/", "", "/v1/../etc", "/v1/clubs/%2e%2e", "/healthz"} {
+	for _, p := range []string{"/hub/status", "/debug/pprof/", "/", "", "/v1/../etc", "/v1/clubs/%2e%2e", "/healthz", "/health/ready"} {
 		if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: p}); r.Status != http.StatusNotFound {
 			t.Fatalf("%q reached the handler: %d %s", p, r.Status, r.Body)
 		}
@@ -85,7 +85,7 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 			t.Fatalf("%q reached the handler: %d", p, r.Status)
 		}
 	}
-	for _, p := range []string{"/v1/clubs", "/health/live", "/health/ready"} {
+	for _, p := range []string{"/v1/clubs", "/v1/clubs/a/courts"} {
 		if r := c.Execute(context.Background(), Request{ID: "1", Method: http.MethodGet, Path: p}); r.Status != http.StatusOK {
 			t.Fatalf("%q blocked: %d", p, r.Status)
 		}

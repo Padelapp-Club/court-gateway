@@ -110,8 +110,3 @@ func parseHours(path string, m map[string]string) ([7]*DayHours, []string) {
 	}
 	return hours, errs
 }
-
-func sortedStrings(s []string) []string {
-	sort.Strings(s)
-	return s
-}

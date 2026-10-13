@@ -68,21 +68,21 @@ func (s *Server) APIHandler() http.Handler {
 		mux.Handle(p, methodNotAllowed())
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	})
 	return mux
 }
 
 func methodNotAllowed() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
+		WriteError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
 	})
 }
 
 func (s *Server) withClub(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("club") != s.cfg.ClubID {
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
+			WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 			return
 		}
 		h(w, r)
@@ -172,7 +172,7 @@ func Observe(log *slog.Logger, now func() time.Time, next http.Handler) http.Han
 			if p := recover(); p != nil {
 				log.Error("panic in handler", "request_id", ri.id, "path", r.URL.Path)
 				if rec.status == 0 {
-					writeError(rec, r, http.StatusInternalServerError, "INTERNAL", "internal error")
+					WriteError(rec, r, http.StatusInternalServerError, "INTERNAL", "internal error")
 				}
 			}
 			log.Info("request",
@@ -196,24 +196,18 @@ type errorBody struct {
 	RequestID string `json:"request_id"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// WriteJSON writes v as a JSON response that must not be cached.
+func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	writeJSON(w, status, errorBody{Code: code, Message: message, RequestID: info(r).id})
-}
-
 // WriteError writes the API error body {code, message, request_id}.
 func WriteError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	writeError(w, r, status, code, message)
+	WriteJSON(w, status, errorBody{Code: code, Message: message, RequestID: info(r).id})
 }
-
-// WriteJSON writes v as a JSON response that must not be cached.
-func WriteJSON(w http.ResponseWriter, status int, v any) { writeJSON(w, status, v) }
 
 // driverError maps a driver error to an API error. Upstream details are
 // logged (they never contain secrets or personal data by the driver
@@ -225,7 +219,7 @@ func (s *Server) driverError(w http.ResponseWriter, r *http.Request, op string, 
 		lvl = slog.LevelWarn
 	}
 	s.log.Log(r.Context(), lvl, "driver call failed", "request_id", info(r).id, "op", op, "code", code, "error", err)
-	writeError(w, r, status, code, msg)
+	WriteError(w, r, status, code, msg)
 }
 
 func classify(err error) (int, string, string) {

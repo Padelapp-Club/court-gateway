@@ -1,7 +1,9 @@
 package viva_test
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
@@ -61,29 +64,30 @@ type fixture struct {
 }
 
 type fixtureOpts struct {
-	services string // YAML services section; empty = none
-	password string // CRM_PASSWORD; empty = the stub's
-	now      func() time.Time
-	extraCRM string
+	services   map[string]map[string]any // nil = none
+	password   string                    // CRM_PASSWORD; empty = the stub's
+	now        func() time.Time
+	installCRM string         // more installation-level crm keys, YAML
+	clubCRM    map[string]any // more club-level crm keys
 }
 
-func configYAML(srvURL string, o fixtureOpts) string {
-	return fmt.Sprintf(`club: { id: test-club, name: "Тестовый клуб" }
-listen: "127.0.0.1:8080"
-crm:
-  type: viva
-  username: %s
-  studio: %s
-  auth_url: %s/token
-  api_url: %s/api/v1
-%svenue:
-  timezone: Europe/Moscow
-  slot_minutes: 30
-  hours: { mon-fri: "07:00-23:00", sat-sun: "08:00-23:00" }
-courts:
-  - { id: court-1, name: "Корт 1", viva_room: %s, price_list: %s }
-  - { id: court-2, name: "Корт 2", viva_room: %s, price_list: %s }
-%s%s`, stubUser, studio, srvURL, srvURL, o.extraCRM, room1, priceList, room2, priceList, o.services, contract.PartnersYAML)
+// crmYAML is the installation's crm section.
+func crmYAML(srvURL, extra string) string {
+	return fmt.Sprintf("crm: { type: viva, username: %s, auth_url: %s/token, api_url: %s/api/v1%s }\n", stubUser, srvURL, srvURL, extra)
+}
+
+// testClub is the club the hub would configure.
+func testClub(o fixtureOpts) core.ClubSpec {
+	c := core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: "Europe/Moscow", SlotMinutes: 30,
+		Hours: map[string]string{"mon-fri": "07:00-23:00", "sat-sun": "08:00-23:00"},
+		CRM:   map[string]any{"studio": studio},
+		Courts: []core.CourtSpec{
+			{ID: "court-1", Name: "Корт 1", Params: map[string]any{"viva_room": room1, "price_list": priceList}},
+			{ID: "court-2", Name: "Корт 2", Params: map[string]any{"viva_room": room2, "price_list": priceList}},
+		},
+		Services: o.services}
+	maps.Copy(c.CRM, o.clubCRM)
+	return c
 }
 
 func newFixture(t *testing.T, o fixtureOpts) *fixture {
@@ -98,12 +102,8 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	}
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	env := contract.KeyEnv()
-	env["CRM_PASSWORD"] = stubPass
-	if o.password != "" {
-		env["CRM_PASSWORD"] = o.password
-	}
-	b := contract.Build(t, configYAML(srv.URL, o), env, "viva", viva.New, func(c *driver.Config) {
+	env := map[string]string{"CRM_PASSWORD": cmp.Or(o.password, stubPass)}
+	b := contract.Build(t, crmYAML(srv.URL, o.installCRM), testClub(o), env, "viva", viva.New, func(c *driver.Config) {
 		c.HTTPClient = srv.Client()
 		if o.now != nil {
 			c.Now = o.now
@@ -170,7 +170,7 @@ func (f *fixture) env() *contract.Env {
 	}
 }
 
-const bookingService = "services:\n  booking: { direction: 12, type: 3 }\n"
+var bookingService = map[string]map[string]any{"booking": {"direction": 12, "type": 3}}
 
 // The same driver-agnostic suite as every other driver, here with a
 // service for games (exercises) and none for tournaments (breaks).

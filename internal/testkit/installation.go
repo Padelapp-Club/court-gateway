@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -147,10 +148,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 	if acct != nil {
 		co.ReadyNoClubs = acct.CheckLogin
 	}
-	clubs, err := core.NewClubs(base, co)
-	if err != nil {
-		t.Fatal(err)
-	}
+	clubs := core.NewClubs(co)
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	syncer := remote.New(remote.Options{Base: base, Factories: map[string]driver.Factory{o.CRMType: o.Factory}, Clubs: clubs,
 		Logger: log, DriverHook: o.Hook, Retry: 100 * time.Millisecond})
@@ -158,11 +156,9 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 	if o.NoConnect {
 		return in
 	}
-	in.Gateway = StartGatewayConfig(t, tunnel.ClientConfig{
-		HubURL: h.URL(), Secret: rr.Secret, Polls: 2, Handler: clubs.TunnelHandler(), Version: "1.0.0", Build: tunnel.BuildRelease,
-		Platform: "test", Logger: log, Transport: h.Transport(), MinBackoff: 20 * time.Millisecond, MaxBackoff: 200 * time.Millisecond,
-		PollTimeout: 5 * time.Second, OnConfigVersion: syncer.Notify,
-	})
+	cfg := ClientConfig(h.URL(), h.Transport(), rr.Secret, clubs.TunnelHandler(), log)
+	cfg.OnConfigVersion = syncer.Notify
+	in.Gateway = StartGateway(t, cfg)
 	syncer.SetFetch(in.Gateway.Client.FetchConfig)
 	sctx, scancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -200,23 +196,6 @@ func (in *Installation) Beat(t *testing.T, ready bool) {
 	}
 }
 
-// StartGatewayConfig runs a tunnel client with cfg.
-func StartGatewayConfig(t *testing.T, cfg tunnel.ClientConfig) *Gateway {
-	t.Helper()
-	c, err := tunnel.NewClient(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	g := &Gateway{Client: c, cancel: cancel, done: make(chan struct{})}
-	go func() {
-		defer close(g.done)
-		c.Run(ctx)
-	}()
-	t.Cleanup(g.Stop)
-	return g
-}
-
 // Forwarder returns a handler that sends every request over real HTTPS to
 // the hub, for running the contract suite against the hub.
 func (h *Hub) Forwarder(t *testing.T) http.Handler {
@@ -242,4 +221,17 @@ func (h *Hub) Forwarder(t *testing.T) http.Handler {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})
+}
+
+// DemoCRM is the crm section of a demo installation.
+const DemoCRM = "crm: { type: demo }\n"
+
+// Club is a club spec with courts that carry no driver keys, open
+// 07:00-23:00 every day.
+func Club(id, name string, courts ...string) core.ClubSpec {
+	c := core.ClubSpec{ID: id, Name: name, Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "07:00-23:00"}}
+	for i, n := range courts {
+		c.Courts = append(c.Courts, core.CourtSpec{ID: fmt.Sprintf("court-%d", i+1), Name: n})
+	}
+	return c
 }

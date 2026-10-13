@@ -117,7 +117,7 @@ func (s *Server) handleClub(w http.ResponseWriter, _ *http.Request) {
 		}
 		hours[dayKeys[i]] = &hoursDTO{Open: formatClock(h.Open), Close: formatClock(h.Close)}
 	}
-	writeJSON(w, http.StatusOK, clubDTO{
+	WriteJSON(w, http.StatusOK, clubDTO{
 		ID:           s.cfg.ClubID,
 		Name:         s.cfg.ClubName,
 		Timezone:     s.cfg.TimezoneName,
@@ -132,7 +132,7 @@ func (s *Server) handleCourts(w http.ResponseWriter, _ *http.Request) {
 	for _, c := range s.cfg.Courts {
 		out = append(out, courtDTO{ID: c.ID, Name: c.Name})
 	}
-	writeJSON(w, http.StatusOK, map[string][]courtDTO{"courts": out})
+	WriteJSON(w, http.StatusOK, map[string][]courtDTO{"courts": out})
 }
 
 func parseTimeParam(v string) (time.Time, bool) {
@@ -144,13 +144,13 @@ func (s *Server) courtParam(w http.ResponseWriter, r *http.Request, required boo
 	c := r.URL.Query().Get("court")
 	if c == "" {
 		if required {
-			writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "query parameter court is required")
+			WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "query parameter court is required")
 			return "", false
 		}
 		return "", true
 	}
 	if _, ok := s.cfg.CourtByID(c); !ok {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such court")
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such court")
 		return "", false
 	}
 	return c, true
@@ -161,11 +161,11 @@ func (s *Server) handleOccupancy(w http.ResponseWriter, r *http.Request) {
 	from, ok1 := parseTimeParam(q.Get("from"))
 	to, ok2 := parseTimeParam(q.Get("to"))
 	if !ok1 || !ok2 {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "from and to are required RFC3339 timestamps")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "from and to are required RFC3339 timestamps")
 		return
 	}
 	if !to.After(from) || to.Sub(from) > maxOccupancyRange {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "to must be after from and the range must not exceed 31 days")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "to must be after from and the range must not exceed 31 days")
 		return
 	}
 	court, ok := s.courtParam(w, r, false)
@@ -188,7 +188,7 @@ func (s *Server) handleOccupancy(w http.ResponseWriter, r *http.Request) {
 	for _, iv := range occ.Intervals {
 		out.Intervals = append(out.Intervals, intervalDTO{ID: iv.ID, Court: iv.Court, Start: s.ts(iv.Start), End: s.ts(iv.End)})
 	}
-	writeJSON(w, http.StatusOK, out)
+	WriteJSON(w, http.StatusOK, out)
 }
 
 // occupancy calls the driver and re-applies the core's own guarantees:
@@ -236,7 +236,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 	}
 	date, err := time.ParseInLocation("2006-01-02", r.URL.Query().Get("date"), s.cfg.Location)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "date is required in YYYY-MM-DD format")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "date is required in YYYY-MM-DD format")
 		return
 	}
 	table, err := s.priceTable(r.Context(), court)
@@ -248,7 +248,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 	for _, p := range dayPeriods(table, isoWeekday(date)) {
 		out.Periods = append(out.Periods, periodDTO{Start: formatClock(p.From), End: formatClock(p.To), PricePerHour: rubles(p.PerHour)})
 	}
-	writeJSON(w, http.StatusOK, out)
+	WriteJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +260,7 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 	start, ok1 := parseTimeParam(q.Get("start"))
 	end, ok2 := parseTimeParam(q.Get("end"))
 	if !ok1 || !ok2 || !end.After(start) || end.Sub(start) > maxBookingLength {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end are required RFC3339 timestamps, end after start, at most 24 hours")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end are required RFC3339 timestamps, end after start, at most 24 hours")
 		return
 	}
 	table, err := s.priceTable(r.Context(), court)
@@ -271,13 +271,13 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 	total, err := quote(table, s.cfg.Location, s.cfg.SlotMinutes, start, end)
 	switch {
 	case errors.Is(err, errNotAligned):
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end must be on the club's slot grid")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end must be on the club's slot grid")
 		return
 	case err != nil:
-		writeError(w, r, http.StatusUnprocessableEntity, "PRICE_UNAVAILABLE", "no price is defined for part of the interval")
+		WriteError(w, r, http.StatusUnprocessableEntity, "PRICE_UNAVAILABLE", "no price is defined for part of the interval")
 		return
 	}
-	writeJSON(w, http.StatusOK, quoteDTO{Court: court, Start: s.ts(start), End: s.ts(end), Currency: "RUB", Total: total})
+	WriteJSON(w, http.StatusOK, quoteDTO{Court: court, Start: s.ts(start), End: s.ts(end), Currency: "RUB", Total: total})
 }
 
 // cleanNote drops control characters (except newlines and tabs) and trims.
@@ -299,39 +299,39 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "body must be a JSON object with court, start, end, kind and optional note")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "body must be a JSON object with court, start, end, kind and optional note")
 		return
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "body must contain a single JSON object")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "body must contain a single JSON object")
 		return
 	}
 	if _, ok := s.cfg.CourtByID(req.Court); !ok {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such court")
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such court")
 		return
 	}
 	start, ok1 := parseTimeParam(req.Start)
 	end, ok2 := parseTimeParam(req.End)
 	if !ok1 || !ok2 || !end.After(start) || end.Sub(start) > maxBookingLength {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end are required RFC3339 timestamps, end after start, at most 24 hours")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end are required RFC3339 timestamps, end after start, at most 24 hours")
 		return
 	}
 	if !aligned(start, s.cfg.Location, s.cfg.SlotMinutes) || !aligned(end, s.cfg.Location, s.cfg.SlotMinutes) {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end must be on the club's slot grid")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end must be on the club's slot grid")
 		return
 	}
 	if !start.After(s.now()) {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start must be in the future")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start must be in the future")
 		return
 	}
 	kind := driver.Kind(req.Kind)
 	if kind != driver.KindGame && kind != driver.KindTournament {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "kind must be game or tournament")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "kind must be game or tournament")
 		return
 	}
 	note := cleanNote(req.Note)
 	if utf8.RuneCountInString(note) > maxNoteRunes {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "note must not exceed 500 characters")
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "note must not exceed 500 characters")
 		return
 	}
 
@@ -341,7 +341,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	lcancel()
 	if err != nil {
 		w.Header().Set("Retry-After", "5")
-		writeError(w, r, http.StatusServiceUnavailable, "BUSY", "another booking of this court is in progress, retry")
+		WriteError(w, r, http.StatusServiceUnavailable, "BUSY", "another booking of this court is in progress, retry")
 		return
 	}
 	defer unlock()
@@ -351,11 +351,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !occ.Complete {
-		writeError(w, r, http.StatusConflict, "OCCUPANCY_UNKNOWN", "the occupancy of this interval cannot be confirmed")
+		WriteError(w, r, http.StatusConflict, "OCCUPANCY_UNKNOWN", "the occupancy of this interval cannot be confirmed")
 		return
 	}
 	if len(occ.Intervals) > 0 {
-		writeError(w, r, http.StatusConflict, "SLOT_UNAVAILABLE", "the court is occupied in this interval")
+		WriteError(w, r, http.StatusConflict, "SLOT_UNAVAILABLE", "the court is occupied in this interval")
 		return
 	}
 
@@ -368,7 +368,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("booking created", "request_id", info(r).id, "partner", partner, "booking", b.ID, "court", req.Court)
 	w.Header().Set("Location", "/v1/clubs/"+s.cfg.ClubID+"/bookings/"+b.ID)
-	writeJSON(w, http.StatusCreated, bookingDTO{
+	WriteJSON(w, http.StatusCreated, bookingDTO{
 		ID: b.ID, Court: req.Court, Start: s.ts(start), End: s.ts(end), Kind: string(kind), Status: string(driver.StatusActive),
 	})
 }
@@ -376,7 +376,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) bookingID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
 	if !bookingIDRe.MatchString(id) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such booking")
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such booking")
 		return "", false
 	}
 	return id, true
@@ -395,14 +395,14 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, known := s.cfg.CourtByID(b.Court); !known {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such booking")
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such booking")
 		return
 	}
 	status := b.Status
 	if status != driver.StatusCancelled {
 		status = driver.StatusActive
 	}
-	writeJSON(w, http.StatusOK, bookingDTO{ID: b.ID, Court: b.Court, Start: s.ts(b.Start), End: s.ts(b.End), Status: string(status)})
+	WriteJSON(w, http.StatusOK, bookingDTO{ID: b.ID, Court: b.Court, Start: s.ts(b.Start), End: s.ts(b.End), Status: string(status)})
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -426,7 +426,7 @@ func (s *Server) handlePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.caps.Payments {
-		writeError(w, r, http.StatusNotImplemented, "NOT_SUPPORTED", "the club's CRM does not support payment marks")
+		WriteError(w, r, http.StatusNotImplemented, "NOT_SUPPORTED", "the club's CRM does not support payment marks")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), driverTimeout)

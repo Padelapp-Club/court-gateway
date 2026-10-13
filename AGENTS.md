@@ -15,14 +15,14 @@ human. Do not improvise around a failure.
 
    Nothing else. The club does **not** choose a club id, courts, hours, a studio or a time zone:
    one installation is one CRM account, and the operator configures its clubs on the hub. Never
-   write `club`, `venue` or `courts` into `gateway.yaml` of a hub installation.
+   write `club`, `venue` or `courts` into `gateway.yaml` (the gateway refuses them).
 2. **Never echo, print, log or store the Viva password or the join code** — not in your messages,
    not in files other than the `.env` that `setup` writes, not in shell history. Pass them only as
    environment variables of the single `setup` command, or the password via stdin
    (`--password-stdin`). Do not run commands with `set -x`. Never `cat` the `.env` file.
 3. **Never open inbound access.** Do not add firewall rules, port forwarding, a public IP, DNS
-   records, TLS certificates, reverse proxies or tunnels of your own. Do not add `listen:` to
-   `gateway.yaml`. The gateway only connects **out** to the hub over HTTPS.
+   records, TLS certificates, reverse proxies or tunnels of your own. The gateway has no port: it
+   only connects **out** to the hub over HTTPS.
 4. Do not disable automatic updates, do not edit the service files `install-service` writes, do not
    commit or upload `gateway.yaml` or `.env` anywhere.
 5. Use the official release binary and verify its checksum (step 2). Build from source only if the
@@ -169,7 +169,6 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
 | `HUB_CONFIG` | `fail`: the clubs configured on the hub do not load with this CRM — report to the operator (the service keeps the previous config); `warn`: the service has not applied the newest config yet |
 | `VERSION_CURRENT` | `warn` only: self-built binary, or an update is pending (installs itself) |
-| `LOCAL_PORT` | `warn`: `listen:` is set — remove it unless the human asked for it |
 
 ## Step 6 — report
 

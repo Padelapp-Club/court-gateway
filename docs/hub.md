@@ -150,8 +150,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
 | `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM |
 
-**Конфиг клуба** — то, что в локальном режиме лежит в `gateway.yaml` в разделах `club`, `venue`,
-`courts`, `services`: `name`, `timezone`, `slot_minutes`, `hours`, `crm`, `courts` (`id`, `name`
+**Конфиг клуба** — `name`, `timezone`, `slot_minutes`, `hours`, `crm`, `courts` (`id`, `name`
 и ключи драйвера — для Viva `viva_room`, `price_list`), `services`. В `crm` клуб задаёт только
 ключи клуба — для Viva `studio`, `overnight_minutes`, `break_lookback_days` (см. README,
 «Занятость в Viva»). Логин и адреса CRM (`username`, `auth_url`, `api_url`) принадлежат установке

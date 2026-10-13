@@ -2,15 +2,17 @@ package core
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,10 +24,6 @@ import (
 
 // PasswordEnv is the environment variable holding the CRM password.
 const PasswordEnv = "CRM_PASSWORD"
-
-// DefaultListen is used when the config has neither `listen` nor `hub`.
-// With a hub the local port stays closed unless `listen` is set.
-const DefaultListen = ":8080"
 
 // DefaultHubSecretEnv holds the gateway's secret for the hub.
 const DefaultHubSecretEnv = "GATEWAY_HUB_SECRET"
@@ -45,15 +43,11 @@ const DefaultWritesPerMinute = 60
 // environment.
 const minKeyLength = 24
 
-// fileConfig mirrors gateway.yaml. Driver-specific keys of `crm`, of each
-// court and of `services` are kept as raw maps and handed to the driver.
+// fileConfig mirrors gateway.yaml: the installation only. Its clubs are
+// configured on the hub. Driver-specific keys of `crm` are kept as a raw
+// map and handed to the driver.
 type fileConfig struct {
-	Club *struct {
-		ID   string `yaml:"id"`
-		Name string `yaml:"name"`
-	} `yaml:"club"`
-	Listen string `yaml:"listen"`
-	Hub    *struct {
+	Hub *struct {
 		URL       string `yaml:"url"`
 		CAFile    string `yaml:"ca_file"`
 		SecretEnv string `yaml:"secret_env"`
@@ -68,21 +62,9 @@ type fileConfig struct {
 		Type string         `yaml:"type"`
 		Rest map[string]any `yaml:",inline"`
 	} `yaml:"crm"`
-	Venue *struct {
-		Timezone    string            `yaml:"timezone"`
-		SlotMinutes int               `yaml:"slot_minutes"`
-		Hours       map[string]string `yaml:"hours"`
-	} `yaml:"venue"`
-	Courts []struct {
-		ID   string         `yaml:"id"`
-		Name string         `yaml:"name"`
-		Rest map[string]any `yaml:",inline"`
-	} `yaml:"courts"`
-	Services map[string]map[string]any `yaml:"services"`
-	Partners []PartnerEntry            `yaml:"partners"`
 }
 
-// PartnerEntry is a partner as gateway.yaml and hub.yaml list it.
+// PartnerEntry is a partner as hub.yaml lists it.
 type PartnerEntry struct {
 	Name            string   `yaml:"name"`
 	KeyEnv          string   `yaml:"key_env"`
@@ -188,17 +170,13 @@ type UpdateSettings struct {
 }
 
 // Settings is a validated configuration: the installation (CRM type and
-// login, hub, partners, local port) and, without a hub, the one club of
-// gateway.yaml. With a hub gateway.yaml has no club: the clubs of the
-// installation are configured on the hub (see ClubSpec and WithClub).
+// login, the hub) and, once WithClub applied a club configured on the hub,
+// that club.
 type Settings struct {
 	ClubID   string
 	ClubName string
-	// Listen is the local HTTP address; empty means no local port.
-	Listen string
-	// Hub is nil when the gateway is not connected to a hub.
-	Hub    *HubSettings
-	Update UpdateSettings
+	Hub      *HubSettings
+	Update   UpdateSettings
 	// StateDir holds the health status file and update bookkeeping. It
 	// never holds CRM data.
 	StateDir     string
@@ -207,15 +185,13 @@ type Settings struct {
 	Location     *time.Location
 	SlotMinutes  int
 	// Hours is indexed by ISO weekday (0 = Monday); nil means closed.
-	Hours    [7]*DayHours
-	Courts   []Court
-	Partners []auth.Partner
+	Hours  [7]*DayHours
+	Courts []Court
 	// Driver is the input for the driver factory.
 	Driver driver.Config
 	// Secrets are values that must never appear in logs.
 	Secrets []string
 
-	stateDirDefaulted bool
 	// installCRM is the crm section of gateway.yaml without type; a club's
 	// own crm keys go over it.
 	installCRM driver.Params
@@ -247,27 +223,35 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.stateDirDefaulted {
-		s.StateDir = defaultStateDir(path, s.ClubID)
-	}
+	s.StateDir = StateDir(path, getenv)
 	return s, nil
 }
 
-// defaultStateDir is a "state" directory next to the config file: stable
-// for every process that reads the same config (service, healthcheck,
-// doctor), unlike the per-user temporary directory.
-func defaultStateDir(cfgPath, club string) string {
-	if abs, err := filepath.Abs(cfgPath); err == nil {
-		return filepath.Join(filepath.Dir(abs), "state")
+// StateDir is the state directory of the config at cfgPath, read without
+// secrets (healthcheck needs no more): $GATEWAY_STATE_DIR, else state_dir,
+// else "state" next to the config file, the same for every process that
+// reads that config (service, healthcheck, doctor).
+func StateDir(cfgPath string, getenv func(string) string) string {
+	if getenv == nil {
+		getenv = os.Getenv
 	}
-	return filepath.Join(os.TempDir(), tempStateName(club))
-}
-
-func tempStateName(club string) string {
-	if club == "" {
-		return "court-gateway"
+	if d := strings.TrimSpace(getenv(StateDirEnv)); d != "" {
+		return d
 	}
-	return "court-gateway-" + club
+	var c struct {
+		StateDir string `yaml:"state_dir"`
+	}
+	if data, err := os.ReadFile(cfgPath); err == nil {
+		_ = yaml.Unmarshal(data, &c)
+	}
+	if d := strings.TrimSpace(c.StateDir); d != "" {
+		return d
+	}
+	abs, err := filepath.Abs(cfgPath)
+	if err != nil {
+		abs = cfgPath
+	}
+	return filepath.Join(filepath.Dir(abs), "state")
 }
 
 // Load parses and validates config bytes. All problems found are reported
@@ -294,8 +278,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 
 	s := &Settings{}
 
-	// hub
-	if fc.Hub != nil {
+	// hub: the only way partners reach a gateway
+	if fc.Hub == nil {
+		add("hub: раздел обязателен — шлюз работает только через хаб; выполните court-gateway setup с кодом подключения")
+	} else {
 		h := &HubSettings{URL: strings.TrimSpace(fc.Hub.URL), CAFile: strings.TrimSpace(fc.Hub.CAFile), Polls: fc.Hub.Polls}
 		if h.URL == "" {
 			add("hub.url: параметр обязателен (адрес хаба, например https://hub.example.com)")
@@ -322,19 +308,6 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		s.Hub = h
 	}
 
-	// listen
-	s.Listen = strings.TrimSpace(fc.Listen)
-	if s.Listen == "" && s.Hub == nil {
-		s.Listen = DefaultListen
-	}
-	if s.Listen != "" {
-		if _, port, err := net.SplitHostPort(s.Listen); err != nil {
-			add("listen: «%s» — ожидается адрес вида :8080 или 127.0.0.1:8080", s.Listen)
-		} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
-			add("listen: неверный порт «%s»", port)
-		}
-	}
-
 	// update
 	s.Update = UpdateSettings{Enabled: true}
 	if fc.Update != nil {
@@ -349,11 +322,8 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		}
 	}
 
-	// state_dir
-	s.StateDir = strings.TrimSpace(getenv(StateDirEnv))
-	if s.StateDir == "" {
-		s.StateDir = strings.TrimSpace(fc.StateDir)
-	}
+	// state_dir (LoadFile defaults it to the config's directory)
+	s.StateDir = cmp.Or(strings.TrimSpace(getenv(StateDirEnv)), strings.TrimSpace(fc.StateDir))
 
 	// crm
 	s.CRMType = strings.TrimSpace(fc.CRM.Type)
@@ -361,41 +331,12 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("crm.type: параметр обязателен (тип CRM клуба)")
 	}
 
-	// the club: in gateway.yaml without a hub; with a hub every club comes
-	// from the hub (WithClub)
+	// every club comes from the hub (WithClub)
 	s.installCRM = driver.Params(fc.CRM.Rest)
 	if s.installCRM == nil {
 		s.installCRM = driver.Params{}
 	}
-	if s.Hub == nil {
-		spec := ClubSpec{Services: fc.Services}
-		if fc.Club != nil {
-			spec.ID, spec.Name = fc.Club.ID, fc.Club.Name
-		}
-		if fc.Venue != nil {
-			spec.Timezone, spec.SlotMinutes, spec.Hours = fc.Venue.Timezone, fc.Venue.SlotMinutes, fc.Venue.Hours
-		}
-		for _, c := range fc.Courts {
-			spec.Courts = append(spec.Courts, CourtSpec{ID: c.ID, Name: c.Name, Params: c.Rest})
-		}
-		errs = append(errs, applyClub(s, spec, filePaths, nil)...)
-	} else {
-		if fc.Club != nil || fc.Venue != nil || len(fc.Courts) > 0 || fc.Services != nil {
-			add("club, venue, courts, services: с хабом клубы настраивает оператор на хабе — уберите эти разделы из gateway.yaml")
-		}
-		s.Driver.CRM = driver.Params{}
-		for k, v := range s.installCRM {
-			s.Driver.CRM[k] = v
-		}
-	}
-
-	// partners: with a hub, partner keys live on the hub; a local list is
-	// needed only to open the API on the local port.
-	if len(fc.Partners) == 0 && s.Hub == nil {
-		add("partners: нужен хотя бы один партнёр с ключом доступа (или раздел hub — тогда ключи партнёров хранит хаб)")
-	}
-	partners, keys := ParsePartners(fc.Partners, getenv, add)
-	s.Partners, s.Secrets = partners, append(s.Secrets, keys...)
+	s.Driver.CRM = maps.Clone(s.installCRM)
 
 	password := getenv(PasswordEnv)
 	if password != "" {
@@ -404,10 +345,6 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 
 	if len(errs) > 0 {
 		return nil, &ConfigError{Problems: errs}
-	}
-	if s.StateDir == "" {
-		s.stateDirDefaulted = true
-		s.StateDir = filepath.Join(os.TempDir(), tempStateName(s.ClubID))
 	}
 	s.Driver.Password = password
 	return s, nil
@@ -426,11 +363,8 @@ func (e *ConfigError) Error() string {
 func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Driver, error) {
 	f, ok := factories[s.CRMType]
 	if !ok {
-		known := make([]string, 0, len(factories))
-		for k := range factories {
-			known = append(known, k)
-		}
-		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s» (поддерживаются: %s)", s.CRMType, strings.Join(sortedStrings(known), ", "))}}
+		known := slices.Sorted(maps.Keys(factories))
+		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s» (поддерживаются: %s)", s.CRMType, strings.Join(known, ", "))}}
 	}
 	d, err := f(s.Driver)
 	if err != nil {
@@ -503,37 +437,4 @@ func CheckHTTPSURL(path, raw string) error {
 		}
 	}
 	return fmt.Errorf("%s: «%s» — адрес должен начинаться с https://", path, raw)
-}
-
-// StatePath returns the health status file and update bookkeeping
-// directory derived from a config file without loading secrets. It is what
-// `healthcheck` uses, so it must agree with Load.
-func StatePath(cfgPath string, getenv func(string) string) (stateDir, listen string, hub bool) {
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	var c struct {
-		Club struct {
-			ID string `yaml:"id"`
-		} `yaml:"club"`
-		Listen   string    `yaml:"listen"`
-		StateDir string    `yaml:"state_dir"`
-		Hub      yaml.Node `yaml:"hub"`
-	}
-	if data, err := os.ReadFile(cfgPath); err == nil {
-		_ = yaml.Unmarshal(data, &c)
-	}
-	hub = !c.Hub.IsZero()
-	listen = strings.TrimSpace(c.Listen)
-	if listen == "" && !hub {
-		listen = DefaultListen
-	}
-	stateDir = strings.TrimSpace(getenv(StateDirEnv))
-	if stateDir == "" {
-		stateDir = strings.TrimSpace(c.StateDir)
-	}
-	if stateDir == "" {
-		stateDir = defaultStateDir(cfgPath, strings.TrimSpace(c.Club.ID))
-	}
-	return stateDir, listen, hub
 }

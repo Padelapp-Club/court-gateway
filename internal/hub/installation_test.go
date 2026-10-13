@@ -19,11 +19,8 @@ import (
 )
 
 func demoClub(id, studio string, courts ...string) core.ClubSpec {
-	c := core.ClubSpec{ID: id, Name: "Клуб " + id, Timezone: "Europe/Moscow", SlotMinutes: 30,
-		Hours: map[string]string{"mon-sun": "07:00-23:00"}, CRM: map[string]any{"studio": studio}}
-	for i, name := range courts {
-		c.Courts = append(c.Courts, core.CourtSpec{ID: "court-" + string(rune('1'+i)), Name: name})
-	}
+	c := testkit.Club(id, "Клуб "+id, courts...)
+	c.CRM = map[string]any{"studio": studio}
 	return c
 }
 
@@ -35,7 +32,7 @@ func startOperatorHub(t *testing.T, opts hub.Options) *testkit.Hub {
 func demoInstallation(t *testing.T, h *testkit.Hub, id string, clubs ...core.ClubSpec) *testkit.Installation {
 	t.Helper()
 	return testkit.StartInstallation(t, h, id, testkit.InstallationOptions{
-		CRMYAML: "crm: { type: demo }\n", CRMType: "demo", Factory: demo.New, Account: demo.NewAccount, Clubs: clubs,
+		CRMYAML: testkit.DemoCRM, CRMType: "demo", Factory: demo.New, Account: demo.NewAccount, Clubs: clubs,
 	})
 }
 

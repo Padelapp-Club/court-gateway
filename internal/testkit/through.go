@@ -26,7 +26,7 @@ func ThroughHub(t *testing.T, b *contract.Built) (handler http.Handler, logs fun
 	t.Helper()
 	h := StartHub(t, "poll_wait: 2s\n"+HubPartnersYAML, contract.KeyEnv(), hub.Options{})
 	secret := h.Register(b.Settings.ClubID, b.Settings.ClubName)
-	gw := StartGateway(t, h.URL(), h.Transport(), secret, b.Clubs.TunnelHandler(), nil)
+	gw := StartGateway(t, ClientConfig(h.URL(), h.Transport(), secret, b.Clubs.TunnelHandler(), nil))
 	WaitFor(t, "gateway connected", 10*time.Second, func() bool {
 		return gw.Client.Connected() && h.Server().Broker().Connected(b.Settings.ClubID)
 	})

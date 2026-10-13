@@ -157,8 +157,8 @@ func TestSetupNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("written config does not load: %v", err)
 	}
-	if loaded.ClubID != "" || loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") || loaded.Listen != "" {
-		t.Fatalf("loaded: password ok=%v hub=%v listen=%q", loaded.Driver.Password == crmPass, loaded.Hub != nil, loaded.Listen)
+	if loaded.ClubID != "" || loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") {
+		t.Fatalf("loaded: password ok=%v hub=%v", loaded.Driver.Password == crmPass, loaded.Hub != nil)
 	}
 
 	// the same code twice, and an existing config
@@ -198,15 +198,6 @@ func TestSetupUsageNeverPrintsSecrets(t *testing.T) {
 			}
 		}
 	}
-}
-
-func hasWarning(r setup.Result, code string) bool {
-	for _, w := range r.Warnings {
-		if w.Code == code {
-			return true
-		}
-	}
-	return false
 }
 
 func TestSetupInteractiveAndPasswordStdin(t *testing.T) {

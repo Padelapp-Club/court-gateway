@@ -403,7 +403,7 @@ func allowed(method, p string) bool {
 	if p == PathDiscover {
 		return method == http.MethodPost
 	}
-	return p == "/health/live" || p == "/health/ready" || strings.HasPrefix(p, "/v1/")
+	return strings.HasPrefix(p, "/v1/")
 }
 
 // Execute runs one tunnelled request against the local handler. Exposed

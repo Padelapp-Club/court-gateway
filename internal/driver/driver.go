@@ -198,9 +198,3 @@ type Factory func(Config) (Driver, error)
 type Resourcer interface {
 	Resource(court string) string
 }
-
-// LoginChecker is implemented by drivers that can check the CRM login on
-// its own, separately from a data read (used by `doctor`).
-type LoginChecker interface {
-	CheckLogin(ctx context.Context) error
-}

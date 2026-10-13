@@ -108,9 +108,9 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 		w.crm.Driver = d
 		return w.crm, err
 	}
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", factory, nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", factory, nil)
 	w.secret = w.hub.Register("demo-club", "Демо-клуб")
-	w.gw = testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), w.secret, b.Clubs.TunnelHandler(), nil)
+	w.gw = testkit.StartGateway(t, testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), w.secret, b.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "connected", 10*time.Second, func() bool { return w.hub.Server().Broker().Connected("demo-club") })
 	w.check = &tunnel.SelfCheck{Ready: w.crm.Ready, Reason: core.ReadyReason, Interval: time.Minute,
 		Now: w.clock.Now, Version: "1.0.0", Build: tunnel.BuildRelease}

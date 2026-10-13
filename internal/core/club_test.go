@@ -29,10 +29,6 @@ func TestInstallationConfigWithoutClub(t *testing.T) {
 	if s.ClubID != "" || s.Driver.CRM["username"] != "admin" {
 		t.Fatalf("%+v", s)
 	}
-	// without a hub the club stays required
-	if _, err := Load([]byte("crm: { type: demo }\npartners: []\n"), env(goodEnv)); err == nil || !strings.Contains(err.Error(), "club.id: параметр обязателен") {
-		t.Fatalf("no hub, no club: %v", err)
-	}
 }
 
 func TestClubSpecJSONAndWithClub(t *testing.T) {
@@ -108,9 +104,6 @@ func TestValidateClubSpecNamesJSONKeys(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("missing %q in:\n%s", want, msg)
 		}
-	}
-	if strings.Contains(msg, "venue.") {
-		t.Errorf("JSON club errors name YAML keys:\n%s", msg)
 	}
 }
 

@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +35,7 @@ func TestServeRefusesBadConfigInRussian(t *testing.T) {
 	if code := run([]string{"serve", "-config", p}, &out, &errb, noEnv); code != 2 {
 		t.Fatalf("code %d", code)
 	}
-	if !strings.Contains(errb.String(), "club.name: параметр обязателен") {
+	if !strings.Contains(errb.String(), "неизвестный параметр «club»") {
 		t.Fatalf("stderr: %s", errb.String())
 	}
 	errb.Reset()
@@ -47,41 +45,32 @@ func TestServeRefusesBadConfigInRussian(t *testing.T) {
 	}
 }
 
+// healthcheck reads the status file the service writes next to its
+// config; it needs no secret and opens no connection.
 func TestHealthcheck(t *testing.T) {
-	status := http.StatusOK
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health/ready" {
-			http.NotFound(w, r)
-			return
-		}
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"status":"x"}`))
-	}))
-	defer srv.Close()
-	addr := strings.TrimPrefix(srv.URL, "http://")
-
-	var out, errb bytes.Buffer
-	if code := run([]string{"healthcheck", "-addr", addr}, &out, &errb, noEnv); code != 0 {
-		t.Fatalf("healthy: %d %s %s", code, out.String(), errb.String())
-	}
-	status = http.StatusServiceUnavailable
-	if code := run([]string{"healthcheck", "-addr", addr}, &out, &errb, noEnv); code != 1 {
-		t.Fatalf("unhealthy: %d", code)
-	}
-	// listen is read from the config; an unspecified host means loopback
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gateway.yaml")
-	_, port, _ := strings.Cut(addr, ":")
-	if err := os.WriteFile(p, []byte("listen: \"0.0.0.0:"+port+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("hub: { url: https://hub.example.test }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	status = http.StatusOK
-	if code := run([]string{"healthcheck", "-config", p}, &out, &errb, noEnv); code != 0 {
-		t.Fatalf("from config: %d %s", code, errb.String())
+	var out, errb bytes.Buffer
+	if code := run([]string{"healthcheck", "-config", p}, &out, &errb, noEnv); code != 1 {
+		t.Fatalf("no status file: %d", code)
 	}
-	srv.Close()
-	if code := run([]string{"healthcheck", "-addr", addr}, &out, &errb, noEnv); code != 1 {
-		t.Fatalf("down: %d", code)
+	for _, c := range []struct {
+		st   core.HealthStatus
+		code int
+	}{
+		{core.HealthStatus{Ready: true, Time: time.Now()}, 0},
+		{core.HealthStatus{Ready: false, Reason: "CRM_UNREACHABLE", Time: time.Now()}, 1},
+		{core.HealthStatus{Ready: true, Time: time.Now().Add(-4 * statusInterval)}, 1}, // stale: the service hangs
+	} {
+		if err := core.WriteHealthStatus(filepath.Join(dir, "state"), c.st); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"healthcheck", "-config", p}, &out, &errb, noEnv); code != c.code {
+			t.Fatalf("%+v: %d, want %d", c.st, code, c.code)
+		}
 	}
 }
 
@@ -95,8 +84,8 @@ func TestExampleConfigIsValid(t *testing.T) {
 	if _, err := drivers.Accounts[s.CRMType](s.Driver); err != nil {
 		t.Fatal(err)
 	}
-	if s.Listen != "" || s.Hub == nil || s.ClubID != "" {
-		t.Fatalf("the example must show a hub installation with no local port and no club: listen=%q club=%q", s.Listen, s.ClubID)
+	if s.ClubID != "" {
+		t.Fatalf("the example must show an installation with no club: club=%q", s.ClubID)
 	}
 }
 
@@ -108,10 +97,10 @@ func TestHubExampleConfigIsValid(t *testing.T) {
 	}
 }
 
-// Readiness is the CRM and, with a hub, the hub: not accepted, unreachable
-// for longer than the hub's offline threshold, or a club config refused.
+// Readiness is the CRM and the hub: not accepted, unreachable for longer
+// than the hub's offline threshold, or a club config refused.
 func TestReadinessIncludesTheHub(t *testing.T) {
-	ok := hubState{configured: true, connected: true}
+	ok := hubState{connected: true}
 	cases := []struct {
 		name     string
 		crmReady bool
@@ -120,12 +109,11 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		reason   string
 	}{
 		{"all well", true, ok, true, ""},
-		{"no hub", true, hubState{}, true, ""},
-		{"crm down wins", false, hubState{configured: true, authFailed: true}, false, "CRM_UNREACHABLE"},
-		{"secret rejected", true, hubState{configured: true, authFailed: true}, false, "HUB_AUTH_FAILED"},
-		{"hub gone briefly", true, hubState{configured: true, silentFor: time.Minute}, true, ""},
-		{"hub gone for long", true, hubState{configured: true, silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
-		{"config refused", true, hubState{configured: true, connected: true, configRefused: true}, false, "CONFIG_REFUSED"},
+		{"crm down wins", false, hubState{authFailed: true}, false, "CRM_UNREACHABLE"},
+		{"secret rejected", true, hubState{authFailed: true}, false, "HUB_AUTH_FAILED"},
+		{"hub gone briefly", true, hubState{silentFor: time.Minute}, true, ""},
+		{"hub gone for long", true, hubState{silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
+		{"config refused", true, hubState{connected: true, configRefused: true}, false, "CONFIG_REFUSED"},
 	}
 	for _, c := range cases {
 		reason := ""

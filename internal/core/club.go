@@ -14,18 +14,10 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-// ClubSpec is the configuration of one club: what gateway.yaml holds under
-// club, venue, courts and services, and what the hub stores per club of an
-// installation. Driver-specific keys (the club's part of the crm section,
-// court entries, services) are raw maps handed to the driver.
-//
-// JSON form (the hub's operator API and the gateway's config pull):
-//
-//	{"id": "club-one", "name": "Club One", "timezone": "Europe/Moscow",
-//	 "slot_minutes": 30, "hours": {"mon-fri": "07:00-23:00", "sat-sun": "08:00-22:00"},
-//	 "crm": {"studio": "..."},
-//	 "courts": [{"id": "court-1", "name": "Court 1", "viva_room": "...", "price_list": "..."}],
-//	 "services": {"booking": {"direction": 1, "type": 1}}}
+// ClubSpec is the configuration of one club as the hub stores it per
+// installation (docs/hub.md shows the JSON). Driver-specific keys (the
+// club's part of the crm section, court entries, services) are raw maps
+// handed to the driver.
 type ClubSpec struct {
 	ID          string                    `json:"id,omitempty"`
 	Name        string                    `json:"name"`
@@ -98,8 +90,6 @@ func (c *ClubSpec) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func sortedKeys(m map[string]any) []string { return slices.Sorted(maps.Keys(m)) }
-
 func normalizeMap(m map[string]any) map[string]any {
 	for k, v := range m {
 		m[k] = normalize(v)
@@ -126,23 +116,15 @@ func normalize(v any) any {
 	}
 }
 
-// clubPaths name the config keys in messages: gateway.yaml spells them
-// club.id, venue.timezone...; a club on the hub spells them id, timezone...
-type clubPaths struct {
-	id, name, tz, slot, hours, courts, services string
-}
-
-var (
-	filePaths   = clubPaths{"club.id", "club.name", "venue.timezone", "venue.slot_minutes", "venue.hours", "courts", "services"}
-	remotePaths = clubPaths{"id", "name", "timezone", "slot_minutes", "hours", "courts", "services"}
-)
+// ValidID reports whether id is a valid club or court id.
+func ValidID(id string) bool { return slugRe.MatchString(id) }
 
 // applyClub validates c and writes it into s (whose installation part is
 // already filled). crmKeys are the keys c.CRM may set: a club from the hub
 // may set its own keys (the studio) but never the installation's (the
 // login, the CRM endpoints), or the hub could send the CRM password to a
 // host of its choice. It returns the problems found, in Russian.
-func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string {
+func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 	var errs []string
 	add := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
 
@@ -150,40 +132,40 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string 
 	s.ClubName = strings.TrimSpace(c.Name)
 	switch {
 	case s.ClubID == "":
-		add("%s: параметр обязателен (короткое имя латиницей, например my-club)", p.id)
+		add("id: параметр обязателен (короткое имя латиницей, например my-club)")
 	case !slugRe.MatchString(s.ClubID):
-		add("%s: «%s» — допустимы строчные латинские буквы, цифры и дефис, до 63 символов", p.id, s.ClubID)
+		add("id: «%s» — допустимы строчные латинские буквы, цифры и дефис, до 63 символов", s.ClubID)
 	}
 	if s.ClubName == "" {
-		add("%s: параметр обязателен (название клуба)", p.name)
+		add("name: параметр обязателен (название клуба)")
 	}
 
 	s.TimezoneName = strings.TrimSpace(c.Timezone)
 	s.Location = nil
 	if s.TimezoneName == "" {
-		add("%s: параметр обязателен (например Europe/Moscow)", p.tz)
+		add("timezone: параметр обязателен (например Europe/Moscow)")
 	} else if loc, err := time.LoadLocation(s.TimezoneName); err != nil {
-		add("%s: неизвестный часовой пояс «%s» (пример: Europe/Moscow)", p.tz, s.TimezoneName)
+		add("timezone: неизвестный часовой пояс «%s» (пример: Europe/Moscow)", s.TimezoneName)
 	} else {
 		s.Location = loc
 	}
 	s.SlotMinutes = c.SlotMinutes
 	slotOK := true
 	if s.SlotMinutes < 5 || s.SlotMinutes > 240 || 1440%s.SlotMinutes != 0 {
-		add("%s: %d — шаг сетки в минутах, от 5 до 240, и сутки должны делиться на него без остатка (например 30 или 60)", p.slot, s.SlotMinutes)
+		add("slot_minutes: %d — шаг сетки в минутах, от 5 до 240, и сутки должны делиться на него без остатка (например 30 или 60)", s.SlotMinutes)
 		slotOK = false
 	}
 	s.Hours = [7]*DayHours{}
 	if len(c.Hours) == 0 {
-		add("%s: параметр обязателен (часы работы по дням недели, например mon-fri: \"07:00-23:00\")", p.hours)
+		add("hours: параметр обязателен (часы работы по дням недели, например mon-fri: \"07:00-23:00\")")
 	} else {
-		hours, herrs := parseHours(p.hours, c.Hours)
+		hours, herrs := parseHours("hours", c.Hours)
 		errs = append(errs, herrs...)
 		s.Hours = hours
 		if slotOK && len(herrs) == 0 {
 			for i, h := range hours {
 				if h != nil && (h.Open%s.SlotMinutes != 0 || h.Close%s.SlotMinutes != 0) {
-					add("%s: часы работы в %s не совпадают с сеткой %d мин", p.hours, dayNamesRu[i], s.SlotMinutes)
+					add("hours: часы работы в %s не совпадают с сеткой %d мин", dayNamesRu[i], s.SlotMinutes)
 				}
 			}
 		}
@@ -191,11 +173,11 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string 
 
 	s.Courts, s.Driver.Courts = nil, nil
 	if len(c.Courts) == 0 {
-		add("%s: нужен хотя бы один корт", p.courts)
+		add("courts: нужен хотя бы один корт")
 	}
 	seenCourt := map[string]bool{}
 	for i, ct := range c.Courts {
-		path := fmt.Sprintf("%s[%d]", p.courts, i)
+		path := fmt.Sprintf("courts[%d]", i)
 		id := strings.TrimSpace(ct.ID)
 		name := strings.TrimSpace(ct.Name)
 		switch {
@@ -217,7 +199,7 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string 
 	s.Driver.Services = map[string]driver.Params{}
 	for k, v := range c.Services {
 		if k != "booking" && k != "tournament" {
-			add("%s: неизвестная услуга «%s» (допустимы booking и tournament)", p.services, k)
+			add("services: неизвестная услуга «%s» (допустимы booking и tournament)", k)
 			continue
 		}
 		if v == nil {
@@ -227,11 +209,11 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string 
 	}
 
 	// the club's part of the crm section goes over the installation's
-	crm := driver.Params{}
-	for k, v := range s.installCRM {
-		crm[k] = v
+	crm := maps.Clone(s.installCRM)
+	if crm == nil {
+		crm = driver.Params{}
 	}
-	for _, k := range sortedKeys(c.CRM) {
+	for _, k := range slices.Sorted(maps.Keys(c.CRM)) {
 		if !slices.Contains(crmKeys, k) {
 			add("crm.%s: задаётся только в gateway.yaml установки, не в клубе (клуб может задать: %s)", k, strings.Join(crmKeys, ", "))
 			continue
@@ -245,13 +227,13 @@ func applyClub(s *Settings, c ClubSpec, p clubPaths, crmKeys []string) []string 
 }
 
 // WithClub returns the settings of one club served by this installation:
-// the installation part of base (CRM type and login, hub, partners) with
+// the installation part of base (CRM type and login, the hub) with
 // the club spec applied. crmKeys are the crm keys a club may set (see
 // drivers.ClubCRMKeys). It never modifies base.
 func (base *Settings) WithClub(c ClubSpec, crmKeys []string) (*Settings, error) {
 	s := *base
 	s.Driver.Courts, s.Driver.Services = nil, nil
-	if errs := applyClub(&s, c, remotePaths, crmKeys); len(errs) > 0 {
+	if errs := applyClub(&s, c, crmKeys); len(errs) > 0 {
 		id := strings.TrimSpace(c.ID)
 		for i := range errs {
 			errs[i] = "клуб «" + id + "»: " + errs[i]
@@ -267,7 +249,7 @@ func (base *Settings) WithClub(c ClubSpec, crmKeys []string) (*Settings, error) 
 // knows its CRM.
 func ValidateClubSpec(c ClubSpec, crmKeys []string) error {
 	s := &Settings{}
-	if errs := applyClub(s, c, remotePaths, crmKeys); len(errs) > 0 {
+	if errs := applyClub(s, c, crmKeys); len(errs) > 0 {
 		return &ConfigError{Problems: errs}
 	}
 	return nil

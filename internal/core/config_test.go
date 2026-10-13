@@ -8,30 +8,27 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-const validConfig = `club: { id: my-club, name: "Мой клуб" }
-crm: { type: demo }
-venue:
-  timezone: Europe/Moscow
-  slot_minutes: 30
-  hours: { mon-fri: "07:00-23:00", sat: "08:00-24:00", sun: closed }
-courts:
-  - { id: court-1, name: "Корт 1", room: abc }
-services:
-  booking: { direction: 12, type: 3 }
-partners:
-  - { name: aggregator, key_env: PARTNER_KEY_1, scopes: [read, book], writes_per_minute: 10 }
-`
-
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
-var goodEnv = map[string]string{"PARTNER_KEY_1": "k-0123456789abcdef0123456789", "CRM_PASSWORD": "pw-secret"}
+var goodEnv = map[string]string{DefaultHubSecretEnv: "cgs_test", "CRM_PASSWORD": "pw-secret"}
+
+func testClub() ClubSpec {
+	return ClubSpec{ID: "my-club", Name: "Мой клуб", Timezone: "Europe/Moscow", SlotMinutes: 30,
+		Hours:    map[string]string{"mon-fri": "07:00-23:00", "sat": "08:00-24:00", "sun": "closed"},
+		Courts:   []CourtSpec{{ID: "court-1", Name: "Корт 1", Params: map[string]any{"room": "abc"}}},
+		Services: map[string]map[string]any{"booking": {"direction": 12, "type": 3}}}
+}
 
 func TestLoadValid(t *testing.T) {
-	s, err := Load([]byte(validConfig), env(goodEnv))
+	base, err := Load([]byte(hubInstallation), env(goodEnv))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.ClubID != "my-club" || s.Listen != DefaultListen || s.SlotMinutes != 30 || s.Location.String() != "Europe/Moscow" {
+	s, err := base.WithClub(testClub(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ClubID != "my-club" || s.SlotMinutes != 30 || s.Location.String() != "Europe/Moscow" {
 		t.Fatalf("%+v", s)
 	}
 	if h := s.Hours[0]; h == nil || h.Open != 420 || h.Close != 1380 {
@@ -46,74 +43,24 @@ func TestLoadValid(t *testing.T) {
 	if s.Driver.Courts[0].Params["room"] != "abc" || s.Driver.Services["booking"]["type"] != 3 {
 		t.Fatalf("driver params not passed through: %+v", s.Driver)
 	}
-	if s.Partners[0].WritesPerMinute != 10 || s.Partners[0].Key != goodEnv["PARTNER_KEY_1"] {
-		t.Fatalf("partner = %+v", s.Partners[0])
-	}
 	if s.Driver.Password != "pw-secret" {
 		t.Fatal("password not passed")
 	}
-	joined := strings.Join(s.Secrets, "|")
-	if !strings.Contains(joined, "pw-secret") || !strings.Contains(joined, goodEnv["PARTNER_KEY_1"]) {
+	if !strings.Contains(strings.Join(s.Secrets, "|"), "pw-secret") {
 		t.Fatal("secrets not collected for redaction")
 	}
 }
 
-func TestLoadReportsEveryProblemInRussian(t *testing.T) {
-	bad := `club: { id: "My Club" }
-listen: "nonsense"
-crm: {}
-venue: { timezone: Mars/Olympus, slot_minutes: 7, hours: { mon-fri: "23:00-07:00", sat: "8-9" } }
-courts:
-  - { id: court-1, name: A }
-  - { id: court-1, name: "" }
-services: { training: { direction: 1, type: 1 } }
-partners:
-  - { name: Agg, key_env: lower_case, scopes: [write] }
-  - { name: b, key_env: SHORT_KEY, scopes: [] }
-  - { name: c, key_env: MISSING_KEY, scopes: [read] }
-`
-	_, err := Load([]byte(bad), env(map[string]string{"SHORT_KEY": "short"}))
-	var ce *ConfigError
-	if !errors.As(err, &ce) {
-		t.Fatalf("err = %v", err)
-	}
-	msg := err.Error()
-	for _, want := range []string{
-		"club.id: «My Club»",
-		"club.name: параметр обязателен",
-		"listen: «nonsense»",
-		"crm.type: параметр обязателен",
-		"неизвестный часовой пояс «Mars/Olympus»",
-		"venue.slot_minutes: 7",
-		"закрытие должно быть позже открытия",
-		"venue.hours.sat: «8-9»",
-		"не указаны часы на воскресенье",
-		"корт «court-1» указан дважды",
-		"courts[1].name: параметр обязателен",
-		"неизвестная услуга «training»",
-		"partners[0].name: «Agg»",
-		"partners[0].key_env: «lower_case»",
-		"неизвестное право «write»",
-		"ключ в SHORT_KEY слишком короткий",
-		"partners[1].scopes: укажите права",
-		"переменная окружения MISSING_KEY не задана",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("missing %q in:\n%s", want, msg)
-		}
-	}
-}
-
 func TestLoadYAMLErrorsAreTranslated(t *testing.T) {
-	_, err := Load([]byte("club: { id: a, name: b }\nlisten: :8080\ncrm: { type: demo }\nvenu: {}\n"), env(goodEnv))
+	_, err := Load([]byte(hubInstallation+"venu: {}\n"), env(goodEnv))
 	if err == nil || !strings.Contains(err.Error(), "неизвестный параметр «venu»") {
 		t.Fatalf("unknown top-level key: %v", err)
 	}
-	_, err = Load([]byte("venue: { slot_minutes: thirty }\n"), env(goodEnv))
+	_, err = Load([]byte("hub: { polls: four }\n"), env(goodEnv))
 	if err == nil || !strings.Contains(err.Error(), "ожидается целое число") {
 		t.Fatalf("type error: %v", err)
 	}
-	_, err = Load([]byte("club: [unclosed\n"), env(goodEnv))
+	_, err = Load([]byte("hub: [unclosed\n"), env(goodEnv))
 	if err == nil || !strings.Contains(err.Error(), "ошибка синтаксиса YAML") {
 		t.Fatalf("syntax error: %v", err)
 	}
@@ -123,29 +70,56 @@ func TestLoadYAMLErrorsAreTranslated(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsSharedKeysAndPasswordEnv(t *testing.T) {
-	cfg := strings.Replace(validConfig, "partners:\n", "partners:\n  - { name: twin, key_env: PARTNER_KEY_1, scopes: [read] }\n  - { name: pw, key_env: CRM_PASSWORD, scopes: [read] }\n", 1)
-	_, err := Load([]byte(cfg), env(goodEnv))
-	if err == nil || !strings.Contains(err.Error(), "одинаковый ключ") || !strings.Contains(err.Error(), "занята паролем CRM") {
-		t.Fatalf("err = %v", err)
+// Partner keys live on the hub only; the gateway has no local port and no
+// club of its own, so their former sections are unknown keys.
+func TestLoadRefusesTheLocalMode(t *testing.T) {
+	for _, section := range []string{"listen: \":8080\"\n", "partners: []\n", "club: { id: x }\n", "courts: []\n", "venue: {}\n"} {
+		if _, err := Load([]byte(hubInstallation+section), env(goodEnv)); err == nil || !strings.Contains(err.Error(), "неизвестный параметр") {
+			t.Errorf("%q accepted: %v", section, err)
+		}
+	}
+	if _, err := Load([]byte("crm: { type: demo }\n"), env(goodEnv)); err == nil || !strings.Contains(err.Error(), "hub: раздел обязателен") {
+		t.Fatalf("no hub: %v", err)
+	}
+}
+
+func TestParsePartnersRefusesSharedKeysAndPasswordEnv(t *testing.T) {
+	var problems []string
+	add := func(f string, a ...any) { problems = append(problems, f) }
+	ParsePartners([]PartnerEntry{
+		{Name: "Agg", KeyEnv: "lower_case", Scopes: []string{"write"}},
+		{Name: "b", KeyEnv: "SHORT_KEY"},
+		{Name: "one", KeyEnv: "K1", Scopes: []string{"read"}},
+		{Name: "twin", KeyEnv: "K2", Scopes: []string{"read"}},
+		{Name: "pw", KeyEnv: PasswordEnv, Scopes: []string{"read"}},
+	}, env(map[string]string{"SHORT_KEY": "short", "K1": "k-0123456789abcdef0123456789", "K2": "k-0123456789abcdef0123456789"}), add)
+	msg := strings.Join(problems, "\n")
+	for _, want := range []string{"допустимы строчные", "имя переменной окружения", "неизвестное право", "слишком короткий", "укажите права", "одинаковый ключ", "занята паролем CRM"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("missing %q in:\n%s", want, msg)
+		}
 	}
 }
 
 func TestHoursMustFitSlotGrid(t *testing.T) {
-	cfg := strings.Replace(validConfig, `mon-fri: "07:00-23:00"`, `mon-fri: "07:15-23:00"`, 1)
-	_, err := Load([]byte(cfg), env(goodEnv))
-	if err == nil || !strings.Contains(err.Error(), "не совпадают с сеткой 30 мин") {
+	c := testClub()
+	c.Hours["mon-fri"] = "07:15-23:00"
+	if err := ValidateClubSpec(c, nil); err == nil || !strings.Contains(err.Error(), "не совпадают с сеткой 30 мин") {
 		t.Fatalf("err = %v", err)
 	}
-	cfg = strings.Replace(validConfig, `mon-fri: "07:00-23:00"`, `mon-fri: "07:00-23:00", fri: closed`, 1)
-	_, err = Load([]byte(cfg), env(goodEnv))
-	if err == nil || !strings.Contains(err.Error(), "указаны дважды") {
+	c = testClub()
+	c.Hours["fri"] = "closed"
+	if err := ValidateClubSpec(c, nil); err == nil || !strings.Contains(err.Error(), "указаны дважды") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestBuildDriverUnknownTypeAndDriverErrors(t *testing.T) {
-	s, err := Load([]byte(validConfig), env(goodEnv))
+	base, err := Load([]byte(hubInstallation), env(goodEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := base.WithClub(testClub(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
