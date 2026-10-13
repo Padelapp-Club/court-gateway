@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -572,13 +573,21 @@ func (s *Stub) handlePricingList(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	sort.Strings(ids)
-	content := []map[string]any{}
-	if r.URL.Query().Get("studioId") == s.Studio {
-		for _, id := range ids {
-			content = append(content, map[string]any{"id": id, "name": "Price list", "usages": map[string]any{}})
-		}
+	if r.URL.Query().Get("studioId") != s.Studio {
+		ids = nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"content": content, "totalElements": len(content)})
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if size <= 0 {
+		size = 20
+	}
+	pages := (len(ids) + size - 1) / size
+	content := []map[string]any{}
+	for _, id := range ids[min(page*size, len(ids)):min((page+1)*size, len(ids))] {
+		content = append(content, map[string]any{"id": id, "name": "Price list", "usages": map[string]any{}})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"content": content, "totalElements": len(ids), "totalPages": pages,
+		"number": page, "size": size, "last": page+1 >= pages})
 }
 
 func (s *Stub) handlePricing(w http.ResponseWriter, id string) {

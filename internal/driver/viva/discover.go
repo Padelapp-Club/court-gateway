@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -90,11 +91,15 @@ func studioClock(s string) (int, bool) {
 }
 
 // studioHours turns workTime into hours per ISO weekday. from == to means
-// open around the clock; a day missing from workTime is unknown (nil).
-func studioHours(wt *vivaWorkTime) ([7]*[2]int, bool) {
-	var out [7]*[2]int
+// open around the clock; a day missing from workTime is closed. Hours past
+// midnight (Monday 20:00–02:00) belong to the next day: Tuesday opens at
+// 00:00, joined to its own hours when they start by then. A club has one
+// span a day, so a night that does not join the next day's own hours is
+// left to the operator, with a notice.
+func studioHours(wt *vivaWorkTime) ([7]*[2]int, []driver.Notice, bool) {
+	var own, carry [7]*[2]int
 	if wt == nil || len(wt.Daily) == 0 {
-		return out, false
+		return own, nil, false
 	}
 	found := false
 	for i, name := range vivaDays {
@@ -113,13 +118,34 @@ func studioHours(wt *vivaWorkTime) ([7]*[2]int, bool) {
 		case to == 0:
 			to = 1440
 		case to < from:
-			to = 1440 // past midnight is not supported by the gateway: until midnight
+			carry[(i+1)%7] = &[2]int{0, to}
+			to = 1440
 		}
-		out[i] = &[2]int{from, to}
+		own[i] = &[2]int{from, to}
 		found = true
 	}
-	return out, found
+	out := own
+	var notices []driver.Notice
+	for i, c := range carry {
+		switch {
+		case c == nil:
+		case own[i] == nil:
+			out[i] = c
+		case own[i][0] <= c[1]:
+			out[i] = &[2]int{0, max(own[i][1], c[1])}
+		default:
+			prev := (i + 6) % 7
+			notices = append(notices, driver.Notice{Code: "HOURS_UNRESOLVED", Message: fmt.Sprintf(
+				"студия работает за полночь (%s до %s), а %s открывается в %s: у дня в часах клуба одно окно — впишите часы на %s вручную",
+				shortDays[prev], hhmm(c[1]), shortDays[i], hhmm(own[i][0]), shortDays[i])})
+		}
+	}
+	return out, notices, found
 }
+
+var shortDays = [7]string{"пн", "вт", "ср", "чт", "пт", "сб", "вс"}
+
+func hhmm(m int) string { return fmt.Sprintf("%02d:%02d", m/60, m%60) }
 
 // zoneForOffset is a fixed-offset IANA zone for a whole number of hours
 // (Etc/GMT-3 is UTC+3: the sign is inverted in that namespace).
@@ -138,63 +164,98 @@ func zoneForOffset(off *float64) string {
 	}
 }
 
-// priceListInfo is a price list of a studio and the hours its TIME rules cover.
+// priceLists are the price lists of a studio and the hours their rules
+// cover; incomplete when there were more pages than the driver reads.
 type priceLists struct {
-	lists  []driver.PriceListInfo
-	hours  [7]*[2]int
-	failed int
+	lists      []driver.PriceListInfo
+	hours      [7]*[2]int
+	failed     int
+	incomplete bool
 }
+
+// pricePageSize and maxPricePages bound how many price lists discovery
+// reads (each also costs a read of the list itself).
+const pricePageSize = 200
+
+var maxPricePages = 5
 
 func readPriceLists(ctx context.Context, c *client, studio string) (priceLists, error) {
 	var out priceLists
-	status, data, err := c.do(ctx, http.MethodGet, "/pricing", url.Values{"studioId": {studio}, "page": {"0"}, "size": {"200"}}, nil)
-	if err != nil {
-		return out, err
-	}
-	if status != http.StatusOK {
-		return out, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing answered HTTP %d", status), nil)
-	}
-	var page struct {
-		Content []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(data, &page); err != nil {
-		return out, driver.Upstream(driver.UpstreamInvalid, "GET /pricing: malformed page", nil)
-	}
-	for _, p := range page.Content {
-		if !uuidRe.MatchString(p.ID) {
-			continue
+	for n := 0; ; n++ {
+		if n == maxPricePages {
+			out.incomplete = true
+			return out, nil
 		}
-		out.lists = append(out.lists, driver.PriceListInfo{ID: strings.ToLower(p.ID), Name: strings.TrimSpace(p.Name)})
-		status, body, err := c.do(ctx, http.MethodGet, "/pricing/"+p.ID, nil, nil)
+		q := url.Values{"studioId": {studio}, "page": {strconv.Itoa(n)}, "size": {strconv.Itoa(pricePageSize)}}
+		status, data, err := c.do(ctx, http.MethodGet, "/pricing", q, nil)
 		if err != nil {
 			return out, err
 		}
-		var table driver.PriceTable
-		if status == http.StatusOK {
-			table, err = parsePricing(body)
+		if status != http.StatusOK {
+			return out, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing answered HTTP %d", status), nil)
 		}
-		if status != http.StatusOK || err != nil {
-			out.failed++
-			continue
+		var page struct {
+			Content []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"content"`
+			Last       *bool `json:"last"`
+			TotalPages *int  `json:"totalPages"`
 		}
-		for _, rule := range table.Base {
-			for d, on := range rule.Days {
-				if !on {
-					continue
-				}
-				if out.hours[d] == nil {
-					out.hours[d] = &[2]int{rule.From, rule.To}
-					continue
-				}
-				out.hours[d][0] = min(out.hours[d][0], rule.From)
-				out.hours[d][1] = max(out.hours[d][1], rule.To)
+		if err := json.Unmarshal(data, &page); err != nil {
+			return out, driver.Upstream(driver.UpstreamInvalid, "GET /pricing: malformed page", nil)
+		}
+		for _, p := range page.Content {
+			if err := out.add(ctx, c, p.ID, p.Name); err != nil {
+				return out, err
 			}
 		}
+		more := page.TotalPages != nil && n+1 < *page.TotalPages
+		if page.Last != nil {
+			more = !*page.Last
+		}
+		if !more {
+			return out, nil
+		}
+		if len(page.Content) == 0 {
+			out.incomplete = true // "more" with an empty page: do not loop
+			return out, nil
+		}
 	}
-	return out, nil
+}
+
+// add reads one price list and widens the hours its base rules cover.
+func (out *priceLists) add(ctx context.Context, c *client, id, name string) error {
+	if !uuidRe.MatchString(id) {
+		return nil
+	}
+	out.lists = append(out.lists, driver.PriceListInfo{ID: strings.ToLower(id), Name: strings.TrimSpace(name)})
+	status, body, err := c.do(ctx, http.MethodGet, "/pricing/"+id, nil, nil)
+	if err != nil {
+		return err
+	}
+	var table driver.PriceTable
+	if status == http.StatusOK {
+		table, err = parsePricing(body)
+	}
+	if status != http.StatusOK || err != nil {
+		out.failed++
+		return nil
+	}
+	for _, rule := range table.Base {
+		for d, on := range rule.Days {
+			if !on {
+				continue
+			}
+			if out.hours[d] == nil {
+				out.hours[d] = &[2]int{rule.From, rule.To}
+				continue
+			}
+			out.hours[d][0] = min(out.hours[d][0], rule.From)
+			out.hours[d][1] = max(out.hours[d][1], rule.To)
+		}
+	}
+	return nil
 }
 
 // naturalLess orders "Корт 2" before "Корт 10".
