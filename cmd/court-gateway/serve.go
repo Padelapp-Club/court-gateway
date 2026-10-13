@@ -163,6 +163,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 			}
 			cs := syncer.State()
 			hs.configRefused = cs.ConfigError != ""
+			hs.configBehind = syncer.Behind()
 			if due {
 				crm = hb
 				hb.Ready, hb.Reason = readiness(hb.Ready, hb.Reason, hs)
@@ -308,13 +309,18 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 // gateway reports itself not ready (the hub's default offline_after).
 const hubOfflineAfter = 3 * time.Minute
 
+// configPendingAfter is how long the gateway may run another club config
+// version than the hub's (it could not pull it) before it is not ready.
+const configPendingAfter = 3 * time.Minute
+
 // hubState is what readiness needs to know about the hub connection.
 type hubState struct {
 	connected     bool
 	authFailed    bool // the hub rejected the gateway secret
 	duplicate     bool // the hub serves another copy with the same secret
 	silentFor     time.Duration
-	configRefused bool // a club of the hub's config does not load
+	configRefused bool          // a club of the hub's config does not load
+	configBehind  time.Duration // how long the hub's config version has not been applied
 }
 
 func (h hubState) String() string {
@@ -337,6 +343,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "DUPLICATE_GATEWAY"
 	case !h.connected && h.silentFor > hubOfflineAfter:
 		return false, "HUB_UNREACHABLE"
+	case h.configBehind > configPendingAfter:
+		return false, "CONFIG_PENDING"
 	case h.configRefused:
 		return false, "CONFIG_REFUSED"
 	}

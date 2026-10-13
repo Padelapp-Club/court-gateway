@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
@@ -138,5 +139,34 @@ func TestUnknownClubFieldsAreIgnoredAndLoggedOnce(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "future_field"); n != 1 {
 		t.Fatalf("unknown field logged %d times:\n%s", n, logs.String())
+	}
+}
+
+// Behind measures how long the gateway has run another club config
+// version than the hub announces (a config it cannot pull): readiness
+// reports CONFIG_PENDING once that lasts too long.
+func TestBehindMeasuresAnUnappliedVersion(t *testing.T) {
+	now := time.Date(2030, 1, 7, 12, 0, 0, 0, time.UTC)
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Now: func() time.Time { return now }})
+	if d := s.Behind(); d != 0 {
+		t.Fatalf("before any announcement: %v", d)
+	}
+	s.Notify(1)
+	now = now.Add(time.Minute)
+	s.Notify(1) // announced again: still counted from the first time
+	now = now.Add(3 * time.Minute)
+	if d := s.Behind(); d != 4*time.Minute {
+		t.Fatalf("version 1 never applied: %v", d)
+	}
+	if err := s.Apply(context.Background(), tunnel.RemoteConfig{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Behind(); d != 0 {
+		t.Fatalf("applied: %v", d)
+	}
+	s.Notify(2)
+	now = now.Add(time.Minute)
+	if d := s.Behind(); d != time.Minute {
+		t.Fatalf("version 2 announced a minute ago: %v", d)
 	}
 }

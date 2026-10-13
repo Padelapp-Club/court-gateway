@@ -127,6 +127,8 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		{"hub gone briefly", true, hubState{silentFor: time.Minute}, true, ""},
 		{"hub gone for long", true, hubState{silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
 		{"config refused", true, hubState{connected: true, configRefused: true}, false, "CONFIG_REFUSED"},
+		{"config not pulled briefly", true, hubState{connected: true, configBehind: time.Minute}, true, ""},
+		{"config not pulled for long", true, hubState{connected: true, configBehind: configPendingAfter + time.Second}, false, "CONFIG_PENDING"},
 	}
 	for _, c := range cases {
 		reason := ""

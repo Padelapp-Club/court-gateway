@@ -36,6 +36,7 @@ type Syncer struct {
 	log       *slog.Logger
 	hook      func(*driver.Config)
 	retry     time.Duration
+	now       func() time.Time
 
 	notify chan int64
 
@@ -43,6 +44,8 @@ type Syncer struct {
 
 	mu         sync.Mutex
 	applied    int64
+	hub        int64                   // the hub's version, as last announced
+	behind     time.Time               // since when applied differs from hub
 	configured map[string]bool         // clubs of the applied config
 	waiting    map[string]*core.Server // built, not yet confirmed by the CRM
 	refused    map[string]string       // club -> why its config is not served
@@ -62,6 +65,8 @@ type Options struct {
 	DriverHook func(*driver.Config)
 	// Retry is the wait after a failed pull (default 5s).
 	Retry time.Duration
+	// Now is the clock (default time.Now).
+	Now func() time.Time
 }
 
 // New builds a Syncer.
@@ -72,7 +77,10 @@ func New(o Options) *Syncer {
 	if o.Retry <= 0 {
 		o.Retry = 5 * time.Second
 	}
-	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch,
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch, now: o.Now,
 		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1, refused: map[string]string{}, ignored: map[string]bool{}}
 }
 
@@ -82,6 +90,10 @@ func (s *Syncer) SetFetch(f func(context.Context) (tunnel.RemoteConfig, error)) 
 // Notify hands over the hub's current version (latest wins). It never
 // blocks: it is called from the tunnel's poll loop.
 func (s *Syncer) Notify(v int64) {
+	s.mu.Lock()
+	s.hub = v
+	s.track()
+	s.mu.Unlock()
 	for {
 		select {
 		case s.notify <- v:
@@ -112,6 +124,28 @@ func (s *Syncer) State() tunnel.AppliedConfig {
 		}
 	}
 	return st
+}
+
+// track notes since when the applied version differs from the hub's;
+// s.mu must be held.
+func (s *Syncer) track() {
+	switch {
+	case s.applied == s.hub:
+		s.behind = time.Time{}
+	case s.behind.IsZero():
+		s.behind = s.now()
+	}
+}
+
+// Behind is how long the applied config has differed from the hub's
+// version (0 when it does not): a config that cannot be pulled.
+func (s *Syncer) Behind() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.behind.IsZero() {
+		return 0
+	}
+	return s.now().Sub(s.behind)
 }
 
 func (s *Syncer) wanted(v int64) bool {
@@ -180,6 +214,7 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 		s.log.Warn("club config from the hub has fields this version does not know; they are ignored", "fields", strings.Join(fresh, ","))
 	}
 	s.applied = rc.Version
+	s.track()
 	s.configured, s.waiting, s.refused = map[string]bool{}, map[string]*core.Server{}, map[string]string{}
 	var problems []string
 	for _, r := range refused {
