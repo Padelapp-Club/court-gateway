@@ -236,7 +236,11 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 		out = append(out, Check{Code: CodeHubReach, Status: Fail, Message: msg, Hint: "проверьте интернет и адрес hub.url; входящие порты открывать не нужно"})
 		return skipRest(1, "хаб недоступен"), nil
 	}
-	out = append(out, Check{Code: CodeHubReach, Status: OK, Message: "хаб отвечает, сертификат проверен"})
+	reach := "хаб отвечает, сертификат проверен"
+	if strings.HasPrefix(s.Hub.URL, "http://") {
+		reach = "хаб отвечает (loopback без TLS)"
+	}
+	out = append(out, Check{Code: CodeHubReach, Status: OK, Message: reach})
 	who, err := tunnel.FetchWhoami(hctx, rt, s.Hub.URL, s.Hub.Secret)
 	switch {
 	case errors.Is(err, tunnel.ErrUnauthorized):

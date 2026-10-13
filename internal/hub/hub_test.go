@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
@@ -376,5 +379,57 @@ func TestHubRefusesNonCanonicalPaths(t *testing.T) {
 		if code, body := get(p); code != http.StatusNotFound && code != http.StatusMovedPermanently {
 			t.Errorf("%s: %d %s", p, code, body)
 		}
+	}
+}
+
+// A hub that stops ends its gateways' long polls at once: it stops within
+// a second with no error, though a gateway was polling. Served over plain
+// HTTP, it says that gateways use that only on loopback.
+func TestHubStopsPromptlyAndCleanly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	settings, err := hub.Load([]byte("listen: "+addr+"\nstate_dir: "+t.TempDir()+"\npoll_wait: 25s\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := hub.OpenStore(settings.StateDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &contract.LogBuffer{}
+	log := core.NewLogger(logs, slog.LevelDebug, nil)
+	srv, err := hub.NewServer(settings, store, hub.Options{Logger: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	ran := make(chan error, 1)
+	go func() { ran <- hub.Run(ctx, settings, srv, log) }()
+	url := "http://" + addr
+	jc, _ := hub.CreateJoinCode(settings.StateDir, "stop-net", "", time.Hour, time.Now())
+	var rr tunnel.RegisterResponse
+	testkit.WaitFor(t, "the hub listens", 5*time.Second, func() bool {
+		rr, err = tunnel.Register(context.Background(), http.DefaultTransport, url, jc.Code, "1.0.0")
+		return err == nil
+	})
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
+	testkit.StartGateway(t, testkit.ClientConfig(url, http.DefaultTransport, store.HubKey(), "stop-net", rr.Secret, b.Clubs.TunnelHandler(), nil))
+	testkit.WaitFor(t, "a gateway polls", 5*time.Second, func() bool { return srv.Broker().Connected("stop-net") })
+	start := time.Now()
+	stop()
+	select {
+	case err := <-ran:
+		if err != nil || time.Since(start) > time.Second {
+			t.Fatalf("stopped after %s: %v", time.Since(start), err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the hub did not stop")
+	}
+	if strings.Contains(logs.String(), `"level":"ERROR"`) || !strings.Contains(logs.String(), "plain http only to a loopback address") {
+		t.Fatalf("log:\n%s", logs)
 	}
 }

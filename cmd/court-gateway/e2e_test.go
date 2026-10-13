@@ -589,3 +589,26 @@ func TestRestartedServiceIsServedAtOnce(t *testing.T) {
 		testkit.WaitFor(t, "disconnected", 10*time.Second, func() bool { return !broker.Connected("club-one") })
 	}
 }
+
+// A config the service applies reaches the hub at once, not with the next
+// minute's self-check: doctor half a minute after setup sees it applied.
+func TestAppliedConfigIsReportedAtOnce(t *testing.T) {
+	s := newStack(t)
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, filepath.Join(s.dir, "gateway.yaml"), "", &contract.LogBuffer{}, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	mon := s.hub.Server().Monitor()
+	testkit.WaitFor(t, "the first heartbeat", 15*time.Second, func() bool { return mon.Health("club-one").Checked })
+	s.hub.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/club-one/clubs/club-one", core.ClubSpec{
+		ID: "club-one", Name: "Клуб Один", Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "07:00-23:00"},
+		CRM: map[string]any{"studio": studio}, Courts: []core.CourtSpec{{ID: "court-1", Name: "Корт 10", Params: map[string]any{"viva_room": roomA}}}})
+	testkit.WaitFor(t, "the hub hears of the applied config", 10*time.Second, func() bool {
+		h := mon.Health("club-one")
+		return h.ConfigVersion == 1 && strings.Join(h.Clubs, ",") == "club-one"
+	})
+}

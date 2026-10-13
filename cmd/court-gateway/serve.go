@@ -150,8 +150,10 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Interval: statusInterval,
 			Version: version, Build: build()}
 		var st core.HealthStatus
-		var crm tunnel.Heartbeat
-		lastSeen := time.Now() // the hub, or the start
+		var crm tunnel.Heartbeat // the last self-check
+		checked := false
+		sentConfig := int64(-1) // the applied config version the hub last heard of
+		lastSeen := time.Now()  // the hub, or the start
 		for {
 			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate()}
 			if hs.connected {
@@ -166,14 +168,20 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 			hs.configRefused = cs.ConfigError != ""
 			hs.configBehind = syncer.Behind()
 			if due {
-				crm = hb
-				hb.Ready, hb.Reason = readiness(hb.Ready, hb.Reason, hs)
-				hb.AppliedConfig = cs
-				go sendHeartbeat(ctx, client, hb, log)
+				crm, checked = hb, true
 			}
 			ready, reason := readiness(crm.Ready, crm.Reason, hs)
+			// a newly applied config is reported at once, not with the
+			// next self-check a minute later
+			beat := checked && (due || cs.ConfigVersion != sentConfig)
+			if beat {
+				hb := crm
+				hb.Ready, hb.Reason, hb.AppliedConfig = ready, reason, cs
+				sentConfig = cs.ConfigVersion
+				go sendHeartbeat(ctx, client, hb, log)
+			}
 			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
-			if due || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
+			if beat || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
 				next.Time = time.Now().UTC()
 				st = next
 				if werr := core.WriteHealthStatus(s.StateDir, st); werr != nil {

@@ -98,3 +98,14 @@ func TestDoctorReportsAConfigTheServiceDoesNotRun(t *testing.T) {
 		})
 	}
 }
+
+// Over plain http (loopback only) doctor does not claim a checked
+// certificate.
+func TestDoctorSaysLoopbackHasNoTLS(t *testing.T) {
+	rep := doctorAgainst(t, studio, tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}})
+	for _, c := range rep.Checks {
+		if c.Code == doctor.CodeHubReach && (c.Status != doctor.OK || c.Message != "хаб отвечает (loopback без TLS)") {
+			t.Fatalf("%s: %s %s", c.Code, c.Status, c.Message)
+		}
+	}
+}

@@ -652,6 +652,11 @@ func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) erro
 	mctx, stop := context.WithCancel(ctx)
 	defer stop()
 	go srv.Monitor().Run(mctx)
+	// every request runs under base: a stopping hub ends the long polls
+	// and the waits at once instead of waiting for them
+	base, endRequests := context.WithCancel(context.Background())
+	defer endRequests()
+	httpSrv.BaseContext = func(net.Listener) context.Context { return base }
 	errc := make(chan error, 1)
 	go func() {
 		if cfg.TLSCertFile != "" {
@@ -661,7 +666,7 @@ func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) erro
 		}
 	}()
 	if cfg.TLSCertFile == "" {
-		log.Warn("hub serves plain HTTP: put a TLS-terminating proxy in front of it; gateways only connect over https")
+		log.Warn("hub serves plain HTTP: put a TLS-terminating proxy in front of it; gateways use plain http only to a loopback address")
 	}
 	log.Info("hub started", "listen", cfg.Listen, "gateways", len(srv.store.Gateways()))
 	select {
@@ -671,8 +676,13 @@ func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) erro
 		}
 		return nil
 	case <-ctx.Done():
+		endRequests()
 		shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return httpSrv.Shutdown(shCtx)
+		err := httpSrv.Shutdown(shCtx)
+		if err == nil {
+			log.Info("hub stopped")
+		}
+		return err
 	}
 }
