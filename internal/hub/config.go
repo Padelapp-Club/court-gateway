@@ -1,0 +1,293 @@
+// Package hub is the public side of the system: partners call it, gateways
+// connect to it from the clubs (outbound only), and it watches every
+// gateway with a heartbeat. The hub keeps a little state on disk — the
+// gateways it has registered and the pending join codes — and nothing
+// about any club's bookings.
+package hub
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/version"
+)
+
+// Defaults.
+const (
+	DefaultListen         = ":8443"
+	DefaultRequestTimeout = 30 * time.Second
+	DefaultPollWait       = 25 * time.Second
+	DefaultInterval       = 60 * time.Second
+	DefaultOfflineAfter   = 3 * time.Minute
+	DefaultReadyFailures  = 3
+	DefaultTelegramAPI    = "https://api.telegram.org"
+	minKeyLength          = 24
+)
+
+type fileConfig struct {
+	Listen    string `yaml:"listen"`
+	PublicURL string `yaml:"public_url"`
+	TLS       struct {
+		CertFile string `yaml:"cert_file"`
+		KeyFile  string `yaml:"key_file"`
+	} `yaml:"tls"`
+	StateDir       string `yaml:"state_dir"`
+	OperatorKeyEnv string `yaml:"operator_key_env"`
+	LatestVersion  string `yaml:"latest_version"`
+	RequestTimeout string `yaml:"request_timeout"`
+	PollWait       string `yaml:"poll_wait"`
+	Partners       []struct {
+		Name            string   `yaml:"name"`
+		KeyEnv          string   `yaml:"key_env"`
+		Scopes          []string `yaml:"scopes"`
+		Clubs           []string `yaml:"clubs"`
+		WritesPerMinute *int     `yaml:"writes_per_minute"`
+	} `yaml:"partners"`
+	Heartbeat struct {
+		Interval      string `yaml:"interval"`
+		OfflineAfter  string `yaml:"offline_after"`
+		ReadyFailures int    `yaml:"ready_failures"`
+	} `yaml:"heartbeat"`
+	Alerts struct {
+		Telegram *struct {
+			BotTokenEnv string `yaml:"bot_token_env"`
+			ChatIDEnv   string `yaml:"chat_id_env"`
+			APIURL      string `yaml:"api_url"`
+		} `yaml:"telegram"`
+		WebhookURLEnv string `yaml:"webhook_url_env"`
+	} `yaml:"alerts"`
+}
+
+// TelegramSettings configure the Telegram alert sink.
+type TelegramSettings struct {
+	Token  string
+	ChatID string
+	APIURL string
+}
+
+// Settings is a validated hub configuration.
+type Settings struct {
+	Listen         string
+	PublicURL      string
+	TLSCertFile    string
+	TLSKeyFile     string
+	StateDir       string
+	OperatorKey    string
+	LatestVersion  string
+	RequestTimeout time.Duration
+	PollWait       time.Duration
+	Partners       []auth.Partner
+	// PartnerClubs lists the clubs each partner may reach; "*" is all.
+	PartnerClubs  map[string][]string
+	Interval      time.Duration
+	OfflineAfter  time.Duration
+	ReadyFailures int
+	Telegram      *TelegramSettings
+	WebhookURL    string
+	// Secrets must never appear in logs.
+	Secrets []string
+}
+
+var (
+	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	partnerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	envNameRe     = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+)
+
+// ValidClubID reports whether id is a valid club id.
+func ValidClubID(id string) bool { return slugRe.MatchString(id) }
+
+// LoadFile reads hub.yaml; secrets come from getenv, which callers usually
+// extend with the .env file next to hub.yaml.
+func LoadFile(path string, getenv func(string) string) (*Settings, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось прочитать файл конфигурации хаба %s: %w", path, err)
+	}
+	return Load(data, getenv)
+}
+
+// Load parses and validates hub.yaml.
+func Load(data []byte, getenv func(string) string) (*Settings, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	var fc fileConfig
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
+		return nil, &core.ConfigError{Problems: []string{"ошибка разбора hub.yaml: " + strings.TrimPrefix(err.Error(), "yaml: ")}}
+	}
+	var errs []string
+	add := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
+	s := &Settings{PartnerClubs: map[string][]string{}}
+
+	s.Listen = strings.TrimSpace(fc.Listen)
+	if s.Listen == "" {
+		s.Listen = DefaultListen
+	}
+	if _, port, err := net.SplitHostPort(s.Listen); err != nil {
+		add("listen: «%s» — ожидается адрес вида :8443", s.Listen)
+	} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+		add("listen: неверный порт «%s»", port)
+	}
+	s.PublicURL = strings.TrimRight(strings.TrimSpace(fc.PublicURL), "/")
+	if s.PublicURL != "" {
+		if err := core.CheckHTTPSURL("public_url", s.PublicURL); err != nil {
+			add("%s", err.Error())
+		}
+	}
+	s.TLSCertFile, s.TLSKeyFile = strings.TrimSpace(fc.TLS.CertFile), strings.TrimSpace(fc.TLS.KeyFile)
+	if (s.TLSCertFile == "") != (s.TLSKeyFile == "") {
+		add("tls: укажите и cert_file, и key_file (или ни одного — тогда TLS снимает прокси перед хабом)")
+	}
+	s.StateDir = strings.TrimSpace(fc.StateDir)
+	if s.StateDir == "" {
+		add("state_dir: параметр обязателен (каталог, где хаб хранит зарегистрированные шлюзы и коды подключения)")
+	}
+	if env := strings.TrimSpace(fc.OperatorKeyEnv); env != "" {
+		s.OperatorKey = strings.TrimSpace(getenv(env))
+		if len(s.OperatorKey) < minKeyLength {
+			add("operator_key_env: ключ оператора в %s не задан или короче %d символов", env, minKeyLength)
+		} else {
+			s.Secrets = append(s.Secrets, s.OperatorKey)
+		}
+	}
+	s.LatestVersion = strings.TrimSpace(fc.LatestVersion)
+	if s.LatestVersion != "" && !version.Valid(s.LatestVersion) {
+		add("latest_version: «%s» — ожидается версия вида 1.2.3", s.LatestVersion)
+	}
+	dur := func(name, v string, def, min, max time.Duration) time.Duration {
+		if strings.TrimSpace(v) == "" {
+			return def
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(v))
+		if err != nil || d < min || d > max {
+			add("%s: «%s» — длительность от %s до %s (например 30s, 3m)", name, v, min, max)
+			return def
+		}
+		return d
+	}
+	s.RequestTimeout = dur("request_timeout", fc.RequestTimeout, DefaultRequestTimeout, time.Second, 2*time.Minute)
+	s.PollWait = dur("poll_wait", fc.PollWait, DefaultPollWait, 100*time.Millisecond, 50*time.Second)
+	s.Interval = dur("heartbeat.interval", fc.Heartbeat.Interval, DefaultInterval, time.Second, 10*time.Minute)
+	s.OfflineAfter = dur("heartbeat.offline_after", fc.Heartbeat.OfflineAfter, DefaultOfflineAfter, time.Second, time.Hour)
+	s.ReadyFailures = fc.Heartbeat.ReadyFailures
+	if s.ReadyFailures == 0 {
+		s.ReadyFailures = DefaultReadyFailures
+	}
+	if s.ReadyFailures < 1 || s.ReadyFailures > 100 {
+		add("heartbeat.ready_failures: %d — от 1 до 100", s.ReadyFailures)
+	}
+
+	seenName, seenKey := map[string]bool{}, map[string]string{}
+	for i, p := range fc.Partners {
+		path := fmt.Sprintf("partners[%d]", i)
+		name := strings.TrimSpace(p.Name)
+		switch {
+		case !partnerNameRe.MatchString(name):
+			add("%s.name: «%s» — строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
+		case seenName[name]:
+			add("%s.name: партнёр «%s» указан дважды", path, name)
+		}
+		seenName[name] = true
+		envName := strings.TrimSpace(p.KeyEnv)
+		var key string
+		if !envNameRe.MatchString(envName) {
+			add("%s.key_env: «%s» — имя переменной окружения заглавными латинскими буквами, цифрами и _", path, envName)
+		} else if key = strings.TrimSpace(getenv(envName)); len(key) < minKeyLength {
+			add("%s.key_env: ключ в %s не задан или короче %d символов", path, envName, minKeyLength)
+		} else if other, dup := seenKey[key]; dup {
+			add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
+		} else {
+			seenKey[key] = name
+			s.Secrets = append(s.Secrets, key)
+		}
+		var scopes []auth.Scope
+		if len(p.Scopes) == 0 {
+			add("%s.scopes: укажите права: [read] или [read, book]", path)
+		}
+		for _, sc := range p.Scopes {
+			switch auth.Scope(sc) {
+			case auth.ScopeRead, auth.ScopeBook:
+				scopes = append(scopes, auth.Scope(sc))
+			default:
+				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
+			}
+		}
+		if len(p.Clubs) == 0 {
+			add("%s.clubs: укажите клубы партнёра списком или [\"*\"] — все клубы", path)
+		}
+		for _, c := range p.Clubs {
+			if c != "*" && !slugRe.MatchString(c) {
+				add("%s.clubs: «%s» — не идентификатор клуба", path, c)
+			}
+		}
+		rate := core.DefaultWritesPerMinute
+		if p.WritesPerMinute != nil {
+			rate = *p.WritesPerMinute
+			if rate < 1 || rate > 6000 {
+				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
+			}
+		}
+		s.Partners = append(s.Partners, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
+		s.PartnerClubs[name] = append([]string(nil), p.Clubs...)
+	}
+
+	if tg := fc.Alerts.Telegram; tg != nil {
+		t := &TelegramSettings{APIURL: strings.TrimRight(strings.TrimSpace(tg.APIURL), "/")}
+		if t.APIURL == "" {
+			t.APIURL = DefaultTelegramAPI
+		} else if err := core.CheckHTTPSURL("alerts.telegram.api_url", t.APIURL); err != nil {
+			add("%s", err.Error())
+		}
+		t.Token = strings.TrimSpace(getenv(strings.TrimSpace(tg.BotTokenEnv)))
+		t.ChatID = strings.TrimSpace(getenv(strings.TrimSpace(tg.ChatIDEnv)))
+		if !envNameRe.MatchString(strings.TrimSpace(tg.BotTokenEnv)) || t.Token == "" {
+			add("alerts.telegram.bot_token_env: переменная с токеном бота не задана")
+		} else {
+			s.Secrets = append(s.Secrets, t.Token)
+		}
+		if !envNameRe.MatchString(strings.TrimSpace(tg.ChatIDEnv)) || t.ChatID == "" {
+			add("alerts.telegram.chat_id_env: переменная с идентификатором чата не задана")
+		}
+		s.Telegram = t
+	}
+	if env := strings.TrimSpace(fc.Alerts.WebhookURLEnv); env != "" {
+		s.WebhookURL = strings.TrimSpace(getenv(env))
+		if s.WebhookURL == "" {
+			add("alerts.webhook_url_env: переменная %s не задана", env)
+		} else if err := core.CheckHTTPSURL("alerts.webhook_url_env", s.WebhookURL); err != nil {
+			add("alerts.webhook_url_env: адрес в %s должен начинаться с https://", env)
+		} else {
+			// a webhook URL usually embeds its own token
+			s.Secrets = append(s.Secrets, s.WebhookURL)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, &core.ConfigError{Problems: errs}
+	}
+	return s, nil
+}
+
+// partnerMayReach reports whether partner may call club.
+func (s *Settings) partnerMayReach(partner, club string) bool {
+	for _, c := range s.PartnerClubs[partner] {
+		if c == "*" || c == club {
+			return true
+		}
+	}
+	return false
+}

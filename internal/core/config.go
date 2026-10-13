@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,8 +23,19 @@ import (
 // PasswordEnv is the environment variable holding the CRM password.
 const PasswordEnv = "CRM_PASSWORD"
 
-// DefaultListen is used when the config has no `listen`.
+// DefaultListen is used when the config has neither `listen` nor `hub`.
+// With a hub the local port stays closed unless `listen` is set.
 const DefaultListen = ":8080"
+
+// DefaultHubSecretEnv holds the gateway's secret for the hub.
+const DefaultHubSecretEnv = "GATEWAY_HUB_SECRET"
+
+// DefaultHubPolls is the number of concurrent long-poll requests a gateway
+// keeps open to the hub, i.e. how many partner requests it serves at once.
+const DefaultHubPolls = 4
+
+// StateDirEnv overrides state_dir (used by the container image).
+const StateDirEnv = "GATEWAY_STATE_DIR"
 
 // DefaultWritesPerMinute is the per-key write limit when a partner entry
 // does not set one.
@@ -40,7 +53,18 @@ type fileConfig struct {
 		Name string `yaml:"name"`
 	} `yaml:"club"`
 	Listen string `yaml:"listen"`
-	CRM    struct {
+	Hub    *struct {
+		URL       string `yaml:"url"`
+		CAFile    string `yaml:"ca_file"`
+		SecretEnv string `yaml:"secret_env"`
+		Polls     int    `yaml:"polls"`
+	} `yaml:"hub"`
+	Update *struct {
+		Enabled     *bool  `yaml:"enabled"`
+		ManifestURL string `yaml:"manifest_url"`
+	} `yaml:"update"`
+	StateDir string `yaml:"state_dir"`
+	CRM      struct {
 		Type string         `yaml:"type"`
 		Rest map[string]any `yaml:",inline"`
 	} `yaml:"crm"`
@@ -76,11 +100,34 @@ type DayHours struct {
 	Close int
 }
 
+// HubSettings configure the outbound connection to the hub.
+type HubSettings struct {
+	URL    string
+	CAFile string
+	Secret string
+	Polls  int
+}
+
+// UpdateSettings configure automatic updates.
+type UpdateSettings struct {
+	// Enabled is false only when the config says so; a build without an
+	// embedded release key never updates regardless.
+	Enabled     bool
+	ManifestURL string
+}
+
 // Settings is a validated configuration.
 type Settings struct {
-	ClubID       string
-	ClubName     string
-	Listen       string
+	ClubID   string
+	ClubName string
+	// Listen is the local HTTP address; empty means no local port.
+	Listen string
+	// Hub is nil when the gateway is not connected to a hub.
+	Hub    *HubSettings
+	Update UpdateSettings
+	// StateDir holds the health status file and update bookkeeping. It
+	// never holds CRM data.
+	StateDir     string
 	CRMType      string
 	TimezoneName string
 	Location     *time.Location
@@ -93,6 +140,8 @@ type Settings struct {
 	Driver driver.Config
 	// Secrets are values that must never appear in logs.
 	Secrets []string
+
+	stateDirDefaulted bool
 }
 
 // CourtByID returns a configured court.
@@ -117,7 +166,24 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("не удалось прочитать файл конфигурации %s: %w", path, err)
 	}
-	return Load(data, getenv)
+	s, err := Load(data, getenv)
+	if err != nil {
+		return nil, err
+	}
+	if s.stateDirDefaulted {
+		s.StateDir = defaultStateDir(path, s.ClubID)
+	}
+	return s, nil
+}
+
+// defaultStateDir is a "state" directory next to the config file: stable
+// for every process that reads the same config (service, healthcheck,
+// doctor), unlike the per-user temporary directory.
+func defaultStateDir(cfgPath, club string) string {
+	if abs, err := filepath.Abs(cfgPath); err == nil {
+		return filepath.Join(filepath.Dir(abs), "state")
+	}
+	return filepath.Join(os.TempDir(), "court-gateway-"+club)
 }
 
 // Load parses and validates config bytes. All problems found are reported
@@ -157,15 +223,65 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("club.name: параметр обязателен (название клуба)")
 	}
 
+	// hub
+	if fc.Hub != nil {
+		h := &HubSettings{URL: strings.TrimSpace(fc.Hub.URL), CAFile: strings.TrimSpace(fc.Hub.CAFile), Polls: fc.Hub.Polls}
+		if h.URL == "" {
+			add("hub.url: параметр обязателен (адрес хаба, например https://hub.example.com)")
+		} else if err := CheckHTTPSURL("hub.url", h.URL); err != nil {
+			add("%s", err.Error())
+		}
+		if h.Polls == 0 {
+			h.Polls = DefaultHubPolls
+		}
+		if h.Polls < 1 || h.Polls > 32 {
+			add("hub.polls: %d — от 1 до 32", h.Polls)
+		}
+		envName := strings.TrimSpace(fc.Hub.SecretEnv)
+		if envName == "" {
+			envName = DefaultHubSecretEnv
+		}
+		if !envNameRe.MatchString(envName) {
+			add("hub.secret_env: «%s» — имя переменной окружения пишется заглавными латинскими буквами, цифрами и _", envName)
+		} else if h.Secret = strings.TrimSpace(getenv(envName)); h.Secret == "" {
+			add("hub: переменная окружения %s с секретом подключения не задана — выполните court-gateway setup с кодом подключения", envName)
+		} else {
+			s.Secrets = append(s.Secrets, h.Secret)
+		}
+		s.Hub = h
+	}
+
 	// listen
 	s.Listen = strings.TrimSpace(fc.Listen)
-	if s.Listen == "" {
+	if s.Listen == "" && s.Hub == nil {
 		s.Listen = DefaultListen
 	}
-	if _, port, err := net.SplitHostPort(s.Listen); err != nil {
-		add("listen: «%s» — ожидается адрес вида :8080 или 127.0.0.1:8080", s.Listen)
-	} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
-		add("listen: неверный порт «%s»", port)
+	if s.Listen != "" {
+		if _, port, err := net.SplitHostPort(s.Listen); err != nil {
+			add("listen: «%s» — ожидается адрес вида :8080 или 127.0.0.1:8080", s.Listen)
+		} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+			add("listen: неверный порт «%s»", port)
+		}
+	}
+
+	// update
+	s.Update = UpdateSettings{Enabled: true}
+	if fc.Update != nil {
+		if fc.Update.Enabled != nil {
+			s.Update.Enabled = *fc.Update.Enabled
+		}
+		s.Update.ManifestURL = strings.TrimSpace(fc.Update.ManifestURL)
+		if s.Update.ManifestURL != "" {
+			if err := CheckHTTPSURL("update.manifest_url", s.Update.ManifestURL); err != nil {
+				add("%s", err.Error())
+			}
+		}
+	}
+
+	// state_dir
+	s.StateDir = strings.TrimSpace(getenv(StateDirEnv))
+	if s.StateDir == "" {
+		s.StateDir = strings.TrimSpace(fc.StateDir)
 	}
 
 	// crm
@@ -242,9 +358,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		s.Driver.Services[k] = driver.Params(v)
 	}
 
-	// partners
-	if len(fc.Partners) == 0 {
-		add("partners: нужен хотя бы один партнёр с ключом доступа")
+	// partners: with a hub, partner keys live on the hub; a local list is
+	// needed only to open the API on the local port.
+	if len(fc.Partners) == 0 && s.Hub == nil {
+		add("partners: нужен хотя бы один партнёр с ключом доступа (или раздел hub — тогда ключи партнёров хранит хаб)")
 	}
 	seenName := map[string]bool{}
 	seenKey := map[string]string{}
@@ -313,6 +430,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 
 	if len(errs) > 0 {
 		return nil, &ConfigError{Problems: errs}
+	}
+	if s.StateDir == "" {
+		s.stateDirDefaulted = true
+		s.StateDir = filepath.Join(os.TempDir(), "court-gateway-"+s.ClubID)
 	}
 
 	s.Driver.Timezone = s.Location
@@ -393,4 +514,59 @@ func goTypeRu(t string) string {
 	default:
 		return t
 	}
+}
+
+// CheckHTTPSURL accepts https URLs, and plain http only for loopback hosts
+// (local test doubles and development).
+func CheckHTTPSURL(path, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("%s: «%s» — неверный адрес", path, raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: «%s» — адрес должен начинаться с https://", path, raw)
+}
+
+// StatePath returns the health status file and update bookkeeping
+// directory derived from a config file without loading secrets. It is what
+// `healthcheck` uses, so it must agree with Load.
+func StatePath(cfgPath string, getenv func(string) string) (stateDir, listen string, hub bool) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	var c struct {
+		Club struct {
+			ID string `yaml:"id"`
+		} `yaml:"club"`
+		Listen   string    `yaml:"listen"`
+		StateDir string    `yaml:"state_dir"`
+		Hub      yaml.Node `yaml:"hub"`
+	}
+	if data, err := os.ReadFile(cfgPath); err == nil {
+		_ = yaml.Unmarshal(data, &c)
+	}
+	hub = !c.Hub.IsZero()
+	listen = strings.TrimSpace(c.Listen)
+	if listen == "" && !hub {
+		listen = DefaultListen
+	}
+	stateDir = strings.TrimSpace(getenv(StateDirEnv))
+	if stateDir == "" {
+		stateDir = strings.TrimSpace(c.StateDir)
+	}
+	if stateDir == "" {
+		stateDir = defaultStateDir(cfgPath, strings.TrimSpace(c.Club.ID))
+	}
+	return stateDir, listen, hub
 }

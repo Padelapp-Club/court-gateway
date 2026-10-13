@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
@@ -46,11 +47,13 @@ func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger, opts ...Optio
 	for _, o := range opts {
 		o(s)
 	}
-	a, err := auth.New(cfg.Partners, auth.Options{WriteError: writeError, Now: s.now})
-	if err != nil {
-		return nil, err
+	if len(cfg.Partners) > 0 {
+		a, err := auth.New(cfg.Partners, auth.Options{WriteError: writeError, Now: s.now})
+		if err != nil {
+			return nil, err
+		}
+		s.auth = a
 	}
-	s.auth = a
 	return s, nil
 }
 
@@ -62,7 +65,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health/live", s.handleLive)
 	mux.HandleFunc("GET /health/ready", s.handleReady)
 	mux.Handle("/health/", methodNotAllowed())
-	mux.Handle("/v1/", s.auth.Wrap(s.APIHandler()))
+	if s.auth != nil {
+		mux.Handle("/v1/", s.auth.Wrap(s.APIHandler()))
+	} else {
+		mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "the partner API of this gateway is served through the hub")
+		})
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
+	})
+	return s.observe(mux)
+}
+
+// TunnelHandler is the handler a gateway runs for requests that arrive over
+// its own outbound connection to the hub. The hub has already
+// authenticated the partner and checked its scope; the tunnel client puts
+// the partner name into the request context (auth.WithPartnerName). Only
+// the health endpoints and the partner API are reachable.
+func (s *Server) TunnelHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", s.handleLive)
+	mux.HandleFunc("GET /health/ready", s.handleReady)
+	mux.Handle("/health/", methodNotAllowed())
+	api := s.APIHandler()
+	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := auth.PartnerName(r.Context()); !ok {
+			writeError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "the hub did not name the partner")
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	})
@@ -147,6 +180,9 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer (Flush).
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
@@ -154,27 +190,55 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-func (s *Server) observe(next http.Handler) http.Handler {
+func (s *Server) observe(next http.Handler) http.Handler { return Observe(s.log, s.now, next) }
+
+type upstreamIDKey struct{}
+
+// WithRequestID returns a context carrying a request id assigned upstream
+// (by the hub). Observe uses it instead of a new id, so the partner, the
+// hub and the gateway log the same id.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, upstreamIDKey{}, id)
+}
+
+// RequestID returns the id Observe assigned to r ("" outside Observe).
+func RequestID(r *http.Request) string { return info(r).id }
+
+// SetPartner records the partner name for the access log line.
+func SetPartner(r *http.Request, name string) { info(r).partner = name }
+
+var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// Observe assigns request ids, writes the access log line and recovers
+// panics. It is shared by the gateway and the hub so both keep one log and
+// error format.
+func Observe(log *slog.Logger, now func() time.Time, next http.Handler) http.Handler {
+	if now == nil {
+		now = time.Now
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := s.now()
+		start := now()
 		ri := &reqInfo{id: newRequestID()}
+		if up, ok := r.Context().Value(upstreamIDKey{}).(string); ok && requestIDRe.MatchString(up) {
+			ri.id = up
+		}
 		w.Header().Set("X-Request-ID", ri.id)
 		rec := &statusRecorder{ResponseWriter: w}
 		r = r.WithContext(context.WithValue(r.Context(), reqInfoKey{}, ri))
 		defer func() {
 			if p := recover(); p != nil {
-				s.log.Error("panic in handler", "request_id", ri.id, "path", r.URL.Path)
+				log.Error("panic in handler", "request_id", ri.id, "path", r.URL.Path)
 				if rec.status == 0 {
 					writeError(rec, r, http.StatusInternalServerError, "INTERNAL", "internal error")
 				}
 			}
-			s.log.Info("request",
+			log.Info("request",
 				"request_id", ri.id,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
 				"partner", ri.partner,
-				"duration_ms", s.now().Sub(start).Milliseconds(),
+				"duration_ms", now().Sub(start).Milliseconds(),
 			)
 		}()
 		next.ServeHTTP(rec, r)
@@ -208,6 +272,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	writeJSON(w, status, errorBody{Code: code, Message: message, RequestID: info(r).id})
 }
+
+// WriteError writes the API error body {code, message, request_id}.
+func WriteError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	writeError(w, r, status, code, message)
+}
+
+// WriteJSON writes v as a JSON response that must not be cached.
+func WriteJSON(w http.ResponseWriter, status int, v any) { writeJSON(w, status, v) }
 
 // driverError maps a driver error to an API error. Upstream details are
 // logged (they never contain secrets or personal data by the driver
@@ -250,6 +322,9 @@ func classify(err error) (int, string, string) {
 		return http.StatusInternalServerError, "INTERNAL", "internal error"
 	}
 }
+
+// ReadyReason maps a readiness failure to a short code with no secrets.
+func ReadyReason(err error) string { return readyReason(err) }
 
 // readyReason maps a readiness failure to a short code with no secrets.
 func readyReason(err error) string {

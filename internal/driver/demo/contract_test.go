@@ -6,6 +6,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
+	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
 const demoConfig = `club: { id: demo-club, name: "Демо-клуб" }
@@ -43,6 +44,36 @@ func TestContract(t *testing.T) {
 			Logs: b.Logs.String,
 			// The demo driver keeps no personal data; the markers are
 			// still sent in a note and must not come back.
+			PrivacyMarkers: []string{"PRIVACY-MARKER-NOTE-7f3a"},
+		}
+	})
+}
+
+// The same suite through the hub: partner -> hub -> outbound tunnel ->
+// gateway -> driver, over real TLS. Keys, scopes and rate limits live on
+// the hub here; the gateway has no port of its own.
+func TestContractThroughHub(t *testing.T) {
+	contract.Run(t, func(t *testing.T) *contract.Env {
+		b := contract.Build(t, demoConfig, contract.KeyEnv(), "demo", demo.New, nil)
+		d := b.Driver.(*demo.Driver)
+		handler, logs := testkit.ThroughHub(t, b)
+		return &contract.Env{
+			Handler:      handler,
+			Club:         "demo-club",
+			ReadKey:      contract.ReadKey,
+			BookKey:      contract.BookKey,
+			OtherBookKey: contract.OtherBookKey,
+			Courts:       []string{"court-1", "court-2"},
+			Location:     b.Settings.Location,
+			SlotMinutes:  30,
+			SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
+				return d.Seed(court, start, end)
+			},
+			Price: func(day time.Time) contract.PriceCase {
+				s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
+				return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: 3000}
+			},
+			Logs:           logs,
 			PrivacyMarkers: []string{"PRIVACY-MARKER-NOTE-7f3a"},
 		}
 	})
