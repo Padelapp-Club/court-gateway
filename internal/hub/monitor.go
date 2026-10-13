@@ -14,7 +14,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/version"
 )
 
-// Club states as the monitor sees them.
+// Installation states as the monitor sees them.
 const (
 	// StatePending: no heartbeat yet since the hub started, but not for
 	// longer than offline_after either.
@@ -45,10 +45,10 @@ type Monitor struct {
 	started       time.Time
 
 	mu    sync.Mutex
-	state map[string]*clubHealth
+	state map[string]*installationHealth
 }
 
-type clubHealth struct {
+type installationHealth struct {
 	lastBeat  time.Time // hub clock: when the last heartbeat arrived
 	checkedAt time.Time // gateway clock, informational only
 	version   string
@@ -62,7 +62,7 @@ type clubHealth struct {
 	state string // as of the last Tick
 }
 
-// Health is the monitor's view of one club, for /hub/status.
+// Health is the monitor's view of one installation, for /hub/status.
 type Health struct {
 	State         string
 	LastHeartbeat time.Time
@@ -109,7 +109,7 @@ func NewMonitor(store *Store, broker *Broker, cfg MonitorConfig) *Monitor {
 	return &Monitor{
 		store: store, broker: broker, log: cfg.Logger, now: cfg.Now,
 		interval: cfg.Interval, offlineAfter: cfg.OfflineAfter, readyFailures: cfg.ReadyFailures,
-		latest: cfg.LatestVersion, version: cfg.Version, statusDir: cfg.StatusDir, started: cfg.Now(), state: map[string]*clubHealth{},
+		latest: cfg.LatestVersion, version: cfg.Version, statusDir: cfg.StatusDir, started: cfg.Now(), state: map[string]*installationHealth{},
 	}
 }
 
@@ -162,13 +162,13 @@ func cleanBuild(b string) string {
 	return ""
 }
 
-// Heartbeat records a heartbeat from club's gateway, received now (hub
+// Heartbeat records a heartbeat from installation's gateway, received now (hub
 // clock: the gateway's clock is not trusted for liveness).
-func (m *Monitor) Heartbeat(club string, hb tunnel.Heartbeat) {
+func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	h := m.health(club)
+	h := m.health(installation)
 	h.lastBeat, h.beats = now, h.beats+1
 	h.ready, h.reason = hb.Ready, cleanReason(hb.Ready, hb.Reason)
 	h.version, h.build = cleanVersion(hb.Version), cleanBuild(hb.Build)
@@ -216,21 +216,21 @@ func cleanClubs(ids []string) []string {
 	return out
 }
 
-// health returns club's record; m.mu must be held.
-func (m *Monitor) health(club string) *clubHealth {
-	h, ok := m.state[club]
+// health returns installation's record; m.mu must be held.
+func (m *Monitor) health(installation string) *installationHealth {
+	h, ok := m.state[installation]
 	if !ok {
-		h = &clubHealth{}
-		m.state[club] = h
+		h = &installationHealth{}
+		m.state[installation] = h
 	}
 	return h
 }
 
-// silentSince is when the club was last known alive: its last heartbeat,
-// or, before the first one, the later of the hub's start and the club's
-// registration. So a hub restart cannot hide a dead club, and a club that
+// silentSince is when the installation was last known alive: its last
+// heartbeat, or, before the first one, the later of the hub's start and its
+// registration. So a hub restart cannot hide a dead gateway, and one that
 // has just registered gets offline_after to send its first heartbeat.
-func (m *Monitor) silentSince(h *clubHealth, registered time.Time) time.Time {
+func (m *Monitor) silentSince(h *installationHealth, registered time.Time) time.Time {
 	if !h.lastBeat.IsZero() {
 		return h.lastBeat
 	}
@@ -240,8 +240,8 @@ func (m *Monitor) silentSince(h *clubHealth, registered time.Time) time.Time {
 	return m.started
 }
 
-// evaluate computes club's state at now; m.mu must be held.
-func (m *Monitor) evaluate(h *clubHealth, registered, now time.Time) string {
+// evaluate computes an installation's state at now; m.mu must be held.
+func (m *Monitor) evaluate(h *installationHealth, registered, now time.Time) string {
 	seen := m.silentSince(h, registered)
 	switch {
 	case now.Sub(seen) > m.offlineAfter:
@@ -255,15 +255,15 @@ func (m *Monitor) evaluate(h *clubHealth, registered, now time.Time) string {
 	}
 }
 
-// Health returns the monitor's view of club.
-func (m *Monitor) Health(club string) Health {
+// Health returns the monitor's view of installation.
+func (m *Monitor) Health(installation string) Health {
 	now := m.now()
-	g, _ := m.store.Get(club)
+	g, _ := m.store.Get(installation)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	h, ok := m.state[club]
+	h, ok := m.state[installation]
 	if !ok {
-		h = &clubHealth{}
+		h = &installationHealth{}
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
@@ -277,10 +277,10 @@ func (m *Monitor) Health(club string) Health {
 	return out
 }
 
-// clubView is one club's evaluated state, for the status files.
-type clubView struct {
+// installationView is one installation's evaluated state, for the status files.
+type installationView struct {
 	GatewayRecord
-	clubHealth
+	installationHealth
 	connected bool
 }
 
@@ -288,7 +288,7 @@ type clubView struct {
 // logs state changes.
 func (m *Monitor) Tick(context.Context) {
 	now := m.now()
-	var views []clubView
+	var views []installationView
 	gateways := m.store.Gateways()
 	connected := map[string]bool{}
 	if m.broker != nil {
@@ -317,7 +317,7 @@ func (m *Monitor) Tick(context.Context) {
 				changes = append(changes, change{g.Installation, ev})
 			}
 		}
-		views = append(views, clubView{GatewayRecord: g, clubHealth: *h, connected: connected[g.Installation]})
+		views = append(views, installationView{GatewayRecord: g, installationHealth: *h, connected: connected[g.Installation]})
 	}
 	m.mu.Unlock()
 

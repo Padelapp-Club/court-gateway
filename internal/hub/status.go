@@ -100,7 +100,7 @@ func (s *metricSet) bytes() []byte {
 }
 
 // buildStatus renders both files' contents.
-func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []byte, []string) {
+func buildStatus(now time.Time, o statusOptions, views []installationView) ([]byte, []byte, []string) {
 	doc := statusDoc{TS: now.UTC().Format(time.RFC3339), OK: true, Version: o.version, Checks: []statusCheck{}}
 	var ms metricSet
 	checkNames := map[string]bool{}
@@ -143,7 +143,7 @@ func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []by
 	return append(data, '\n'), ms.bytes(), ms.dropped
 }
 
-func onlineDetail(v clubView, now time.Time, offlineAfter time.Duration) string {
+func onlineDetail(v installationView, now time.Time, offlineAfter time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "«%s»: ", v.Name)
 	if v.lastBeat.IsZero() {
@@ -166,14 +166,14 @@ func onlineDetail(v clubView, now time.Time, offlineAfter time.Duration) string 
 	return b.String()
 }
 
-func readyDetail(v clubView, readyFailures int) string {
+func readyDetail(v installationView, readyFailures int) string {
 	switch {
 	case v.state == StatePending:
 		return "unknown: waiting for the first heartbeat"
 	case v.state == StateOffline && v.beats == 0:
 		return "unknown: no heartbeat"
 	case v.state == StateOffline:
-		return "unknown while offline; last report: " + readyWord(v.clubHealth)
+		return "unknown while offline; last report: " + readyWord(v.installationHealth)
 	case v.state == StateNotReady:
 		return fmt.Sprintf("not ready: %s, %d heartbeats in a row (limit %d)", v.reason, v.notReady, readyFailures)
 	case !v.ready:
@@ -183,7 +183,7 @@ func readyDetail(v clubView, readyFailures int) string {
 	}
 }
 
-func readyWord(h clubHealth) string {
+func readyWord(h installationHealth) string {
 	if h.ready {
 		return "ready"
 	}
@@ -199,7 +199,7 @@ type statusOptions struct {
 
 // writeStatus writes both files into dir, each atomically. Malformed or
 // repeated keys are left out of the files and returned for the log.
-func writeStatus(dir string, now time.Time, o statusOptions, views []clubView) ([]string, error) {
+func writeStatus(dir string, now time.Time, o statusOptions, views []installationView) ([]string, error) {
 	status, metrics, dropped := buildStatus(now, o, views)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return dropped, err

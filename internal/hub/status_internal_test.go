@@ -47,9 +47,9 @@ func TestMetricSetRejectsMalformedAndRepeated(t *testing.T) {
 // and its metrics appear once, and the collision is reported.
 func TestStatusDropsCollidingKeys(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	views := []clubView{
-		{GatewayRecord: GatewayRecord{Installation: "a-b", Name: "x"}, clubHealth: clubHealth{state: StatePending}},
-		{GatewayRecord: GatewayRecord{Installation: "a_b", Name: "y"}, clubHealth: clubHealth{state: StatePending}},
+	views := []installationView{
+		{GatewayRecord: GatewayRecord{Installation: "a-b", Name: "x"}, installationHealth: installationHealth{state: StatePending}},
+		{GatewayRecord: GatewayRecord{Installation: "a_b", Name: "y"}, installationHealth: installationHealth{state: StatePending}},
 	}
 	status, metrics, dropped := buildStatus(now, statusOptions{offlineAfter: time.Minute, readyFailures: 3}, views)
 	if strings.Count(string(status), `"installation_a_b_online"`) != 1 || strings.Count(string(metrics), "installation_a_b_outdated=") != 1 {
