@@ -153,11 +153,11 @@ func TestHubBehindPathPrefix(t *testing.T) {
 	rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer rcancel()
 
-	code, _, err := hub.CreateJoinCode(settings.StateDir, "demo-club", "Демо-клуб", time.Hour, time.Now())
+	jc, err := hub.CreateJoinCode(settings.StateDir, "demo-club", "Демо-клуб", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := tunnel.Register(rctx, rt, hubURL, code, "1.0.0")
+	reg, err := tunnel.Register(rctx, rt, hubURL, jc.Code, "1.0.0")
 	if err != nil {
 		t.Fatalf("register through the prefix: %v", err)
 	}
