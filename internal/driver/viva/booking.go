@@ -252,22 +252,44 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 
 func isNull(r json.RawMessage) bool { return len(r) == 0 || string(r) == "null" }
 
+// clientKeys are the fields of an exercise that may list its clients. A
+// value other than null, "", [] or {} under any of them means the
+// exercise has a client: Cancel refuses it.
+var clientKeys = []string{"clients", "guests", "participants", "bookings"}
+
+func isEmpty(r json.RawMessage) bool {
+	switch strings.Join(strings.Fields(string(r)), "") {
+	case "", "null", `""`, "[]", "{}":
+		return true
+	}
+	return false
+}
+
+// checkOwnership fails closed: an exercise is deleted only when it shows
+// no client at all — clientsCount present and 0, no masterServiceBooking,
+// nothing under clientKeys — and its comment starts with the caller's
+// marker.
 func (d *Driver) checkOwnership(kind string, raw map[string]json.RawMessage, partner string) error {
 	invalid := func(what string) error {
 		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: "+what)
 	}
 	if kind == "exercises" {
-		if msb, ok := raw["masterServiceBooking"]; ok && !isNull(msb) {
-			return driver.ErrNotOwned
-		}
-		if cc, ok := raw["clientsCount"]; ok && !isNull(cc) {
-			var n float64
-			if err := json.Unmarshal(cc, &n); err != nil {
-				return invalid("clientsCount is not a number")
-			}
-			if n > 0 {
+		for _, k := range clientKeys {
+			if !isEmpty(raw[k]) {
 				return driver.ErrNotOwned
 			}
+		}
+		if !isNull(raw["masterServiceBooking"]) {
+			return driver.ErrNotOwned
+		}
+		var n float64
+		if cc := raw["clientsCount"]; isNull(cc) {
+			return invalid("clientsCount is missing: the record may have clients")
+		} else if err := json.Unmarshal(cc, &n); err != nil {
+			return invalid("clientsCount is not a number")
+		}
+		if n != 0 {
+			return driver.ErrNotOwned
 		}
 	}
 	r, ok := raw["comment"]
