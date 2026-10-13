@@ -262,7 +262,7 @@ func (c *Client) poller(ctx context.Context) {
 			}
 			setHealthy(false, err)
 			failures++
-			if !sleep(ctx, c.backoff(failures, errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrDuplicate))) {
+			if !sleep(ctx, c.backoff(failures, errors.Is(err, ErrUnauthorized))) {
 				return
 			}
 			continue
@@ -276,8 +276,9 @@ func (c *Client) poller(ctx context.Context) {
 }
 
 // backoff returns a full-jitter delay: uniform in [0, min(max, min*2^n)).
-// A rejected secret or a refused duplicate waits the maximum: retrying
-// faster cannot help.
+// A rejected secret waits the maximum: retrying faster cannot help. A
+// refused duplicate backs off like a failure: it may be the restart of a
+// copy whose last polls the hub has not yet seen end.
 func (c *Client) backoff(failures int, refused bool) time.Duration {
 	ceil := c.cfg.MaxBackoff
 	if !refused {

@@ -20,9 +20,10 @@ import (
 // Two running copies of one gateway (one secret): the hub serves the
 // first and refuses the other with 409 DUPLICATE_GATEWAY — it gets no
 // partner request and its heartbeats do not count — and reports it in
-// /hub/status and the status files. The other takes over only after the
-// first has been silent for longer than offline_after, or at once when
-// the first says it stopped (Release).
+// /hub/status and the status files, for as long as the first keeps its
+// polls open. The other takes over as soon as the first stops polling
+// (a crash closes its connections), or at once when the first says it
+// stopped (Release).
 func TestSecondCopyIsRefused(t *testing.T) {
 	w := newBeatWorld(t, "", nil, hub.Options{})
 	w.beat(t, true, "")
@@ -60,16 +61,22 @@ func TestSecondCopyIsRefused(t *testing.T) {
 		t.Fatalf("status files:\n%s\n%s", metrics, status)
 	}
 
-	// the first copy stops without a word (power cut): the second takes
-	// over once it has been silent for longer than offline_after
-	w.gw.Stop()
-	w.clock.Advance(2 * time.Minute)
-	time.Sleep(300 * time.Millisecond) // a few more polls of the second copy
-	if !second.Client.Duplicate() {
-		t.Fatal("took over before offline_after")
+	// while the first copy polls — across several of its poll cycles — the
+	// second stays refused, whatever the clock says
+	w.clock.Advance(time.Hour)
+	time.Sleep(2500 * time.Millisecond)
+	if !second.Client.Duplicate() || second.Client.Connected() {
+		t.Fatal("the second copy took over from one that still polls")
 	}
-	w.clock.Advance(time.Minute + time.Second)
+
+	// the first copy stops without a word (killed: no release): its polls
+	// close, and the second takes over within seconds
+	w.gw.Stop()
+	stopped := time.Now()
 	testkit.WaitFor(t, "the second copy takes over", 10*time.Second, func() bool { return second.Client.Connected() && !second.Client.Duplicate() })
+	if took := time.Since(stopped); took > 5*time.Second {
+		t.Fatalf("took over after %s", took)
+	}
 	if served.Load() != 0 {
 		t.Fatal("a refused copy served a request")
 	}

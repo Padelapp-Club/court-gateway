@@ -65,7 +65,6 @@ type installationHealth struct {
 	// the gateway process that serves registration gen (see Admit)
 	gen       uint64
 	instance  string    // "" when none is bound
-	seen      time.Time // hub clock: its last poll or heartbeat
 	released  string    // an instance that said it stopped
 	refusedAt time.Time // hub clock: the last refusal of another copy
 }
@@ -213,9 +212,10 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 
 // Admit decides whether gateway process instance may serve registration
 // gen of installation. The first instance is bound to it. Another is
-// refused while the bound one has polled or sent a heartbeat within
-// offlineAfter, and takes over after that. An instance that released
-// itself (it stopped) is not bound again.
+// refused while the bound one keeps a poll open (Broker.Polling), and
+// takes over as soon as it has none: a process that crashed or lost power
+// has its polls closed or ended. An instance that released itself (it
+// stopped) is not bound again. No instance id survives a restart.
 func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 	now := m.now()
 	m.mu.Lock()
@@ -228,9 +228,9 @@ func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 	case instance == h.instance:
 	case instance == h.released:
 		return false
-	case h.instance == "" || now.Sub(h.seen) > m.offlineAfter:
+	case h.instance == "" || m.broker == nil || !m.broker.Polling(installation, h.instance):
 		if h.instance != "" {
-			m.log.Warn("another copy of a gateway took over from a silent one", "installation", installation)
+			m.log.Warn("another copy of a gateway took over from one that stopped polling", "installation", installation)
 		}
 		h.instance = instance
 	default:
@@ -240,7 +240,6 @@ func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 		h.refusedAt = now
 		return false
 	}
-	h.seen = now
 	return true
 }
 

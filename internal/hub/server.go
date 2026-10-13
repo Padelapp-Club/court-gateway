@@ -227,6 +227,7 @@ func meta(r *http.Request) ConnMeta {
 		Build:    clip(r.Header.Get(tunnel.HeaderBuild)),
 		Platform: clip(r.Header.Get(tunnel.HeaderPlatform)),
 		Polls:    polls,
+		Instance: instance(r),
 	}
 }
 

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"time"
 
@@ -43,6 +44,13 @@ type gwConn struct {
 	lastSeen time.Time
 	lastEnd  time.Time
 	meta     ConnMeta
+	// polls of each gateway process (ConnMeta.Instance)
+	instances map[string]*instancePolls
+}
+
+type instancePolls struct {
+	open    int
+	lastEnd time.Time
 }
 
 // ConnMeta is what a gateway reports about itself on every poll.
@@ -52,6 +60,8 @@ type ConnMeta struct {
 	Platform string
 	// Polls is how many polls the gateway keeps open.
 	Polls int
+	// Instance is the gateway process (tunnel.HeaderInstance).
+	Instance string
 }
 
 type call struct {
@@ -107,7 +117,7 @@ func (b *Broker) pollConn(inst string, gen uint64) *gwConn {
 	case ok:
 		close(c.dead)
 	}
-	c = &gwConn{gen: gen, dead: make(chan struct{}), pending: make(chan *call), inflight: map[string]*call{}}
+	c = &gwConn{gen: gen, dead: make(chan struct{}), pending: make(chan *call), inflight: map[string]*call{}, instances: map[string]*instancePolls{}}
 	b.conns[inst] = c
 	return c
 }
@@ -139,12 +149,21 @@ func (b *Broker) Poll(ctx context.Context, inst string, gen uint64, meta ConnMet
 	c.active++
 	c.lastSeen = b.now()
 	c.meta = meta
+	maps.DeleteFunc(c.instances, func(_ string, p *instancePolls) bool { return p.open == 0 && time.Since(p.lastEnd) > b.grace })
+	ip := c.instances[meta.Instance]
+	if ip == nil {
+		ip = &instancePolls{}
+		c.instances[meta.Instance] = ip
+	}
+	ip.open++
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
 		c.active--
 		c.lastSeen = b.now()
 		c.lastEnd = time.Now() // real time: grace is about wall-clock gaps
+		ip.open--
+		ip.lastEnd = c.lastEnd
 		b.mu.Unlock()
 	}()
 	t := time.NewTimer(b.pollWait)
@@ -199,6 +218,21 @@ func (b *Broker) Connected(club string) bool {
 		return false
 	}
 	return c.active > 0 || len(c.inflight) > 0 || (!c.lastEnd.IsZero() && time.Since(c.lastEnd) < b.grace)
+}
+
+// Polling reports whether gateway process instance of club has a poll
+// open, or had one a moment ago (between two polls). A process that
+// crashed or lost its connection stops polling at once, or when its last
+// poll ends.
+func (b *Broker) Polling(club, instance string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c, ok := b.conns[club]
+	if !ok {
+		return false
+	}
+	ip := c.instances[instance]
+	return ip != nil && (ip.open > 0 || time.Since(ip.lastEnd) < b.grace)
 }
 
 // ConnInfo is the broker's view of one gateway.
