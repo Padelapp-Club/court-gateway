@@ -8,6 +8,7 @@
 package viva
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -211,3 +212,9 @@ func checkURL(path, raw string) error {
 
 // Capabilities: VivaCRM has no payment mark the gateway can set.
 func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: false} }
+
+// CheckLogin implements driver.LoginChecker.
+func (d *Driver) CheckLogin(ctx context.Context) error {
+	_, err := d.c.accessToken(ctx)
+	return err
+}

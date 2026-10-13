@@ -1,0 +1,398 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/doctor"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
+	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/setup"
+	"github.com/Padelapp-Club/court-gateway/internal/testkit"
+)
+
+// Obviously fake identifiers.
+const (
+	studio    = "00000000-0000-4000-8000-0000000000aa"
+	roomA     = "00000000-0000-4000-8000-0000000000b1"
+	roomB     = "00000000-0000-4000-8000-0000000000b2"
+	roomIdle  = "00000000-0000-4000-8000-0000000000b3"
+	priceList = "00000000-0000-4000-8000-0000000000c1"
+	crmUser   = "admin@example.test"
+	crmPass   = "stub-password-with spaces#and'quote"
+)
+
+const pricing = `{"basePrices": [
+  {"condition": {"type": "TIME", "days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"], "timeStart": "07:00:00", "timeEnd": "16:00:00"}, "valueFrom": 2000},
+  {"condition": {"type": "TIME", "days": ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"], "timeStart": "16:00:00", "timeEnd": "23:00:00"}, "valueFrom": 3000},
+  {"condition": {"type": "TIME", "days": ["SATURDAY","SUNDAY"], "timeStart": "08:00:00", "timeEnd": "22:00:00"}, "valueFrom": 2500}
+]}`
+
+type env map[string]string
+
+func (e env) get(k string) string { return e[k] }
+
+type stack struct {
+	hub  *testkit.Hub
+	stub *vivastub.Stub
+	crm  *httptest.Server
+	dir  string
+}
+
+func newStack(t *testing.T) *stack {
+	t.Helper()
+	stub := vivastub.New(crmUser, crmPass, studio)
+	stub.AddRoom(roomA, "Корт 10")
+	stub.AddRoom(roomB, "Корт 2")
+	stub.AddRoom(roomIdle, "Корт без броней")
+	stub.SetPricing(priceList, pricing)
+	day := time.Now().UTC().AddDate(0, 0, 3)
+	for i, room := range []string{roomA, roomB, roomB} {
+		start := time.Date(day.Year(), day.Month(), day.Day(), 10+i, 0, 0, 0, time.UTC)
+		stub.SeedExercise(map[string]any{
+			"timeFrom": start.Format(time.RFC3339), "timeTo": start.Add(time.Hour).Format(time.RFC3339),
+			"room":                 map[string]any{"id": room, "name": map[string]string{roomA: "Корт 10", roomB: "Корт 2"}[room]},
+			"masterServiceBooking": map[string]any{"client": map[string]any{"firstName": "PRIVACY-MARKER-NAME", "phone": "PRIVACY-MARKER-PHONE"}},
+		})
+	}
+	crm := httptest.NewServer(stub)
+	t.Cleanup(crm.Close)
+	h := testkit.StartHub(t, "poll_wait: 1s\noperator_key_env: HUB_OPERATOR_KEY\n"+testkit.HubPartnersYAML, func() map[string]string {
+		e := contract.KeyEnv()
+		e["HUB_OPERATOR_KEY"] = "test-operator-key-0123456789abcdef"
+		return e
+	}(), hub.Options{})
+	return &stack{hub: h, stub: stub, crm: crm, dir: t.TempDir()}
+}
+
+func (s *stack) setupArgs(extra ...string) []string {
+	return append([]string{"setup", "--non-interactive", "--json",
+		"--config", filepath.Join(s.dir, "gateway.yaml"),
+		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
+		"--crm-username", crmUser, "--crm-studio", studio,
+		"--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1",
+	}, extra...)
+}
+
+func decodeSetup(t *testing.T, out []byte) setup.Result {
+	t.Helper()
+	var r setup.Result
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatalf("setup output is not JSON: %v\n%s", err, out)
+	}
+	return r
+}
+
+func TestSetupNonInteractive(t *testing.T) {
+	s := newStack(t)
+	code := s.hub.JoinCode("club-one", "Клуб Один")
+	var out, errb bytes.Buffer
+
+	// a wrong password fails before the join code is spent
+	rc := run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": "wrong", "GATEWAY_JOIN_CODE": code}.get)
+	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.OK || r.Error.Code != "CRM_AUTH_FAILED" {
+		t.Fatalf("wrong password: rc=%d %s", rc, out.String())
+	}
+	// missing inputs are named, nothing is prompted
+	out.Reset()
+	rc = run(s.setupArgs(), &out, &errb, env{}.get)
+	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.Error.Code != "MISSING_INPUT" || !strings.Contains(r.Error.Message, "CRM_PASSWORD") {
+		t.Fatalf("missing: rc=%d %s", rc, out.String())
+	}
+
+	out.Reset()
+	rc = run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": code}.get)
+	r := decodeSetup(t, out.Bytes())
+	if rc != 0 || !r.OK {
+		t.Fatalf("setup: rc=%d %s %s", rc, out.String(), errb.String())
+	}
+	if r.Club.ID != "club-one" || r.Club.Name != "Клуб Один" {
+		t.Fatalf("club: %+v", r.Club)
+	}
+	// rooms seen in bookings, in natural order; the idle room is missing
+	// and the output says so
+	if len(r.Courts) != 2 || r.Courts[0].Name != "Корт 2" || r.Courts[1].Name != "Корт 10" || r.Courts[0].Bookings != 2 {
+		t.Fatalf("courts: %+v", r.Courts)
+	}
+	if r.Courts[0].PriceList != priceList {
+		t.Fatalf("the only price list was not assigned: %+v", r.Courts[0])
+	}
+	if r.Hours["mon-fri"] != "07:00-23:00" || r.Hours["sat-sun"] != "08:00-22:00" {
+		t.Fatalf("hours: %+v", r.Hours)
+	}
+	if !hasWarning(r, "COURTS_FROM_BOOKINGS") {
+		t.Fatalf("no warning about courts without bookings: %+v", r.Warnings)
+	}
+	// no secret on stdout or stderr
+	for _, secret := range []string{crmPass, code, "cgs_"} {
+		if strings.Contains(out.String()+errb.String(), secret) {
+			t.Fatalf("setup printed a secret")
+		}
+	}
+	// the files
+	cfg, _ := os.ReadFile(r.Config)
+	if !strings.Contains(string(cfg), "проверьте") || strings.Contains(string(cfg), crmPass) || strings.Contains(string(cfg), "cgs_") {
+		t.Fatalf("gateway.yaml:\n%s", cfg)
+	}
+	if strings.Contains(string(cfg), "listen") {
+		t.Fatalf("setup opened a local port:\n%s", cfg)
+	}
+	info, err := os.Stat(r.EnvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf(".env mode %v", info.Mode().Perm())
+	}
+	getenv, err := core.EnvWithDotEnv(r.Config, env{}.get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := core.LoadFile(r.Config, getenv)
+	if err != nil {
+		t.Fatalf("written config does not load: %v", err)
+	}
+	if loaded.Driver.Password != crmPass || loaded.Hub == nil || !strings.HasPrefix(loaded.Hub.Secret, "cgs_") || loaded.Listen != "" {
+		t.Fatalf("loaded: password ok=%v hub=%v listen=%q", loaded.Driver.Password == crmPass, loaded.Hub != nil, loaded.Listen)
+	}
+
+	// the same code twice, and an existing config
+	out.Reset()
+	rc = run(s.setupArgs("--force"), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": code}.get)
+	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.Error.Code != "JOIN_CODE_REJECTED" {
+		t.Fatalf("reused code: rc=%d %s", rc, out.String())
+	}
+	out.Reset()
+	rc = run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "x")}.get)
+	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.Error.Code != "CONFIG_EXISTS" {
+		t.Fatalf("existing config: rc=%d %s", rc, out.String())
+	}
+}
+
+func hasWarning(r setup.Result, code string) bool {
+	for _, w := range r.Warnings {
+		if w.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
+	s := newStack(t)
+	old := stdin
+	defer func() { stdin = old }()
+	isTerminal = func() bool { return false }
+
+	answers := strings.Join([]string{s.hub.JoinCode("club-two", "Клуб Два"), crmPass, ""}, "\n") + "\n"
+	stdin = strings.NewReader(answers)
+	var out, errb bytes.Buffer
+	args := []string{"setup", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
+		"--crm-username", crmUser, "--crm-studio", studio, "--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
+	if rc := run(args, &out, &errb, env{}.get); rc != 0 {
+		t.Fatalf("interactive: %d\n%s\n%s", rc, out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "Код подключения") || !strings.Contains(errb.String(), "Пароль администратора Viva") {
+		t.Fatalf("prompts: %s", errb.String())
+	}
+	if strings.Contains(out.String()+errb.String(), crmPass) {
+		t.Fatal("interactive setup echoed the password")
+	}
+	if !strings.Contains(out.String(), "Готово") {
+		t.Fatalf("summary: %s", out.String())
+	}
+
+	// --password-stdin for agents
+	dir2 := t.TempDir()
+	stdin = strings.NewReader(crmPass + "\n")
+	out.Reset()
+	args = []string{"setup", "--non-interactive", "--json", "--password-stdin", "--config", filepath.Join(dir2, "gateway.yaml"),
+		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile, "--crm-username", crmUser, "--crm-studio", studio,
+		"--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
+	if rc := run(args, &out, &errb, env{"GATEWAY_JOIN_CODE": s.hub.JoinCode("club-three", "Клуб Три")}.get); rc != 0 {
+		t.Fatalf("password-stdin: %d %s", rc, out.String())
+	}
+}
+
+// The whole path a club goes through: setup -> serve -> doctor -> partner
+// call through the hub -> healthcheck; then the CRM goes away.
+func TestServeDoctorHealthcheck(t *testing.T) {
+	s := newStack(t)
+	statusInterval = 200 * time.Millisecond
+	defer func() { statusInterval = 60 * time.Second }()
+	var out, errb bytes.Buffer
+	if rc := run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+
+	// doctor before the service runs: the tunnel check fails, exit 1
+	out.Reset()
+	if rc := run([]string{"doctor", "--json", "-config", cfg}, &out, &errb, env{}.get); rc != 1 {
+		t.Fatalf("doctor without service: rc=%d %s", rc, out.String())
+	}
+	if rep := decodeDoctor(t, out.Bytes()); status(rep, doctor.CodeTunnel) != doctor.Fail || status(rep, doctor.CodeCRMLogin) != doctor.OK {
+		t.Fatalf("doctor without service: %s", out.String())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logs := &testkit.SafeBuffer{}
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, cfg, "", logs, env{}.get) }()
+	defer func() {
+		cancel()
+		if rc := <-done; rc != 0 {
+			t.Errorf("serve exit %d", rc)
+		}
+	}()
+	testkit.WaitFor(t, "gateway connected", 15*time.Second, func() bool { return s.hub.Server().Broker().Connected("club-one") })
+
+	out.Reset()
+	rc := run([]string{"doctor", "--json", "-config", cfg}, &out, &errb, env{}.get)
+	rep := decodeDoctor(t, out.Bytes())
+	if rc != 0 || !rep.OK {
+		t.Fatalf("doctor: rc=%d %s", rc, out.String())
+	}
+	for _, c := range []string{doctor.CodeConfig, doctor.CodeCRMLogin, doctor.CodeOccupancy, doctor.CodeHubReach, doctor.CodeHubAuth, doctor.CodeTunnel} {
+		if status(rep, c) != doctor.OK {
+			t.Fatalf("%s is %s: %s", c, status(rep, c), out.String())
+		}
+	}
+	if status(rep, doctor.CodeVersion) != doctor.Warn { // a test binary is self-built
+		t.Fatalf("version check: %s", out.String())
+	}
+	out.Reset()
+	if rc := run([]string{"doctor", "-config", cfg}, &out, &errb, env{}.get); rc != 0 || !strings.Contains(out.String(), "Всё в порядке") {
+		t.Fatalf("doctor text: %d %s", rc, out.String())
+	}
+
+	// a partner call goes partner -> hub -> tunnel -> gateway -> CRM
+	req, _ := http.NewRequest(http.MethodGet, s.hub.URL()+"/v1/clubs/club-one/courts", nil)
+	req.Header.Set("Authorization", "Bearer "+contract.ReadKey)
+	resp, err := (&http.Client{Transport: s.hub.Transport()}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Корт 10") {
+		t.Fatalf("partner call: %d %s", resp.StatusCode, body)
+	}
+
+	// healthcheck reads the status file: healthy
+	testkit.WaitFor(t, "healthy", 10*time.Second, func() bool {
+		return run([]string{"healthcheck", "-config", cfg}, io.Discard, io.Discard, env{}.get) == 0
+	})
+	// the CRM goes away: unhealthy, and doctor fails with a code
+	s.crm.Close()
+	s.stub.RevokeTokens()
+	testkit.WaitFor(t, "unhealthy", 10*time.Second, func() bool {
+		return run([]string{"healthcheck", "-config", cfg}, io.Discard, io.Discard, env{}.get) == 1
+	})
+	out.Reset()
+	if rc := run([]string{"healthcheck", "-config", cfg}, &out, &errb, env{}.get); rc != 1 || !strings.Contains(out.String(), "CRM_UNREACHABLE") {
+		t.Fatalf("healthcheck: %d %s", rc, out.String())
+	}
+
+	// nothing secret in what the service logged or doctor printed
+	all := logs.String() + out.String() + s.hub.Logs.String()
+	for _, secret := range []string{crmPass, "cgs_", "PRIVACY-MARKER"} {
+		if strings.Contains(all, secret) {
+			t.Fatalf("leaked %q", secret)
+		}
+	}
+}
+
+func decodeDoctor(t *testing.T, b []byte) doctor.Report {
+	t.Helper()
+	var r doctor.Report
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatalf("doctor output: %v\n%s", err, b)
+	}
+	return r
+}
+
+func status(r doctor.Report, code string) doctor.Status {
+	for _, c := range r.Checks {
+		if c.Code == code {
+			return c.Status
+		}
+	}
+	return ""
+}
+
+func TestDoctorFailsOnBadConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "gateway.yaml")
+	_ = os.WriteFile(cfg, []byte("club: { id: x }\n"), 0o644)
+	var out bytes.Buffer
+	if rc := run([]string{"doctor", "--json", "-config", cfg}, &out, io.Discard, env{}.get); rc != 1 {
+		t.Fatalf("rc %d", rc)
+	}
+	if rep := decodeDoctor(t, out.Bytes()); status(rep, doctor.CodeConfig) != doctor.Fail || status(rep, doctor.CodeTunnel) != doctor.Skip {
+		t.Fatalf("%s", out.String())
+	}
+}
+
+func TestInstallServicePrint(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "gateway.yaml")
+	_ = os.WriteFile(cfg, []byte("x: 1\n"), 0o644)
+	for goos, want := range map[string][]string{
+		"linux":   {"[Service]", "Restart=always", "serve -config", "WantedBy=multi-user.target", "systemctl enable --now court-gateway"},
+		"darwin":  {"<key>KeepAlive</key><true/>", "<string>serve</string>", "launchctl bootstrap"},
+		"windows": {"sc.exe create court-gateway binPath=", "service -config", "sc.exe failure court-gateway", "restart/5000"},
+	} {
+		var out bytes.Buffer
+		if rc := run([]string{"install-service", "--print", "--os", goos, "-config", cfg}, &out, io.Discard, env{}.get); rc != 0 {
+			t.Fatalf("%s: rc %d", goos, rc)
+		}
+		for _, w := range want {
+			if !strings.Contains(out.String(), w) {
+				t.Fatalf("%s: missing %q in\n%s", goos, w, out.String())
+			}
+		}
+	}
+}
+
+func TestHubJoinCodeCommand(t *testing.T) {
+	dir := t.TempDir()
+	hubCfg := filepath.Join(dir, "hub.yaml")
+	_ = os.WriteFile(hubCfg, []byte("state_dir: "+filepath.Join(dir, "state")+"\npublic_url: https://hub.example.test\n"), 0o644)
+	var out bytes.Buffer
+	if rc := run([]string{"hub", "join-code", "create", "-config", hubCfg, "--club", "club-x", "--name", "Клуб X"}, &out, io.Discard, env{}.get); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	printed := out.String()
+	sc := bufio.NewScanner(strings.NewReader(printed))
+	sc.Scan()
+	line := sc.Text()
+	code := strings.TrimSpace(line[strings.LastIndex(line, ":")+1:])
+	store, err := hub.OpenStore(filepath.Join(dir, "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, secret, err := store.Redeem(code)
+	if err != nil || g.Club != "club-x" || g.Name != "Клуб X" || secret == "" {
+		t.Fatalf("redeem %q: %+v %v", code, g, err)
+	}
+	if !strings.Contains(printed, "--hub-url https://hub.example.test") {
+		t.Fatalf("output: %s", printed)
+	}
+	if rc := run([]string{"hub", "join-code", "create", "-config", hubCfg, "--club", "Bad Id"}, io.Discard, io.Discard, env{}.get); rc != 2 {
+		t.Fatalf("bad club id accepted: %d", rc)
+	}
+}

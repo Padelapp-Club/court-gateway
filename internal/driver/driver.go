@@ -187,3 +187,9 @@ type Config struct {
 // Factory builds a driver or returns a config error with a message for the
 // club administrator (in Russian).
 type Factory func(Config) (Driver, error)
+
+// LoginChecker is implemented by drivers that can check the CRM login on
+// its own, separately from a data read (used by `doctor`).
+type LoginChecker interface {
+	CheckLogin(ctx context.Context) error
+}

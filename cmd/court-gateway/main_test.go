@@ -22,10 +22,6 @@ func TestVersionAndUnknownCommand(t *testing.T) {
 	if code := run([]string{"frobnicate"}, &out, &errb, noEnv); code != 2 {
 		t.Fatalf("unknown command: %d", code)
 	}
-	out.Reset()
-	if code := run([]string{"setup"}, &out, &errb, noEnv); code != 0 || !strings.Contains(out.String(), "not yet") {
-		t.Fatalf("setup: %d %q", code, out.String())
-	}
 }
 
 func TestServeRefusesBadConfigInRussian(t *testing.T) {

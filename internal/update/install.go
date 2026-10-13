@@ -217,10 +217,17 @@ func (c *CacheDir) Launch(own string, now time.Time) string {
 	return p.Path
 }
 
+// ShippedEnv carries the path of the shipped binary into a cached binary
+// started by Launch, so the cached binary keeps using the cache.
+const ShippedEnv = "COURT_GATEWAY_SHIPPED"
+
 // ChooseInstaller replaces the executable in place when its directory is
 // writable, and otherwise caches updates in stateDir. ok is false when
 // neither works (updates stay off and the hub shows the old version).
 func ChooseInstaller(exe, stateDir string) (Installer, bool) {
+	if shipped := os.Getenv(ShippedEnv); shipped != "" {
+		return &CacheDir{Dir: stateDir, Shipped: shipped}, true
+	}
 	if f, err := os.CreateTemp(filepath.Dir(exe), ".court-gateway-probe-*"); err == nil {
 		name := f.Name()
 		f.Close()
@@ -252,8 +259,9 @@ func ChildCheck(configPath string) func(ctx context.Context, path, ver string) e
 		if err != nil {
 			return fmt.Errorf("%w: version: %v", ErrBroken, err)
 		}
-		if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, "court-gateway "+ver) {
-			return fmt.Errorf("%w: reports %q, manifest says %s", ErrBroken, firstLine(got), ver)
+		f := strings.Fields(string(out))
+		if len(f) < 2 || f[0] != "court-gateway" || f[1] != ver {
+			return fmt.Errorf("%w: reports %q, manifest says %s", ErrBroken, firstLine(string(out)), ver)
 		}
 		cmd := exec.CommandContext(cctx, path, "selfcheck", "-config", configPath)
 		var stderr bytes.Buffer

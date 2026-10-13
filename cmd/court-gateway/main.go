@@ -1,35 +1,37 @@
-// Command court-gateway serves a CRM-agnostic partner API for one club.
+// Command court-gateway serves a CRM-agnostic partner API for one club and,
+// in hub mode, the public hub that partners call and gateways connect to.
 //
-//	court-gateway serve       [-config gateway.yaml]
-//	court-gateway healthcheck [-config gateway.yaml] [-addr host:port]
+//	court-gateway setup            build gateway.yaml and .env (interactive or --non-interactive --json)
+//	court-gateway serve            run the gateway (connects out to the hub)
+//	court-gateway doctor [--json]  check everything, with stable check codes
+//	court-gateway install-service  register with systemd / launchd / Windows SCM
+//	court-gateway healthcheck      container health probe (exit 0 = ready)
+//	court-gateway hub ...          run the hub, manage join codes
 //	court-gateway version
 package main
 
 import (
-	"context"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"log/slog"
-	"net"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
+	"runtime"
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
-	"gopkg.in/yaml.v3"
-
-	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-// version is set at build time with -ldflags "-X main.version=...".
-var version = "dev"
+// Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...".
+var (
+	version = "dev"
+	// releaseKey is the base64 ed25519 public key of release manifests.
+	// Empty means a self-built binary: it never updates itself.
+	releaseKey = ""
+	// defaultHubURL is offered by setup when --hub-url is not given.
+	defaultHubURL = ""
+)
 
 // factories lists the available CRM drivers by crm.type.
 var factories = map[string]driver.Factory{
@@ -37,20 +39,41 @@ var factories = map[string]driver.Factory{
 	"demo": demo.New,
 }
 
+// exitRestart asks the service manager to start the binary again (used
+// where a process cannot replace itself, i.e. Windows, after an update).
+const exitRestart = 3
+
+func build() string {
+	if releaseKey == "" {
+		return tunnel.BuildSelf
+	}
+	return tunnel.BuildRelease
+}
+
+func platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
 }
 
 const usage = `court-gateway — партнёрский API клуба поверх его CRM
 
-Команды:
-  serve        запустить сервис
-  healthcheck  проверить готовность запущенного сервиса (код выхода 0 — готов)
-  setup        собрать черновик конфигурации (пока не реализовано)
-  version      показать версию
+Установка и работа шлюза:
+  setup            собрать gateway.yaml и .env: вход в CRM, корты, часы, код подключения к хабу
+  serve            запустить шлюз (сам подключается к хабу; входящих портов не открывает)
+  doctor           проверить всё: конфигурацию, CRM, связь с хабом, версию (--json — для программ)
+  install-service  зарегистрировать службу (systemd, launchd, Windows), чтобы шлюз запускался сам
+  uninstall-service  удалить службу
+  healthcheck      проверка готовности для Docker (код выхода 0 — готов)
+  version          показать версию
 
-Параметры serve и healthcheck:
-  -config путь   файл конфигурации (по умолчанию gateway.yaml или $GATEWAY_CONFIG)
+Хаб (для оператора):
+  hub                        запустить хаб (-config hub.yaml)
+  hub join-code create       выдать одноразовый код подключения клуба (--club id --name "Название")
+  hub gateway revoke         отозвать подключение клуба (--club id)
+
+Общий параметр:
+  -config путь     gateway.yaml (по умолчанию gateway.yaml или $GATEWAY_CONFIG)
 `
 
 func run(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -64,27 +87,25 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	}
 	switch args[0] {
 	case "serve":
-		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		cfgPath := fs.String("config", defaultConfig, "config file")
-		if fs.Parse(args[1:]) != nil {
-			return 2
-		}
-		return serve(*cfgPath, stderr, getenv)
+		return cmdServe(args[1:], stderr, getenv, defaultConfig)
+	case "service":
+		return cmdService(args[1:], stderr, getenv, defaultConfig)
 	case "healthcheck":
-		fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		cfgPath := fs.String("config", defaultConfig, "config file")
-		addr := fs.String("addr", "", "host:port of the running service (overrides listen from the config)")
-		if fs.Parse(args[1:]) != nil {
-			return 2
-		}
-		return healthcheck(*cfgPath, *addr, stdout, stderr)
-	case "version":
-		fmt.Fprintln(stdout, "court-gateway", version)
-		return 0
+		return cmdHealthcheck(args[1:], stdout, stderr, getenv, defaultConfig)
+	case "selfcheck":
+		return cmdSelfcheck(args[1:], stdout, stderr, getenv, defaultConfig)
+	case "doctor":
+		return cmdDoctor(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "setup":
-		fmt.Fprintln(stdout, "not yet: команда setup появится в следующей версии")
+		return cmdSetup(args[1:], stdout, stderr, getenv, defaultConfig)
+	case "install-service":
+		return cmdInstallService(args[1:], stdout, stderr, defaultConfig, false)
+	case "uninstall-service":
+		return cmdInstallService(args[1:], stdout, stderr, defaultConfig, true)
+	case "hub":
+		return cmdHub(args[1:], stdout, stderr, getenv)
+	case "version":
+		fmt.Fprintf(stdout, "court-gateway %s (%s, %s)\n", version, build(), platform())
 		return 0
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
@@ -93,92 +114,4 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		fmt.Fprintf(stderr, "неизвестная команда %q\n\n%s", args[0], usage)
 		return 2
 	}
-}
-
-func serve(cfgPath string, stderr io.Writer, getenv func(string) string) int {
-	s, err := core.LoadFile(cfgPath, getenv)
-	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
-	}
-	log := core.NewLogger(stderr, slog.LevelInfo, s.Secrets)
-	s.Driver.Logger = log
-	drv, err := core.BuildDriver(s, factories)
-	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
-	}
-	srv, err := core.NewServer(s, drv, log)
-	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
-	}
-	httpSrv := &http.Server{
-		Addr:              s.Listen,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	errc := make(chan error, 1)
-	go func() { errc <- httpSrv.ListenAndServe() }()
-	log.Info("started", "version", version, "listen", s.Listen, "crm", s.CRMType, "courts", len(s.Courts))
-	select {
-	case err := <-errc:
-		if !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server stopped", "error", err)
-			return 1
-		}
-	case <-ctx.Done():
-		log.Info("shutting down")
-		shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := httpSrv.Shutdown(shCtx); err != nil {
-			log.Error("shutdown", "error", err)
-			return 1
-		}
-	}
-	return 0
-}
-
-// healthcheck asks the running service for /health/ready. It reads only
-// `listen` from the config, so it needs no secrets.
-func healthcheck(cfgPath, addr string, stdout, stderr io.Writer) int {
-	if addr == "" {
-		listen := core.DefaultListen
-		if data, err := os.ReadFile(cfgPath); err == nil {
-			var c struct {
-				Listen string `yaml:"listen"`
-			}
-			if yaml.Unmarshal(data, &c) == nil && c.Listen != "" {
-				listen = c.Listen
-			}
-		}
-		addr = listen
-	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		fmt.Fprintf(stderr, "healthcheck: неверный адрес %q\n", addr)
-		return 1
-	}
-	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		host = "127.0.0.1"
-	}
-	client := &http.Client{Timeout: core.ReadyTimeout + 2*time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/health/ready")
-	if err != nil {
-		fmt.Fprintln(stderr, "healthcheck: сервис не отвечает")
-		return 1
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	fmt.Fprintf(stdout, "%d %s", resp.StatusCode, body)
-	if resp.StatusCode != http.StatusOK {
-		return 1
-	}
-	return 0
 }

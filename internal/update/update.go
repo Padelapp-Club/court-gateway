@@ -489,12 +489,9 @@ func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, inte
 func jitter(max time.Duration) time.Duration {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	n := int64(0)
+	var n uint64
 	for _, v := range b {
-		n = n<<8 | int64(v)
+		n = n<<8 | uint64(v)
 	}
-	if n < 0 {
-		n = -n
-	}
-	return time.Duration(n % int64(max))
+	return time.Duration(n % uint64(max))
 }
