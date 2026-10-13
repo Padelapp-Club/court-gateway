@@ -58,6 +58,7 @@ type installationHealth struct {
 	notReady  int // heartbeats in a row with ready=false
 	beats     int
 	applied   tunnel.AppliedConfig // as reported, cleaned
+	refused   int64                // requests the gateway refused as unsigned
 
 	state string // as of the last Tick
 
@@ -85,6 +86,9 @@ type Health struct {
 	// secret, was last refused; Duplicate is true while that is recent.
 	Duplicate   bool
 	DuplicateAt time.Time
+	// RefusedRequests: requests and configs the gateway refused because
+	// the hub had not signed them for it (since the gateway started).
+	RefusedRequests int64
 	// the gateway's report on the club config it runs
 	tunnel.AppliedConfig
 }
@@ -186,6 +190,11 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 	if !hb.CheckedAt.IsZero() && hb.CheckedAt.Year() > 2000 && hb.CheckedAt.Year() < 3000 {
 		h.checkedAt = hb.CheckedAt.UTC()
 	}
+	if hb.RefusedRequests > h.refused {
+		m.log.Warn("gateway refused requests not signed by the hub: something between them forges or alters them",
+			"installation", installation, "refused", hb.RefusedRequests)
+	}
+	h.refused = max(hb.RefusedRequests, 0)
 	if hb.Ready {
 		h.notReady = 0
 	} else {
@@ -326,7 +335,7 @@ func (m *Monitor) Health(installation string) Health {
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
-		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
 		AppliedConfig: tunnel.AppliedConfig{ConfigVersion: h.applied.ConfigVersion, ConfigError: h.applied.ConfigError,
 			ClubErrors: maps.Clone(h.applied.ClubErrors), Clubs: append([]string(nil), h.applied.Clubs...)},
 	}

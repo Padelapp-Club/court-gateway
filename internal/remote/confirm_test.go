@@ -44,7 +44,7 @@ func newVivaInstallation(t *testing.T) *vivaInstallation {
 	stub.AddRoom(vRoom, "Court")
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	yaml := fmt.Sprintf("hub: {url: https://hub.example.test}\ncrm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n", srv.URL, srv.URL)
+	yaml := fmt.Sprintf("hub: {url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}\ncrm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n", srv.URL, srv.URL)
 	env := map[string]string{"CRM_PASSWORD": "fixture-password", "GATEWAY_HUB_SECRET": "fixture-hub-secret"}
 	base, err := core.Load([]byte(yaml), func(k string) string { return env[k] })
 	if err != nil {

@@ -266,6 +266,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		ID: newCallID(), RequestID: core.RequestID(r), Method: http.MethodPost, Path: tunnel.PathDiscover,
 		Header: map[string]string{"Content-Type": "application/json"}, Body: body, TimeoutMS: int(timeout / time.Millisecond),
 	}
+	rq.Sign(s.store.key, inst, g.registration(), time.Now())
 	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, timeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):

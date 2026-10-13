@@ -11,6 +11,7 @@ import (
 
 type draft struct {
 	HubURL, HubCA   string
+	HubKey          string
 	CRMType         string
 	Username        string
 	AuthURL, APIURL string
@@ -36,6 +37,9 @@ func (d *draft) render(installation, name string) string {
 	w("# Связь только исходящая: шлюз сам подключается к хабу, входящих портов нет.")
 	w("hub:")
 	w("  url: %s", d.HubURL)
+	w("  installation: %s", installation)
+	w("  # открытый ключ хаба: шлюз выполняет только подписанные им запросы")
+	w("  key: %s", q(d.HubKey))
 	if d.HubCA != "" {
 		w("  ca_file: %s", q(d.HubCA))
 	}

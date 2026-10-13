@@ -144,7 +144,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 		env[k] = v
 	}
 	env[core.DefaultHubSecretEnv] = rr.Secret
-	base, err := core.Load([]byte("hub: { url: "+h.URL()+" }\n"+o.CRMYAML), func(k string) string { return env[k] })
+	base, err := core.Load([]byte("hub: { url: "+h.URL()+", installation: "+id+", key: "+rr.HubKey+" }\n"+o.CRMYAML), func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatalf("installation config: %v", err)
 	}
@@ -173,7 +173,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 	if o.NoConnect {
 		return in
 	}
-	cfg := ClientConfig(h.URL(), h.Transport(), rr.Secret, clubs.TunnelHandler(), log)
+	cfg := h.ClientConfig(id, rr.Secret, clubs.TunnelHandler(), log)
 	cfg.OnConfigVersion = syncer.Notify
 	in.Gateway = StartGateway(t, cfg)
 	syncer.SetFetch(in.Gateway.Client.FetchConfig)

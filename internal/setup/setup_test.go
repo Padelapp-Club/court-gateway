@@ -37,7 +37,7 @@ func TestEnvValueQuotesDollar(t *testing.T) {
 
 // The written config is an installation: hub and CRM login, no club.
 func TestRenderedConfigHasNoClub(t *testing.T) {
-	d := &draft{HubURL: "https://hub.example.test", CRMType: "viva", Username: "admin@example.test"}
+	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", Username: "admin@example.test"}
 	if p := validate(d, "pw", "secret"); p != nil {
 		t.Fatalf("%v\n%s", p, d.render("inst-1", "Сеть"))
 	}
@@ -88,10 +88,13 @@ func TestSetupRateLimitedByTheHub(t *testing.T) {
 	}
 }
 
+// testHubKey is the hub key registerTransport answers with.
+const testHubKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+
 type registerTransport struct{}
 
 func (registerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	body := `{"installation_id":"inst-1","name":"Сеть","secret":"cgs_0123456789abcdef0123456789abcdef"}`
+	body := `{"installation_id":"inst-1","name":"Сеть","secret":"cgs_0123456789abcdef0123456789abcdef","hub_key":"` + testHubKey + `"}`
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
 }
 
@@ -150,5 +153,40 @@ func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 		if failOn == "folder" && hubCalls != 0 {
 			t.Fatal("join code redeemed although the folder could not be closed")
 		}
+	}
+}
+
+// keyTransport answers a registration with the hub key key ("" omits it).
+type keyTransport string
+
+func (k keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	body := `{"installation_id":"inst-1","name":"Сеть","secret":"cgs_0123456789abcdef0123456789abcdef","hub_key":"` + string(k) + `"}`
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
+}
+
+// setup pins the hub's signing key from the registration answer, with no
+// step for the club, and every new join code pins it again; a hub that
+// sends no key is refused.
+func TestSetupPinsTheHubKey(t *testing.T) {
+	dir := t.TempDir()
+	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
+	other := core.EncodeHubKey(make([]byte, 32))
+	for _, key := range []string{testHubKey, other} {
+		if _, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(key)}); err != nil {
+			t.Fatal(err)
+		}
+		s, err := core.LoadFile(in.ConfigPath, envFor("", "cgs_x"))
+		if err != nil || core.EncodeHubKey(s.Hub.Key) != key || s.Hub.Installation != "inst-1" {
+			t.Fatalf("pinned %+v (%v), want key %s", s.Hub, err, key)
+		}
+		in.Force = true
+	}
+	fresh := filepath.Join(t.TempDir(), "gateway.yaml")
+	res, err := Run(context.Background(), Input{ConfigPath: fresh, HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo"}, Deps{HubTransport: keyTransport("")})
+	if err == nil || res.Error.Code != "HUB_UNREACHABLE" {
+		t.Fatalf("a hub without a key: %+v %v", res.Error, err)
+	}
+	if _, err := os.Stat(fresh); err == nil {
+		t.Fatal("config written without a hub key")
 	}
 }

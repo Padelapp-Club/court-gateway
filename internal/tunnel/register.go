@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
 // ErrJoinCodeRejected: the hub does not accept the code (unknown, used or
@@ -39,8 +41,15 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 		return out, answerError(status, "registration")
 	case err != nil || out.Secret == "" || out.Installation == "":
 		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
+	case !validKey(out.HubKey):
+		return RegisterResponse{}, errors.New("hub sent no signing key: it is older than this gateway")
 	}
 	return out, nil
+}
+
+func validKey(s string) bool {
+	_, err := core.ParseHubKey(s)
+	return err == nil
 }
 
 // FetchWhoami asks the hub how it sees this gateway.

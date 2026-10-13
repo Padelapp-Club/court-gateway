@@ -16,6 +16,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -193,5 +194,35 @@ func TestUnreadableStateIsNotDeregistration(t *testing.T) {
 	}
 	if g, err := store.Authenticate(secret); err != nil || g.Installation != "perm-net" {
 		t.Fatalf("after the directory is readable again: %+v, %v", g, err)
+	}
+}
+
+// The hub makes its signing key on the first start, keeps it closed in
+// state_dir and the same across restarts, refuses to start on a damaged
+// one, and hands its public half to every gateway that registers.
+func TestHubSigningKeyIsMadeOnceAndPinnedAtRegistration(t *testing.T) {
+	dir := t.TempDir()
+	first, err := hub.OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := hub.OpenStore(dir, nil)
+	if err != nil || !again.HubKey().Equal(first.HubKey()) {
+		t.Fatalf("key changed across a restart: %v", err)
+	}
+	p := filepath.Join(dir, "hub-signing.key")
+	if fi, err := os.Stat(p); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
+		t.Fatalf("key file: %v %v", fi, err)
+	}
+	h := testkit.StartHub(t, "", nil, hub.Options{})
+	rr, err := tunnel.Register(context.Background(), h.Transport(), h.URL(), h.JoinCode("key-net", ""), "1.0.0")
+	if err != nil || rr.HubKey != core.EncodeHubKey(h.Server().Store().HubKey()) {
+		t.Fatalf("registration answer: %+v %v", rr, err)
+	}
+	if err := os.WriteFile(p, []byte("damaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.OpenStore(dir, nil); err == nil {
+		t.Fatal("the hub starts with a damaged signing key")
 	}
 }

@@ -102,7 +102,7 @@ func Build(t *testing.T, crmYAML string, spec core.ClubSpec, env map[string]stri
 		}
 		return env[k]
 	}
-	base, err := core.Load([]byte("hub: { url: https://hub.example.test }\n"+crmYAML), getenv)
+	base, err := core.Load([]byte("hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }\n"+crmYAML), getenv)
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}

@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -13,6 +15,14 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
+)
+
+// hubKey signs the club config slowHub serves; gatewayYAML pins it.
+var (
+	hubKey      = ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	gatewayYAML = "hub: { url: https://hub.example.test, installation: test-net, key: " +
+		core.EncodeHubKey(hubKey.Public().(ed25519.PublicKey)) + " }\ncrm: { type: demo }\n"
 )
 
 // slowHub answers the hub endpoints after a delay.
@@ -27,8 +37,11 @@ func (d slowHub) RoundTrip(r *http.Request) (*http.Response, error) {
 	case "/tunnel/whoami":
 		body = `{"installation_id":"inst-1","connected":true,"config_version":1,"clubs":["club-a"],"applied_config_version":1,"clubs_served":["club-a"]}`
 	case "/tunnel/config":
-		body = `{"version":1,"clubs":[{"id":"club-a","name":"A","timezone":"Europe/Moscow","slot_minutes":30,` +
-			`"hours":{"mon-sun":"07:00-23:00"},"crm":{"studio":"demo-north"},"courts":[{"id":"court-1","name":"C1"}]}]}`
+		rc := tunnel.RemoteConfig{Version: 1, Clubs: []json.RawMessage{[]byte(`{"id":"club-a","name":"A","timezone":"Europe/Moscow","slot_minutes":30,` +
+			`"hours":{"mon-sun":"07:00-23:00"},"crm":{"studio":"demo-north"},"courts":[{"id":"court-1","name":"C1"}]}`)}}
+		rc.Sign(hubKey, "test-net", tunnel.RegistrationOf(tunnel.SecretSHA256("cgs_x")), time.Now())
+		b, _ := json.Marshal(rc)
+		body = string(b)
 	}
 	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 }
@@ -63,7 +76,7 @@ func (d ctxDriver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driv
 // check's time: each step has its own timeout.
 func TestDoctorStepsHaveTheirOwnTimeouts(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := os.WriteFile(cfg, []byte("hub: { url: https://hub.example.test }\ncrm: { type: demo }\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte(gatewayYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rep := Run(context.Background(), Options{
@@ -91,7 +104,7 @@ func TestDoctorStepsHaveTheirOwnTimeouts(t *testing.T) {
 // doctor reports the version the service runs, not the installed file's.
 func TestDoctorReportsTheRunningVersion(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
-	if err := os.WriteFile(cfg, []byte("hub: { url: https://hub.example.test }\ncrm: { type: demo }\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte(gatewayYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	getenv := func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] }

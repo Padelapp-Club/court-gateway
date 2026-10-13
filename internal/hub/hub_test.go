@@ -67,7 +67,9 @@ func (w *world) connect(t *testing.T, hubURL string) {
 
 func (w *world) connectWith(t *testing.T, hubURL, secret string) {
 	t.Helper()
-	w.gw = testkit.StartGateway(t, testkit.ClientConfig(hubURL, w.hub.Transport(), secret, w.built.Clubs.TunnelHandler(), nil))
+	cfg := w.hub.ClientConfig("demo-club", secret, w.built.Clubs.TunnelHandler(), nil)
+	cfg.HubURL = hubURL
+	w.gw = testkit.StartGateway(t, cfg)
 	w.waitConnected(t)
 }
 
@@ -124,7 +126,7 @@ func TestPartnerLimitedToItsClubs(t *testing.T) {
 	env["NARROW_KEY"] = "narrow-key-0123456789abcdef0123"
 	h := testkit.StartHub(t, hubYAML+extra, env, hub.Options{})
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
-	gw := testkit.StartGateway(t, testkit.ClientConfig(h.URL(), h.Transport(), h.Register("demo-club", "Демо"), b.Clubs.TunnelHandler(), nil))
+	gw := testkit.StartGateway(t, h.ClientConfig("demo-club", h.Register("demo-club", "Демо"), b.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "connected", 10*time.Second, gw.Client.Connected)
 	r := call(t, h, http.MethodGet, "/v1/clubs/demo-club/courts", "narrow-key-0123456789abcdef0123", "")
 	if r.status != http.StatusNotFound {
@@ -159,7 +161,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("poll with a wrong secret: %d", resp.StatusCode)
 	}
-	gw := testkit.StartGateway(t, testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), "cgs_wrong", w.built.Clubs.TunnelHandler(), nil))
+	gw := testkit.StartGateway(t, w.hub.ClientConfig("demo-club", "cgs_wrong", w.built.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "secret rejected", 5*time.Second, gw.Client.Unauthorized)
 	if gw.Client.Connected() || w.hub.Server().Broker().Connected("demo-club") {
 		t.Fatal("a gateway with a wrong secret counts as connected")
@@ -276,21 +278,19 @@ func TestReconnectAfterNetworkFailure(t *testing.T) {
 
 func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
-	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: "x", Handler: b.Clubs.TunnelHandler()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	hubKey := testkit.NewSigning("demo-club")
+	c := hubKey.Client(t, b.Clubs.TunnelHandler())
 	for _, p := range []string{"/hub/status", "/v1/../hub/status", "/debug/pprof/", "", "/v1/clubs/%2e%2e"} {
-		r := c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: p, Partner: "reader"})
+		r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: p, Partner: "reader", Scopes: []string{"read"}}))
 		if r.Status != http.StatusNotFound {
 			t.Fatalf("%q: %d", p, r.Status)
 		}
 	}
-	r := c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts"})
+	r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts"}))
 	if r.Status != http.StatusUnauthorized {
 		t.Fatalf("a request without a partner name: %d", r.Status)
 	}
-	r = c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"})
+	r = c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader", Scopes: []string{"read"}}))
 	if r.Status != http.StatusOK {
 		t.Fatalf("partner request: %d %s", r.Status, r.Body)
 	}
@@ -303,6 +303,7 @@ func TestUpdateHint(t *testing.T) {
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	c, err := tunnel.NewClient(tunnel.ClientConfig{
 		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Clubs.TunnelHandler(),
+		HubKey: h.Server().Store().HubKey(), Installation: "demo-club",
 		Version: "1.0.0", Build: tunnel.BuildRelease, Transport: h.Transport(), PollTimeout: 5 * time.Second,
 		OnHint: func(v string) { mu.Lock(); hint = v; mu.Unlock() },
 	})

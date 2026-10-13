@@ -28,7 +28,7 @@ func TestSecondCopyIsRefused(t *testing.T) {
 	w.beat(t, true, "")
 	var served atomic.Int32
 	copyOf := func(instance string) *testkit.Gateway {
-		cfg := testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), w.secret, http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		cfg := w.hub.ClientConfig("demo-club", w.secret, http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 			served.Add(1)
 			rw.WriteHeader(http.StatusNoContent)
 		}), nil)

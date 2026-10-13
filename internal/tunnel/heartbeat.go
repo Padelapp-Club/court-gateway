@@ -19,6 +19,9 @@ type Heartbeat struct {
 	// Reason is a short upper-case code when Ready is false.
 	Reason    string    `json:"reason,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
+	// RefusedRequests counts, since the gateway started, the requests and
+	// configs it refused because the hub had not signed them for it.
+	RefusedRequests int64 `json:"refused_requests,omitempty"`
 	AppliedConfig
 }
 
@@ -98,6 +101,7 @@ func (s *SelfCheck) clock() time.Time {
 // does not retry: the hub tolerates missed heartbeats up to its offline
 // threshold, and the next one follows after the next self-check.
 func (c *Client) SendHeartbeat(ctx context.Context, hb Heartbeat) error {
+	hb.RefusedRequests = c.refused.Load()
 	body, err := json.Marshal(hb)
 	if err != nil {
 		return err

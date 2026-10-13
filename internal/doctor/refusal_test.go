@@ -2,6 +2,7 @@ package doctor_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -36,6 +37,7 @@ func doctorAgainst(t *testing.T, clubStudio string, who tunnel.Whoami) doctor.Re
 		CRM: map[string]any{"studio": clubStudio}, Courts: []core.CourtSpec{{ID: "court-1", Name: "Court", Params: map[string]any{"viva_room": room}}}}
 	raw, _ := json.Marshal(spec)
 	who.Installation, who.Connected, who.ConfigVersion, who.Clubs = "inst-a", true, 1, []string{"club-a"}
+	pub, key, _ := ed25519.GenerateKey(nil)
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health/live":
@@ -43,14 +45,17 @@ func doctorAgainst(t *testing.T, clubStudio string, who tunnel.Whoami) doctor.Re
 		case tunnel.PathWhoami:
 			_ = json.NewEncoder(w).Encode(who)
 		case tunnel.PathConfig:
-			_ = json.NewEncoder(w).Encode(tunnel.RemoteConfig{Version: 1, Clubs: []json.RawMessage{raw}})
+			rc := tunnel.RemoteConfig{Version: 1, Clubs: []json.RawMessage{raw}}
+			rc.Sign(key, "inst-a", tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-hub-secret")), time.Now())
+			_ = json.NewEncoder(w).Encode(rc)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(hub.Close)
 	p := filepath.Join(t.TempDir(), "gateway.yaml")
-	yaml := fmt.Sprintf("hub: {url: %s}\ncrm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n", hub.URL, crm.URL, crm.URL)
+	yaml := fmt.Sprintf("hub: {url: %s, installation: inst-a, key: %s}\ncrm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n",
+		hub.URL, core.EncodeHubKey(pub), crm.URL, crm.URL)
 	if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}

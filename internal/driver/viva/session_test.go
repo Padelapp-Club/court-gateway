@@ -44,7 +44,7 @@ type installation struct {
 func newInstallation(t *testing.T, srvURL string, hc *http.Client, now func() time.Time) *installation {
 	t.Helper()
 	env := map[string]string{"CRM_PASSWORD": stubPass, core.DefaultHubSecretEnv: "test-hub-secret"}
-	base, err := core.Load([]byte("hub: { url: https://hub.example.test }\n"+crmYAML(srvURL, "")), func(k string) string { return env[k] })
+	base, err := core.Load([]byte("hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }\n"+crmYAML(srvURL, "")), func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}

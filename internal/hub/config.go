@@ -220,6 +220,20 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	return s, nil
 }
 
+// partnerScopes are the scopes of partner, as the hub signs them.
+func (s *Settings) partnerScopes(partner string) []string {
+	for _, p := range s.Partners {
+		if p.Name == partner {
+			var out []string
+			for _, sc := range p.Scopes {
+				out = append(out, string(sc))
+			}
+			return out
+		}
+	}
+	return nil
+}
+
 // partnerMayReach reports whether partner may call club.
 func (s *Settings) partnerMayReach(partner, club string) bool {
 	for _, c := range s.PartnerClubs[partner] {

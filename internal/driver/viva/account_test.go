@@ -88,7 +88,7 @@ func TestAccountDiscoverStudios(t *testing.T) {
 	// the draft built from it is a valid club for this very driver
 	spec, _ := core.DraftClub(d, "", 0)
 	spec.ID = "club-north"
-	base, err := core.Load([]byte("hub: { url: https://hub.example.test }\ncrm: { type: viva, username: "+stubUser+" }\n"),
+	base, err := core.Load([]byte("hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }\ncrm: { type: viva, username: "+stubUser+" }\n"),
 		func(k string) string {
 			return map[string]string{"GATEWAY_HUB_SECRET": "s", "CRM_PASSWORD": stubPass}[k]
 		})

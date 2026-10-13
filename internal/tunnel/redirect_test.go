@@ -2,6 +2,7 @@ package tunnel_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -46,6 +47,9 @@ func redirectTo(target string) http.HandlerFunc {
 // connection and nothing from elsewhere is taken for the hub's answer.
 func TestHubRedirectsAreNotFollowed(t *testing.T) {
 	plain, plainHits := plainHub(t)
+	pub, key, _ := ed25519.GenerateKey(nil)
+	genuine := tunnel.Request{ID: "real", Method: http.MethodGet, Path: "/v1/clubs", Partner: "reader", Scopes: []string{"read"}}
+	genuine.Sign(key, "inst", tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-gateway-secret")), time.Now())
 	var polls atomic.Int32
 	replied := make(chan struct{})
 	var once sync.Once
@@ -54,7 +58,7 @@ func TestHubRedirectsAreNotFollowed(t *testing.T) {
 		case r.URL.Path == tunnel.PathPoll && polls.Add(1) == 1:
 			// one genuine request, so that its reply goes out too
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(tunnel.Request{ID: "real", Method: http.MethodGet, Path: "/v1/clubs", Partner: "reader"})
+			_ = json.NewEncoder(w).Encode(genuine)
 			return
 		case r.URL.Path == tunnel.PathReply:
 			once.Do(func() { close(replied) })
@@ -73,6 +77,7 @@ func TestHubRedirectsAreNotFollowed(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: secure.URL, Secret: "fixture-gateway-secret", Polls: 1, Handler: handler,
+		HubKey: pub, Installation: "inst",
 		Transport: secure.Client().Transport, MinBackoff: 10 * time.Millisecond, MaxBackoff: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

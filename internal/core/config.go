@@ -3,6 +3,8 @@ package core
 import (
 	"bytes"
 	"cmp"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -48,12 +50,14 @@ const MinKeyLength = 24
 // map and handed to the driver.
 type fileConfig struct {
 	Hub *struct {
-		URL       string `yaml:"url"`
-		CAFile    string `yaml:"ca_file"`
-		SecretEnv string `yaml:"secret_env"`
-		Polls     int    `yaml:"polls"`
-		ProxyURL  string `yaml:"proxy_url"`
-		NoProxy   string `yaml:"no_proxy"`
+		URL          string `yaml:"url"`
+		Installation string `yaml:"installation"`
+		Key          string `yaml:"key"`
+		CAFile       string `yaml:"ca_file"`
+		SecretEnv    string `yaml:"secret_env"`
+		Polls        int    `yaml:"polls"`
+		ProxyURL     string `yaml:"proxy_url"`
+		NoProxy      string `yaml:"no_proxy"`
 	} `yaml:"hub"`
 	Update *struct {
 		Enabled     *bool  `yaml:"enabled"`
@@ -157,9 +161,13 @@ type DayHours struct {
 
 // HubSettings configure the outbound connection to the hub.
 type HubSettings struct {
-	URL    string
-	CAFile string
-	Secret string
+	URL string
+	// Installation and Key (the hub's public signing key) are pinned at
+	// registration: the gateway acts only on what that key signed for it.
+	Installation string
+	Key          ed25519.PublicKey
+	CAFile       string
+	Secret       string
 	// Proxy, when set, routes every outbound request (ProxyFunc).
 	Proxy ProxyFunc
 	Polls int
@@ -291,6 +299,14 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			add("hub.url: параметр обязателен (адрес хаба, например https://hub.example.com)")
 		} else if err := CheckHTTPSURL("hub.url", h.URL); err != nil {
 			add("%s", err.Error())
+		}
+		if h.Installation = strings.TrimSpace(fc.Hub.Installation); !ValidID(h.Installation) {
+			add("hub.installation: параметр обязателен (идентификатор установки) — выполните court-gateway setup с новым кодом подключения")
+		}
+		if k, err := ParseHubKey(fc.Hub.Key); err != nil {
+			add("hub.key: открытый ключ хаба отсутствует или неверен — выполните court-gateway setup с новым кодом подключения")
+		} else {
+			h.Key = k
 		}
 		if h.Polls == 0 {
 			h.Polls = DefaultHubPolls
@@ -443,6 +459,19 @@ func goTypeRu(t string) string {
 	default:
 		return t
 	}
+}
+
+// EncodeHubKey writes the hub's public signing key as gateway.yaml and the
+// registration answer carry it.
+func EncodeHubKey(k ed25519.PublicKey) string { return base64.StdEncoding.EncodeToString(k) }
+
+// ParseHubKey reads a key written by EncodeHubKey.
+func ParseHubKey(s string) (ed25519.PublicKey, error) {
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, errors.New("not an ed25519 public key")
+	}
+	return ed25519.PublicKey(b), nil
 }
 
 // CheckHTTPSURL accepts https URLs, and plain http only for loopback hosts

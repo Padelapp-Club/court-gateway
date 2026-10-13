@@ -63,7 +63,7 @@ func TestHubClubCannotRedirectTheCRMLogin(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer capture.Close()
-	gw := "hub:\n  url: https://hub.example.test\ncrm:\n  type: viva\n  username: admin@club.test\n"
+	gw := "hub:\n  url: https://hub.example.test\n  installation: test-net\n  key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ncrm:\n  type: viva\n  username: admin@club.test\n"
 	clubs, syn := installation(t, gw, map[string]string{"CRM_PASSWORD": "local-only-password-42", "GATEWAY_HUB_SECRET": "cgs_x"})
 	for _, key := range []string{"auth_url", "api_url", "username"} {
 		err := syn.Apply(context.Background(), config(t, 1, club("club-a", map[string]any{"studio": studio, key: capture.URL + "/token"})))
@@ -84,7 +84,7 @@ func TestHubClubCannotRedirectTheCRMLogin(t *testing.T) {
 // back later", not "no such club"; a club refused by the driver is 503
 // too, while the other clubs are served.
 func TestClubsAnswer503UntilConfigured(t *testing.T) {
-	gw := "hub:\n  url: https://hub.example.test\ncrm:\n  type: demo\n"
+	gw := "hub:\n  url: https://hub.example.test\n  installation: test-net\n  key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ncrm:\n  type: demo\n"
 	clubs, syn := installation(t, gw, map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"})
 	get := func(club string) (int, string) {
 		r := httptest.NewRequest(http.MethodGet, "/v1/clubs/"+club+"/courts", nil)
@@ -119,7 +119,7 @@ func TestClubsAnswer503UntilConfigured(t *testing.T) {
 // is served without them and the fields are logged once, not refused.
 // (The hub's own PUT stays strict: hub/installation_test.go.)
 func TestUnknownClubFieldsAreIgnoredAndLoggedOnce(t *testing.T) {
-	s, err := core.Load([]byte("hub:\n  url: https://hub.example.test\ncrm:\n  type: demo\n"), func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] })
+	s, err := core.Load([]byte("hub:\n  url: https://hub.example.test\n  installation: test-net\n  key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ncrm:\n  type: demo\n"), func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] })
 	if err != nil {
 		t.Fatal(err)
 	}

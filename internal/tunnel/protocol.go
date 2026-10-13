@@ -6,10 +6,11 @@
 // Plain HTTPS requests pass every proxy that passes HTTPS, and each one has
 // its own timeout, so a broken path is noticed by the next request.
 //
-// Trust: the gateway authenticates the hub by its TLS certificate (system
-// roots, or only the CA of hub.ca_file) and follows no redirect; the hub
-// authenticates the gateway by its secret (Bearer). Requests carry no
-// signature of their own.
+// Trust: the gateway reaches the hub over TLS (system roots, or only the
+// CA of hub.ca_file) and follows no redirect; the hub authenticates the
+// gateway by its secret (Bearer). What the gateway acts on — requests and
+// club configurations — is signed by the hub's own key, pinned at
+// registration (sign.go).
 package tunnel
 
 import (
@@ -83,9 +84,11 @@ type Request struct {
 	Query     string            `json:"query,omitempty"`
 	Header    map[string]string `json:"header,omitempty"`
 	Body      []byte            `json:"body,omitempty"`
-	// Partner is the partner the hub authenticated.
-	Partner   string `json:"partner,omitempty"`
-	TimeoutMS int    `json:"timeout_ms"`
+	// Partner is the partner the hub authenticated, Scopes its scopes.
+	Partner   string   `json:"partner,omitempty"`
+	Scopes    []string `json:"scopes,omitempty"`
+	TimeoutMS int      `json:"timeout_ms"`
+	Seal
 }
 
 // Response is what a gateway posts back.
@@ -103,10 +106,12 @@ type RegisterRequest struct {
 }
 
 // RegisterResponse carries the long-lived secret. It is shown once.
+// HubKey is the hub's public signing key (base64), which the gateway pins.
 type RegisterResponse struct {
 	Installation string `json:"installation_id"`
 	Name         string `json:"name"`
 	Secret       string `json:"secret"`
+	HubKey       string `json:"hub_key"`
 }
 
 // Whoami is the hub's view of the calling gateway.
@@ -130,6 +135,7 @@ type Whoami struct {
 type RemoteConfig struct {
 	Version int64             `json:"version"`
 	Clubs   []json.RawMessage `json:"clubs"`
+	Seal
 }
 
 // The only headers carried through the tunnel, each way: RequestHeaders

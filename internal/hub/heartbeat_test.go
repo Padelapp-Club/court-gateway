@@ -110,7 +110,7 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 	}
 	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", factory, nil)
 	w.secret = w.hub.Register("demo-club", "Демо-клуб")
-	cfg := testkit.ClientConfig(w.hub.URL(), w.hub.Transport(), w.secret, b.Clubs.TunnelHandler(), nil)
+	cfg := w.hub.ClientConfig("demo-club", w.secret, b.Clubs.TunnelHandler(), nil)
 	cfg.Instance = beatInstance
 	w.gw = testkit.StartGateway(t, cfg)
 	testkit.WaitFor(t, "connected", 10*time.Second, func() bool { return w.hub.Server().Broker().Connected("demo-club") })
@@ -563,5 +563,25 @@ func TestHubSendsNoAlertsOfItsOwn(t *testing.T) {
 	}
 	if _, err := hub.Load([]byte("state_dir: /tmp/x\nstatus_dir: /tmp/x/\n"), env); err == nil {
 		t.Fatal("status_dir equal to state_dir was accepted")
+	}
+}
+
+// A gateway reports the requests it refused for their signature in its
+// heartbeats; the hub logs it and shows it to the operator and the
+// external checker.
+func TestRefusedRequestsAreReported(t *testing.T) {
+	w := newBeatWorld(t, "", nil, hub.Options{})
+	w.gw.Client.Execute(context.Background(), tunnel.Request{ID: "forged", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"})
+	w.beat(t, true, "")
+	var st struct {
+		Gateways []hub.GatewayStatus `json:"gateways"`
+	}
+	if err := json.Unmarshal(w.hub.MustOperator(t, http.StatusOK, http.MethodGet, "/hub/status", nil), &st); err != nil || st.Gateways[0].RefusedRequests != 1 {
+		t.Fatalf("/hub/status: %+v %v", st, err)
+	}
+	w.hub.Server().Monitor().Tick()
+	metrics, _ := os.ReadFile(filepath.Join(w.status, hub.MetricsFile))
+	if !strings.Contains(string(metrics), "installation_demo_club_refused_requests=1\n") || !strings.Contains(w.hub.Logs.String(), "not signed by the hub") {
+		t.Fatalf("not reported:\n%s", metrics)
 	}
 }

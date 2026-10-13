@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-const proxyInstallation = "hub: { url: https://hub.example.test, proxy_url: \"%s\", no_proxy: \"crm.corp.test, .lan\" }\ncrm: { type: demo }\n"
+const proxyInstallation = "hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, proxy_url: \"%s\", no_proxy: \"crm.corp.test, .lan\" }\ncrm: { type: demo }\n"
 
 // A club behind a corporate proxy: hub.proxy_url (or HTTPS_PROXY from
 // .env) routes the hub, the CRM and the release checks, except no_proxy.
@@ -54,7 +54,7 @@ func TestProxyFromConfigAndEnv(t *testing.T) {
 	for k, v := range goodEnv {
 		e[k] = v
 	}
-	s, err = Load([]byte("hub: { url: https://hub.example.test }\ncrm: { type: demo }\n"), env(e))
+	s, err = Load([]byte("hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }\ncrm: { type: demo }\n"), env(e))
 	if err != nil || route(s.Hub.Proxy, "https://hub.example.test/") != "http://proxy.corp.test:3128" {
 		t.Fatalf("HTTPS_PROXY: %v", err)
 	}

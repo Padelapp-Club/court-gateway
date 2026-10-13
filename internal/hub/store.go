@@ -2,6 +2,7 @@ package hub
 
 import (
 	"cmp"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -20,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
 // Layout of the state directory. Every record is its own small JSON file
@@ -28,6 +30,7 @@ import (
 //	codes/<sha256 of the code>.json      pending join codes
 //	gateways/<installation>.json         registered gateways (secret hash)
 //	installations/<installation>.json    installations and their clubs' config
+//	hub-signing.key                      the hub's ed25519 signing key (seed, hex)
 //
 // One installation of the gateway is one CRM account, which may serve
 // several clubs. Join codes bind to an installation. They are created by
@@ -39,6 +42,9 @@ const (
 	codesDir         = "codes"
 	gatewaysDir      = "gateways"
 	installationsDir = "installations"
+	// signingKeyFile is made on the hub's first start and never leaves it:
+	// gateways pin its public half when they register (tunnel/sign.go).
+	signingKeyFile = "hub-signing.key"
 )
 
 // DefaultJoinCodeTTL is how long a join code stays valid.
@@ -57,6 +63,9 @@ type GatewayRecord struct {
 	// replaced or removed registration is retired in the broker by it.
 	gen uint64
 }
+
+// registration names this registration in what the hub signs for it.
+func (g GatewayRecord) registration() string { return tunnel.RegistrationOf(g.SecretSHA256) }
 
 type joinCodeRecord struct {
 	Installation string    `json:"installation"`
@@ -99,6 +108,7 @@ func (in Installation) ClubList() []core.ClubSpec {
 type Store struct {
 	dir string
 	now func() time.Time
+	key ed25519.PrivateKey
 
 	mu       sync.Mutex
 	gateways map[string]*GatewayRecord
@@ -127,7 +137,11 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 	if err := ensureDirs(dir); err != nil {
 		return nil, fmt.Errorf("state_dir: %w", err)
 	}
-	s := &Store{dir: dir, now: now, gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
+	key, err := loadSigningKey(dir)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{dir: dir, now: now, key: key, gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
 	if err := s.loadInstallations(); err != nil {
 		return nil, err
 	}
@@ -153,6 +167,44 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 	}
 	return s, nil
 }
+
+// loadSigningKey reads the hub's signing key, making it on the first start.
+func loadSigningKey(dir string) (ed25519.PrivateKey, error) {
+	p := filepath.Join(dir, signingKeyFile)
+	data, err := os.ReadFile(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		seed := make([]byte, ed25519.SeedSize)
+		if _, err := rand.Read(seed); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("state_dir: %w", err)
+		}
+		_, err = f.WriteString(hex.EncodeToString(seed) + "\n")
+		if err == nil {
+			err = f.Sync()
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return nil, fmt.Errorf("state_dir: %w", err)
+		}
+		return ed25519.NewKeyFromSeed(seed), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("state_dir: %w", err)
+	}
+	seed, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("state_dir: повреждён ключ подписи хаба %s", p)
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// HubKey is the public half of the hub's signing key.
+func (s *Store) HubKey() ed25519.PublicKey { return s.key.Public().(ed25519.PublicKey) }
 
 // joinAlphabet is Crockford's base32: no I, L, O, U, so a code read aloud
 // or copied by hand survives.
@@ -290,11 +342,6 @@ func newSecret() (string, error) {
 	return "cgs_" + hex.EncodeToString(raw[:]), nil
 }
 
-func secretHash(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
-	return hex.EncodeToString(sum[:])
-}
-
 // Redeem consumes a join code and registers (or re-registers) the gateway
 // of its installation. The previous secret of that installation stops
 // working. The code file is removed before the secret is issued, so a code
@@ -335,7 +382,7 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 	if err != nil {
 		return GatewayRecord{}, "", err
 	}
-	g := &GatewayRecord{Installation: id, Name: in.Name, SecretSHA256: secretHash(secret), RegisteredAt: s.now().UTC()}
+	g := &GatewayRecord{Installation: id, Name: in.Name, SecretSHA256: tunnel.SecretSHA256(secret), RegisteredAt: s.now().UTC()}
 	out, _ := json.Marshal(g)
 	if err := core.WriteFileAtomic(filepath.Join(s.dir, gatewaysDir, id+".json"), out, 0o600); err != nil {
 		return GatewayRecord{}, "", err
@@ -363,7 +410,7 @@ func (s *Store) Authenticate(secret string) (GatewayRecord, error) {
 	if secret == "" {
 		return GatewayRecord{}, ErrNotRegistered
 	}
-	want, _ := hex.DecodeString(secretHash(secret))
+	want, _ := hex.DecodeString(tunnel.SecretSHA256(secret))
 	s.mu.Lock()
 	var inst string
 	for _, g := range s.gateways {
@@ -377,7 +424,7 @@ func (s *Store) Authenticate(secret string) (GatewayRecord, error) {
 		return GatewayRecord{}, ErrNotRegistered
 	}
 	g, err := s.Gateway(inst)
-	if err == nil && g.SecretSHA256 != secretHash(secret) {
+	if err == nil && g.SecretSHA256 != tunnel.SecretSHA256(secret) {
 		return GatewayRecord{}, ErrNotRegistered // re-registered meanwhile
 	}
 	return g, err

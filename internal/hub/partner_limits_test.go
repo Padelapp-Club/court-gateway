@@ -16,7 +16,7 @@ func rawGateway(t *testing.T, extraHub string, polls int, h http.Handler) *testk
 	t.Helper()
 	hb := testkit.StartHub(t, hubYAML+extraHub, testkit.HubEnv(), hub.Options{})
 	secret := hb.Register("raw-club", "Raw")
-	cfg := testkit.ClientConfig(hb.URL(), hb.Transport(), secret, h, nil)
+	cfg := hb.ClientConfig("raw-club", secret, h, nil)
 	cfg.Polls = polls
 	gw := testkit.StartGateway(t, cfg)
 	testkit.WaitFor(t, "gateway connected", 10*time.Second, func() bool {

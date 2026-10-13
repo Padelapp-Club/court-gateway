@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const hubGateway = `hub: { url: https://hub.example.test }
+const hubGateway = `hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }
 crm: { type: demo }
 `
 

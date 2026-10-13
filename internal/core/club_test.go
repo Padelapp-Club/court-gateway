@@ -9,7 +9,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-const hubInstallation = `hub: { url: "https://hub.example.test" }
+const hubInstallation = `hub: { url: "https://hub.example.test", installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }
 crm: { type: demo, username: admin }
 `
 

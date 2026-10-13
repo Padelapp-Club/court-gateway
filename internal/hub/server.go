@@ -186,7 +186,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("gateway registered", "installation", g.Installation, "version", req.Version)
-	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Installation, Name: g.Name, Secret: secret})
+	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Installation, Name: g.Name, Secret: secret,
+		HubKey: core.EncodeHubKey(s.store.HubKey())})
 }
 
 func (s *Server) gateway(next func(http.ResponseWriter, *http.Request, GatewayRecord)) http.HandlerFunc {
@@ -323,6 +324,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayR
 			out.Clubs = append(out.Clubs, raw)
 		}
 	}
+	out.Sign(s.store.key, g.Installation, g.registration(), time.Now())
 	core.WriteJSON(w, http.StatusOK, out)
 }
 
@@ -408,7 +410,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 	}
 	rq := tunnel.Request{
 		ID: newCallID(), RequestID: core.RequestID(r), Method: r.Method, Path: p, Query: r.URL.RawQuery,
-		Header: map[string]string{}, Body: body, Partner: partner,
+		Header: map[string]string{}, Body: body, Partner: partner, Scopes: s.cfg.partnerScopes(partner),
 		TimeoutMS: int(s.cfg.RequestTimeout / time.Millisecond),
 	}
 	for _, h := range tunnel.RequestHeaders {
@@ -416,6 +418,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 			rq.Header[h] = v
 		}
 	}
+	rq.Sign(s.store.key, inst, g.registration(), time.Now())
 	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):
@@ -480,6 +483,9 @@ type GatewayStatus struct {
 	// refused within offline_after (last at DuplicateSeenAt).
 	Duplicate       bool   `json:"duplicate"`
 	DuplicateSeenAt string `json:"duplicate_seen_at,omitempty"`
+	// RefusedRequests: requests the gateway refused because the hub had
+	// not signed them for it, since it started (from its heartbeats).
+	RefusedRequests int64 `json:"refused_requests"`
 }
 
 func ts(t time.Time) string {
@@ -513,7 +519,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
 		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
 		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.Clubs,
-		Duplicate: h.Duplicate, DuplicateSeenAt: ts(h.DuplicateAt),
+		Duplicate: h.Duplicate, DuplicateSeenAt: ts(h.DuplicateAt), RefusedRequests: h.RefusedRequests,
 	}
 	if row.ClubsServed == nil {
 		row.ClubsServed = []string{}

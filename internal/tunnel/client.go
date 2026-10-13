@@ -3,6 +3,7 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	crand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,11 @@ import (
 type ClientConfig struct {
 	HubURL string
 	Secret string
+	// HubKey and Installation are pinned at registration: the client acts
+	// only on requests and configs that key signed for this installation
+	// and this secret's registration.
+	HubKey       ed25519.PublicKey
+	Installation string
 	// Polls is the number of concurrent long-poll requests (default 4).
 	Polls int
 	// Handler serves requests that arrive through the tunnel.
@@ -60,6 +67,8 @@ type Client struct {
 	cfg      ClientConfig
 	http     *http.Client
 	log      *slog.Logger
+	verify   *Verifier
+	refused  atomic.Int64 // requests and configs refused for their signature
 	okPolls  atomic.Int32
 	lastHint atomic.Value // string
 	authFail atomic.Bool
@@ -135,6 +144,10 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.HubURL == "" || cfg.Secret == "" || cfg.Handler == nil {
 		return nil, errors.New("tunnel: hub URL, secret and handler are required")
 	}
+	v, err := NewVerifier(cfg.HubKey, cfg.Installation, cfg.Secret, nil)
+	if err != nil {
+		return nil, err
+	}
 	cfg.HubURL = strings.TrimRight(cfg.HubURL, "/")
 	if cfg.Polls <= 0 {
 		cfg.Polls = 4
@@ -166,7 +179,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Client{cfg: cfg, http: hubClient(cfg.Transport), log: log}, nil
+	return &Client{cfg: cfg, http: hubClient(cfg.Transport), log: log, verify: v}, nil
 }
 
 // Connected reports whether at least one poll is currently healthy.
@@ -174,6 +187,10 @@ func (c *Client) Connected() bool { return c.okPolls.Load() > 0 }
 
 // Unauthorized reports whether the hub's last answer rejected the secret.
 func (c *Client) Unauthorized() bool { return c.authFail.Load() }
+
+// Refused counts the requests and configs refused because the hub did
+// not sign them for this gateway (heartbeats report it).
+func (c *Client) Refused() int64 { return c.refused.Load() }
 
 // Duplicate reports whether the hub's last answer refused this copy
 // because another one with the same secret is connected.
@@ -396,6 +413,11 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	case err != nil:
 		return RemoteConfig{}, errors.New("hub sent a malformed config")
 	}
+	if err := c.verify.Config(&out); err != nil {
+		c.refused.Add(1)
+		c.log.Error("club config refused: not signed by the hub for this gateway", "error", err)
+		return RemoteConfig{}, err
+	}
 	return out, nil
 }
 
@@ -476,12 +498,30 @@ func allowed(method, p string) bool {
 	return strings.HasPrefix(p, "/v1/")
 }
 
-// Execute runs one tunnelled request against the local handler. Exposed
-// for tests.
+// scopeAllows: a partner reads with read, writes with book (as the hub's
+// auth.Authenticator decides).
+func scopeAllows(scopes []string, method string) bool {
+	need := string(auth.ScopeBook)
+	if method == http.MethodGet || method == http.MethodHead {
+		need = string(auth.ScopeRead)
+	}
+	return slices.Contains(scopes, need)
+}
+
+// Execute runs one tunnelled request against the local handler, if the
+// hub signed it for this gateway. Exposed for tests.
 func (c *Client) Execute(ctx context.Context, rq Request) Response {
 	fail := func(status int, code, msg string) Response {
 		b, _ := json.Marshal(map[string]string{"code": code, "message": msg, "request_id": rq.RequestID})
 		return Response{ID: rq.ID, Status: status, Header: map[string]string{"Content-Type": "application/json; charset=utf-8"}, Body: b}
+	}
+	if err := c.verify.Request(&rq); err != nil {
+		c.refused.Add(1)
+		c.log.Error("request refused: not signed by the hub for this gateway", "request_id", rq.RequestID, "error", err)
+		return fail(http.StatusBadGateway, "SIGNATURE_REJECTED", "the club's gateway did not accept the hub's signature")
+	}
+	if rq.Partner != "" && !scopeAllows(rq.Scopes, rq.Method) {
+		return fail(http.StatusForbidden, "FORBIDDEN", "the API key has no scope for this operation")
 	}
 	if !allowed(rq.Method, rq.Path) {
 		return fail(http.StatusNotFound, "NOT_FOUND", "no such endpoint")

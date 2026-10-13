@@ -62,7 +62,7 @@ func TestServeRefusesBadConfigInRussian(t *testing.T) {
 func TestHealthcheck(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gateway.yaml")
-	if err := os.WriteFile(p, []byte("hub: { url: https://hub.example.test }\n"), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer

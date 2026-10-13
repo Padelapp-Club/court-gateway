@@ -133,6 +133,7 @@ func buildStatus(now time.Time, o statusOptions, views []installationView) ([]by
 		if !v.lastBeat.IsZero() {
 			ms.addInt(id+"_last_seen_age_seconds", int64(now.Sub(v.lastBeat)/time.Second))
 		}
+		ms.addInt(id+"_refused_requests", v.refused)
 		ms.addBool(id+"_outdated", o.latest != "" && v.version != "" && version.Compare(v.version, o.latest) < 0)
 	}
 	ms.addInt("installations_total", int64(len(views)))

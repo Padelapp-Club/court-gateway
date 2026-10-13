@@ -7,7 +7,10 @@ package testkit
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"io"
 	"log/slog"
@@ -186,11 +189,17 @@ type Gateway struct {
 	done   chan struct{}
 }
 
+// ClientConfig is the config of a test gateway of installation that
+// registered at h with secret: two polls, fast reconnects.
+func (h *Hub) ClientConfig(installation, secret string, handler http.Handler, log *slog.Logger) tunnel.ClientConfig {
+	return ClientConfig(h.URL(), h.Transport(), h.Server().Store().HubKey(), installation, secret, handler, log)
+}
+
 // ClientConfig is the tunnel client config test gateways use: two polls,
-// fast reconnects.
-func ClientConfig(hubURL string, rt http.RoundTripper, secret string, handler http.Handler, log *slog.Logger) tunnel.ClientConfig {
+// fast reconnects; key is the hub's public key.
+func ClientConfig(hubURL string, rt http.RoundTripper, key ed25519.PublicKey, installation, secret string, handler http.Handler, log *slog.Logger) tunnel.ClientConfig {
 	return tunnel.ClientConfig{
-		HubURL: hubURL, Secret: secret, Polls: 2, Handler: handler, Version: "1.0.0", Build: tunnel.BuildRelease,
+		HubURL: hubURL, Secret: secret, HubKey: key, Installation: installation, Polls: 2, Handler: handler, Version: "1.0.0", Build: tunnel.BuildRelease,
 		Platform: "test", Logger: log, Transport: rt, MinBackoff: 20 * time.Millisecond, MaxBackoff: 200 * time.Millisecond,
 		PollTimeout: 5 * time.Second,
 	}
@@ -217,6 +226,40 @@ func StartGateway(t *testing.T, cfg tunnel.ClientConfig) *Gateway {
 func (g *Gateway) Stop() {
 	g.cancel()
 	<-g.done
+}
+
+// Signing is a hub key and a gateway registration, for tests that hand
+// requests to a tunnel client directly, without a hub.
+type Signing struct {
+	Key          ed25519.PrivateKey
+	Installation string
+	Secret       string
+}
+
+// NewSigning makes a key and a registration of installation.
+func NewSigning(installation string) Signing {
+	_, key, _ := ed25519.GenerateKey(nil)
+	return Signing{Key: key, Installation: installation, Secret: "cgs_test-secret-" + installation}
+}
+
+// Client is a tunnel client that trusts s.
+func (s Signing) Client(t *testing.T, handler http.Handler) *tunnel.Client {
+	t.Helper()
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: s.Secret, Handler: handler,
+		HubKey: s.Key.Public().(ed25519.PublicKey), Installation: s.Installation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// Sign signs rq as the hub does, with a fresh id.
+func (s Signing) Sign(rq tunnel.Request) tunnel.Request {
+	var id [8]byte
+	_, _ = rand.Read(id[:])
+	rq.ID = hex.EncodeToString(id[:])
+	rq.Sign(s.Key, s.Installation, tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret)), time.Now())
+	return rq
 }
 
 // WaitFor polls cond until it is true or the timeout passes.

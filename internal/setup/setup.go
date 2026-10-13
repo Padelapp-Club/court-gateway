@@ -175,6 +175,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if p := checkLogin(ctx, acct); p != nil {
 		return fail(p)
 	}
+	d.HubKey = placeholderKey
 	if p := validate(d, in.Password, "placeholder-secret"); p != nil {
 		return fail(p)
 	}
@@ -219,7 +220,8 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		return fail(problem("HUB_UNREACHABLE", "хаб недоступен: %v", err))
 	}
 
-	// 3. write
+	// 3. write; the hub's key is pinned here, and again at every new join code
+	d.HubKey = reg.HubKey
 	if p := validate(d, in.Password, reg.Secret); p != nil {
 		return fail(p)
 	}
@@ -271,6 +273,9 @@ func envFor(password, secret string) func(string) string {
 		return ""
 	}
 }
+
+// placeholderKey stands for the hub's key until the hub has answered.
+var placeholderKey = core.EncodeHubKey(make([]byte, 32))
 
 // validate checks that the config about to be written loads.
 func validate(d *draft, password, secret string) *Problem {

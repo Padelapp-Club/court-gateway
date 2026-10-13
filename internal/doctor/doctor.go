@@ -257,12 +257,17 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	}
 
 	// the club config on the hub, loaded with this gateway's driver
-	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, Handler: http.NotFoundHandler(), Transport: rt})
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
+		Handler: http.NotFoundHandler(), Transport: rt})
 	if err != nil {
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: err.Error()}), nil
 	}
 	rc, err := c.FetchConfig(hctx)
-	if err != nil {
+	switch {
+	case errors.Is(err, tunnel.ErrBadSignature):
+		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов не подписана ключом хаба, записанным при подключении",
+			Hint: "проверьте часы компьютера; если хаб сменил ключ — новый код подключения и court-gateway setup --force"}), nil
+	case err != nil:
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов с хаба не получена"}), nil
 	}
 	servers, refused, _ := remote.Build(s, o.Factories, o.DriverHook, rc)

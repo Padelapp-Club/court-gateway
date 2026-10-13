@@ -10,6 +10,9 @@
 # Белый IP, домен, сертификат и проброс портов не нужны.
 hub:
   url: https://hub.example.test
+  installation: my-net            # идентификатор установки, его назначает хаб
+  # открытый ключ хаба (записывает setup): шлюз выполняет только запросы, подписанные им
+  key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
   # secret_env: GATEWAY_HUB_SECRET   # переменная с секретом подключения (по умолчанию эта)
   # polls: 4                         # сколько запросов партнёров шлюз обслуживает одновременно
   # proxy_url: http://proxy.example.test:3128   # корпоративный прокси: через него идут хаб, CRM и выпуски
