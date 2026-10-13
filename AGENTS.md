@@ -8,10 +8,11 @@ human. Do not improvise around a failure.
 ## Rules (non-negotiable)
 
 1. **Ask the human, do not guess**, for exactly these inputs:
-   - hub URL (comes with the join code);
    - join code (one-time, format `XXXX-XXXX-XXXX-XXXX`) — the club gets ONE code from its partner,
      e.g. shown in the partner's admin panel;
-   - Viva administrator login (e-mail) and **password**.
+   - Viva administrator login (e-mail) and **password**;
+   - the hub URL **only** if the binary is self-built (`version` says `selfbuilt`) or `setup`
+     answers `MISSING_INPUT` naming `--hub-url`: a release knows its hub.
 
    Nothing else. The club does **not** choose a club id, courts, hours, a studio or a time zone:
    one installation is one CRM account, and the operator configures its clubs on the hub. Never
@@ -39,16 +40,15 @@ Ask the human for the inputs in rule 1. Best: let the human type the secrets int
 you share, without echo (works in bash and zsh):
 
 ```sh
-printf 'Hub URL: ';            read -r GATEWAY_HUB_URL
 printf 'Join code: ';          stty -echo; read -r GATEWAY_JOIN_CODE; stty echo; echo
 printf 'Viva login (e-mail): '; read -r CRM_USERNAME
 printf 'Viva password: ';      stty -echo; read -r CRM_PASSWORD; stty echo; echo
-export GATEWAY_HUB_URL GATEWAY_JOIN_CODE CRM_USERNAME CRM_PASSWORD
+export GATEWAY_JOIN_CODE CRM_USERNAME CRM_PASSWORD
+# only for a self-built binary: printf 'Hub URL: '; read -r GATEWAY_HUB_URL; export GATEWAY_HUB_URL
 ```
 
 ```powershell
 # Windows PowerShell (run as Administrator)
-$env:GATEWAY_HUB_URL   = Read-Host 'Hub URL'
 $env:GATEWAY_JOIN_CODE = [Net.NetworkCredential]::new('', (Read-Host 'Join code' -AsSecureString)).Password
 $env:CRM_USERNAME      = Read-Host 'Viva login (e-mail)'
 $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva password' -AsSecureString)).Password
@@ -105,12 +105,11 @@ binary without the release key: it works but never updates itself — tell the h
 
 ```sh
 ./court-gateway setup --non-interactive --json \
-  --hub-url "$GATEWAY_HUB_URL" --crm-username "$CRM_USERNAME" \
-  --config "$PWD/gateway.yaml" > setup-result.json
+  --crm-username "$CRM_USERNAME" --config "$PWD/gateway.yaml" > setup-result.json
 ```
 
-(`CRM_PASSWORD` and `GATEWAY_JOIN_CODE` are read from the environment; `--crm viva` is the
-default. Windows: `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
+(`CRM_PASSWORD`, `GATEWAY_JOIN_CODE` and, for a self-built binary, `GATEWAY_HUB_URL` are read from
+the environment; `--crm viva` is the default. Windows: `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
 continuation with a backtick. There are no flags for a club id, studio, time zone or grid.)
 
 Then remove the secrets from your shell: `unset CRM_PASSWORD GATEWAY_JOIN_CODE`
@@ -125,7 +124,7 @@ If `"ok": false`, act on `error.code`:
 
 | Code | Action |
 |---|---|
-| `MISSING_INPUT` | an input from step 0 is empty — ask the human again |
+| `MISSING_INPUT` | an input from step 0 is empty — ask the human again (`--hub-url`: the binary is self-built, ask for the hub URL) |
 | `INVALID_INPUT` | an input is malformed (hub URL, CRM type) — the message says which |
 | `CRM_AUTH_FAILED` | wrong Viva login or password — ask the human to re-enter; the join code is **not** spent |
 | `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later |

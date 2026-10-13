@@ -1,12 +1,15 @@
-# Gateway of one club. Prepare gateway.yaml and .env first (README, «Docker»):
-#   docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" court-gateway:local setup --config /config/gateway.yaml
-# then: docker compose up -d --build
+# Gateway of one installation. Prepare gateway.yaml and .env first (README, «Docker»):
+#   docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" <image> setup --config /config/gateway.yaml
+# then: docker compose up -d
+#
+# <image> is the published release image (signed binary, updates itself).
+# Until the first release there is none: build court-gateway:local from
+# this repository and use that — a self-build, which never updates itself.
 #
 # No ports are published: the gateway connects out to the hub.
 services:
   court-gateway:
-    build: .
-    image: court-gateway:local
+    image: registry.example.test/court-gateway:0.0.0   # the release image and version
     restart: unless-stopped
     env_file: .env
     volumes:
