@@ -31,7 +31,6 @@ type record struct {
 type Driver struct {
 	mu       sync.Mutex
 	courts   map[string]bool
-	first    string
 	records  map[string]*record
 	readyErr error
 }
@@ -62,9 +61,6 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 			errs = append(errs, err.Error())
 		}
 		d.courts[c.ID] = true
-		if d.first == "" {
-			d.first = c.ID
-		}
 	}
 	if len(cfg.Courts) == 0 {
 		errs = append(errs, "courts: нужен хотя бы один корт")

@@ -34,8 +34,6 @@ import (
 type Versions struct {
 	// Dir is the state directory.
 	Dir string
-	// Installed is the binary the service manager starts.
-	Installed string
 }
 
 type pointer struct {
@@ -174,13 +172,9 @@ func (v *Versions) Rollback() error {
 // than own, still has the checksum it was verified with and has not
 // failed here recently. "" means run the installed binary itself.
 func (v *Versions) Launch(own string, now time.Time) string {
-	bad := BadVersions(v.Dir)
 	for _, f := range []string{"current.json", "previous.json"} {
 		p, err := readPointer(v.file(f))
-		if err != nil || !version.Newer(p.Version, own) || filepath.Dir(p.Path) != v.dir() {
-			continue
-		}
-		if t, isBad := bad[p.Version]; isBad && now.Sub(t) < BadVersionTTL {
+		if err != nil || !version.Newer(p.Version, own) || filepath.Dir(p.Path) != v.dir() || isBad(v.Dir, p.Version, now) {
 			continue
 		}
 		if sum, err := fileSHA256(p.Path); err == nil && sum == p.SHA256 {

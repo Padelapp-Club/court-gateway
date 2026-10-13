@@ -128,13 +128,6 @@ func (s *Syncer) State() State {
 	return st
 }
 
-// Applied reports whether a config from the hub has been applied.
-func (s *Syncer) Applied() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.applied >= 0
-}
-
 func (s *Syncer) wanted(v int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -15,7 +15,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -90,10 +89,8 @@ type Settings struct {
 	Secrets []string
 }
 
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-
-// ValidClubID reports whether id is a valid club id.
-func ValidClubID(id string) bool { return slugRe.MatchString(id) }
+// ValidClubID reports whether id is a valid club (or installation) id.
+func ValidClubID(id string) bool { return core.ValidID(id) }
 
 // LoadFile reads hub.yaml; secrets come from getenv, which callers usually
 // extend with the .env file next to hub.yaml.
@@ -205,7 +202,7 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			add("%s.clubs: укажите клубы партнёра списком или [\"*\"] — все клубы", path)
 		}
 		for _, c := range p.Clubs {
-			if c != "*" && !slugRe.MatchString(c) {
+			if c != "*" && !ValidClubID(c) {
 				add("%s.clubs: «%s» — не идентификатор клуба", path, c)
 			}
 		}

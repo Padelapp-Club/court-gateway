@@ -322,7 +322,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		Header: map[string]string{}, Body: body, Partner: partner,
 		TimeoutMS: int(s.cfg.RequestTimeout / time.Millisecond),
 	}
-	for _, h := range tunnel.RequestHeaders() {
+	for _, h := range tunnel.RequestHeaders {
 		if v := r.Header.Get(h); v != "" {
 			rq.Header[h] = v
 		}
@@ -343,7 +343,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		return // the partner went away
 	}
-	for _, h := range tunnel.ResponseHeaders() {
+	for _, h := range tunnel.ResponseHeaders {
 		v := resp.Header[h]
 		if h == "Location" && !strings.HasPrefix(v, "/v1/clubs/"+club+"/") {
 			continue // only the gateway's own relative booking path

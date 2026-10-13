@@ -437,7 +437,7 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 		return fail(http.StatusBadRequest, "INVALID_REQUEST", "malformed request")
 	}
 	hr.RemoteAddr = "hub"
-	for _, h := range requestHeaders {
+	for _, h := range RequestHeaders {
 		if v := rq.Header[h]; v != "" {
 			hr.Header.Set(h, v)
 		}
@@ -451,7 +451,7 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 		rec.status = http.StatusOK
 	}
 	out := Response{ID: rq.ID, Status: rec.status, Body: rec.buf.Bytes(), Header: map[string]string{}}
-	for _, h := range responseHeaders {
+	for _, h := range ResponseHeaders {
 		if v := rec.header.Get(h); v != "" {
 			out.Header[h] = v
 		}

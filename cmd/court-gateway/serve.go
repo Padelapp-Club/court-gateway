@@ -87,7 +87,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	// directory, and the installed binary hands over to the newest verified
 	// one here, before doing anything else.
 	installed := update.InstalledPath()
-	vers := &update.Versions{Dir: s.StateDir, Installed: installed}
+	vers := &update.Versions{Dir: s.StateDir}
 	if os.Getenv(update.LaunchedEnv) == "" {
 		for range maxHandovers {
 			next := vers.Next(version, time.Now(), log)

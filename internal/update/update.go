@@ -18,6 +18,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -224,7 +225,7 @@ func (u *Updater) Check(ctx context.Context) (Result, error) {
 	if !version.Newer(m.Version, u.Current) {
 		return res, nil
 	}
-	if u.isBad(m.Version) {
+	if isBad(u.Versions.Dir, m.Version, u.now()) {
 		u.log().Info("skipping a release that failed here recently", "version", m.Version)
 		return res, nil
 	}
@@ -244,7 +245,7 @@ func (u *Updater) Check(ctx context.Context) (Result, error) {
 	if u.CheckBinary != nil {
 		if err := u.CheckBinary(ctx, path, m.Version); err != nil {
 			if errors.Is(err, ErrBroken) {
-				u.markBad(m.Version)
+				markBad(u.Versions.Dir, m.Version, u.now())
 			}
 			return res, err
 		}
@@ -297,7 +298,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if err == nil && n > maxBinary {
 		err = errors.New("download: file too large")
 	}
-	if err == nil && !equalBytes(h.Sum(nil), want) {
+	if err == nil && subtle.ConstantTimeCompare(h.Sum(nil), want) != 1 {
 		err = ErrChecksum
 	}
 	if err == nil {
@@ -308,17 +309,6 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
-}
-
-func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
 }
 
 // ---- bookkeeping in the state directory ----
@@ -368,36 +358,27 @@ func clearPending(dir string) error {
 	return err
 }
 
-func (u *Updater) badList() map[string]time.Time {
+// readBad returns the versions that failed here, with when they did.
+func readBad(dir string) map[string]time.Time {
 	out := map[string]time.Time{}
-	data, err := os.ReadFile(filepath.Join(u.Versions.Dir, badFile))
-	if err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, badFile)); err == nil {
 		_ = json.Unmarshal(data, &out)
 	}
 	return out
 }
 
-func (u *Updater) isBad(v string) bool {
-	t, ok := u.badList()[v]
-	return ok && u.now().Sub(t) < BadVersionTTL
+// isBad reports whether v failed here less than BadVersionTTL ago.
+func isBad(dir, v string, now time.Time) bool {
+	t, ok := readBad(dir)[v]
+	return ok && now.Sub(t) < BadVersionTTL
 }
 
-func (u *Updater) markBad(v string) { markBad(u.Versions.Dir, v, u.now()) }
-
 func markBad(dir, v string, now time.Time) {
-	m := map[string]time.Time{}
-	if data, err := os.ReadFile(filepath.Join(dir, badFile)); err == nil {
-		_ = json.Unmarshal(data, &m)
-	}
+	m := readBad(dir)
 	m[v] = now.UTC()
 	data, _ := json.Marshal(m)
 	_ = os.MkdirAll(dir, 0o700)
 	_ = core.WriteFileAtomic(filepath.Join(dir, badFile), data, 0o600)
-}
-
-// BadVersions returns the versions that failed here.
-func BadVersions(dir string) map[string]time.Time {
-	return (&Updater{Versions: &Versions{Dir: dir}}).badList()
 }
 
 // ---- confirmation after the switch ----

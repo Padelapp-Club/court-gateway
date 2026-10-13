@@ -94,7 +94,7 @@ func newRig(t *testing.T, r *release, current string) *rig {
 		t.Fatal(err)
 	}
 	state := filepath.Join(dir, "state")
-	v := &Versions{Dir: state, Installed: exe}
+	v := &Versions{Dir: state}
 	if !v.Writable() {
 		t.Fatal("state not writable")
 	}
@@ -267,7 +267,7 @@ func TestChildCheckRejectsBrokenBinary(t *testing.T) {
 			if g.v.Launch("1.0.0", time.Now()) != "" {
 				t.Fatal("a binary that failed its check was installed")
 			}
-			if _, bad := BadVersions(g.state)["1.1.0"]; bad != c.bad {
+			if _, bad := readBad(g.state)["1.1.0"]; bad != c.bad {
 				t.Fatalf("marked bad = %v, want %v", bad, c.bad)
 			}
 			noStrays(t, g.v.StagingDir())
@@ -289,7 +289,7 @@ func TestRollbackWhenNewVersionFailsOnStart(t *testing.T) {
 	if got := g.runs(t, "1.0.0"); got != "INSTALLED BINARY 1.0.0" {
 		t.Fatalf("not rolled back to the installed binary: %q", got)
 	}
-	if _, bad := BadVersions(g.state)["1.1.0"]; !bad {
+	if _, bad := readBad(g.state)["1.1.0"]; !bad {
 		t.Fatal("failed version not marked bad")
 	}
 	if p, _ := ReadPending(g.state); p != nil {
@@ -360,7 +360,7 @@ func TestCrashLoopIsRolledBackByTheInstalledBinary(t *testing.T) {
 	if next := g.v.Next("1.0.0", time.Now(), nil); next != "" {
 		t.Fatalf("a crash-looping update was started again: %q", next)
 	}
-	if _, bad := BadVersions(g.state)["1.1.0"]; !bad {
+	if _, bad := readBad(g.state)["1.1.0"]; !bad {
 		t.Fatal("not marked bad")
 	}
 	if p, _ := ReadPending(g.state); p != nil {
