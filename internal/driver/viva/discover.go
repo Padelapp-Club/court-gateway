@@ -30,9 +30,8 @@ type vivaWorkTime struct {
 }
 
 type vivaRoom struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	StudioID string `json:"studioId"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type vivaStudio struct {

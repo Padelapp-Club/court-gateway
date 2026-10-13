@@ -144,28 +144,16 @@ func (c *Clubs) Ready(ctx context.Context) error {
 	return nil
 }
 
-// APIHandler routes /v1/clubs and /v1/clubs/{club}/... to the club's own
-// API. It expects the partner name in the request context.
+// APIHandler routes /v1/clubs/{club}/... to the club's own API (partners
+// get the club list from the hub). It expects the partner name in the
+// request context.
 func (c *Clubs) APIHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if name, ok := auth.PartnerName(r.Context()); ok {
 			info(r).partner = name
 		}
 		t := c.cur.Load()
-		p := r.URL.Path
-		if p == "/v1/clubs" {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				WriteError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
-				return
-			}
-			list := make([]clubRef, 0, len(t.ids))
-			for _, id := range t.ids {
-				list = append(list, clubRef{ID: id, Name: t.byID[id].srv.cfg.ClubName})
-			}
-			WriteJSON(w, http.StatusOK, map[string][]clubRef{"clubs": list})
-			return
-		}
-		rest, ok := strings.CutPrefix(p, "/v1/clubs/")
+		rest, ok := strings.CutPrefix(r.URL.Path, "/v1/clubs/")
 		if !ok {
 			WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 			return

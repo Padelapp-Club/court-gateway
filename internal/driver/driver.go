@@ -175,8 +175,7 @@ type CourtConfig struct {
 
 // Config is what a driver factory receives.
 type Config struct {
-	Timezone    *time.Location
-	SlotMinutes int
+	Timezone *time.Location
 	// CRM holds every key of the `crm` section except `type`.
 	CRM Params
 	// Password is the CRM password taken from the environment.

@@ -49,7 +49,6 @@ type service struct {
 }
 
 type court struct {
-	id        string
 	room      string
 	priceList string
 }
@@ -175,7 +174,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		if pl != "" && !uuidRe.MatchString(pl) {
 			add(fmt.Errorf("%s.price_list: «%s» — ожидается идентификатор прайс-листа Viva (UUID)", path, pl))
 		}
-		ct := court{id: cc.ID, room: strings.ToLower(room), priceList: pl}
+		ct := court{room: strings.ToLower(room), priceList: pl}
 		d.courts = append(d.courts, ct)
 		d.byRoom[ct.room] = cc.ID
 		d.byCourt[cc.ID] = ct

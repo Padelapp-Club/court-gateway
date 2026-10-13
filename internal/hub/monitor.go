@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/version"
 )
@@ -76,7 +77,6 @@ type Health struct {
 	Checked      bool
 	Ready        bool
 	Reason       string
-	Failures     int
 	OfflineSince time.Time
 	// ConfigVersion, ConfigError and ClubsServed are the gateway's report
 	// on the club config it runs.
@@ -191,7 +191,7 @@ func (m *Monitor) Heartbeat(club string, hb tunnel.Heartbeat) {
 	h.configVersion, h.configError, h.clubsServed = hb.ConfigVersion, cleanConfigError(hb.ConfigError, 2000), cleanClubs(hb.Clubs)
 	h.clubErrors = nil
 	for id, why := range hb.ClubErrors {
-		if ValidClubID(id) && len(h.clubErrors) < 1000 {
+		if core.ValidID(id) && len(h.clubErrors) < 1000 {
 			if h.clubErrors == nil {
 				h.clubErrors = map[string]string{}
 			}
@@ -218,7 +218,7 @@ func cleanConfigError(s string, max int) string {
 func cleanClubs(ids []string) []string {
 	out := []string{}
 	for _, id := range ids {
-		if ValidClubID(id) && len(out) < 1000 {
+		if core.ValidID(id) && len(out) < 1000 {
 			out = append(out, id)
 		}
 	}
@@ -276,7 +276,7 @@ func (m *Monitor) Health(club string) Health {
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
-		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, Failures: h.notReady,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason,
 		ConfigVersion: h.configVersion, ConfigError: h.configError, ClubErrors: maps.Clone(h.clubErrors), ClubsServed: append([]string(nil), h.clubsServed...),
 	}
 	if out.State == StateOffline {

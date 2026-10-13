@@ -288,7 +288,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, inst strin
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, inst string) {
 	info := s.broker.Info(inst)
 	h := s.monitor.Health(inst)
-	out := tunnel.Whoami{Installation: inst, Connected: info.Connected, Latest: s.cfg.LatestVersion,
+	out := tunnel.Whoami{Installation: inst, Connected: info.Connected,
 		Clubs: []string{}, AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed}
 	if out.ClubsServed == nil {
 		out.ClubsServed = []string{}
@@ -335,7 +335,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 	// name another club than the one checked here (the gateway refuses
 	// them too)
 	canonical := r.URL.RawPath == "" && path.Clean(p) == p && !strings.Contains(p, "%")
-	if !ok || !canonical || !ValidClubID(club) || !s.cfg.partnerMayReach(partner, club) {
+	if !ok || !canonical || !core.ValidID(club) || !s.cfg.partnerMayReach(partner, club) {
 		core.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 		return
 	}

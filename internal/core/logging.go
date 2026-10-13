@@ -14,11 +14,6 @@ var sensitiveKeyParts = []string{
 	"note", "comment", "client", "phone", "email", "name", "title",
 }
 
-// safeKeys are allowed even though they contain a sensitive part.
-var safeKeys = map[string]bool{
-	"partner": true, // partner names are config, not secrets
-}
-
 const redacted = "[redacted]"
 
 // NewLogger builds a JSON logger that redacts sensitive attributes and every
@@ -72,9 +67,6 @@ func (h *RedactingHandler) WithGroup(name string) slog.Handler {
 
 func isSensitiveKey(k string) bool {
 	lk := strings.ToLower(k)
-	if safeKeys[lk] {
-		return false
-	}
 	for _, p := range sensitiveKeyParts {
 		if strings.Contains(lk, p) {
 			return true

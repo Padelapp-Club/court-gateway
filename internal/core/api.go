@@ -19,11 +19,6 @@ import (
 // Response DTOs. Every response is built from these whitelisted structs
 // only; nothing from a CRM response is ever passed through.
 
-type clubRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
 type hoursDTO struct {
 	Open  string `json:"open"`
 	Close string `json:"close"`

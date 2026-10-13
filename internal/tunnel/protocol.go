@@ -108,7 +108,6 @@ type Whoami struct {
 	Installation string `json:"installation_id"`
 	Connected    bool   `json:"connected"`
 	LastSeen     string `json:"last_seen,omitempty"`
-	Latest       string `json:"latest_version,omitempty"`
 	// ConfigVersion is the hub's current club configuration version;
 	// Clubs are the clubs in it.
 	ConfigVersion int64    `json:"config_version"`

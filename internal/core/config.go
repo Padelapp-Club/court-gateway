@@ -39,9 +39,9 @@ const StateDirEnv = "GATEWAY_STATE_DIR"
 // does not set one.
 const DefaultWritesPerMinute = 60
 
-// minKeyLength is the minimum partner key length accepted from the
-// environment.
-const minKeyLength = 24
+// MinKeyLength is the minimum length of a partner or operator key taken
+// from the environment.
+const MinKeyLength = 24
 
 // fileConfig mirrors gateway.yaml: the installation only. Its clubs are
 // configured on the hub. Driver-specific keys of `crm` are kept as a raw
@@ -106,8 +106,8 @@ func ParsePartners(entries []PartnerEntry, getenv func(string) string, add func(
 			switch {
 			case key == "":
 				add("%s.key_env: переменная окружения %s не задана или пуста", path, envName)
-			case len(key) < minKeyLength:
-				add("%s.key_env: ключ в %s слишком короткий — нужно не меньше %d символов", path, envName, minKeyLength)
+			case len(key) < MinKeyLength:
+				add("%s.key_env: ключ в %s слишком короткий — нужно не меньше %d символов", path, envName, MinKeyLength)
 			default:
 				if other, dup := seenKey[key]; dup {
 					add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
@@ -208,7 +208,7 @@ func (s *Settings) CourtByID(id string) (Court, bool) {
 }
 
 var (
-	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
 	partnerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 	envNameRe     = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )

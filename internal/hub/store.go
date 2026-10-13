@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -137,7 +136,7 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(data, &g); err != nil || !ValidClubID(g.Installation) || len(g.SecretSHA256) != 64 {
+		if err := json.Unmarshal(data, &g); err != nil || !core.ValidID(g.Installation) || len(g.SecretSHA256) != 64 {
 			return nil, fmt.Errorf("state_dir: повреждённая запись шлюза %s", e.Name())
 		}
 		s.gateways[g.Installation] = &g
@@ -193,14 +192,6 @@ const MaxJoinCodeTTL = 30 * 24 * time.Hour
 // maxName caps an installation or club name, in characters.
 const maxName = 200
 
-// newIDRe is the rule for ids handed out from now on (installations and
-// clubs): 2 to 63 characters. Loading keeps accepting every id ValidClubID
-// accepts, so no existing registration is invalidated.
-var newIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
-
-// ValidNewID reports whether id may name a new installation or club.
-func ValidNewID(id string) bool { return newIDRe.MatchString(id) }
-
 // Store errors.
 var (
 	ErrInvalidID           = errors.New("ids are 2 to 63 characters: lower-case latin letters, digits and dashes, starting with a letter or digit")
@@ -233,7 +224,7 @@ type JoinCode struct {
 // gateway's secret (a reinstall or a replaced machine). Both the CLI and
 // the operator API create codes here.
 func CreateJoinCode(dir, installation, name string, ttl time.Duration, now time.Time) (JoinCode, error) {
-	if !ValidNewID(installation) {
+	if !core.ValidID(installation) {
 		return JoinCode{}, ErrInvalidID
 	}
 	name = strings.TrimSpace(name)
@@ -311,7 +302,7 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
 	var rec joinCodeRecord
-	if err := json.Unmarshal(data, &rec); err != nil || !ValidClubID(rec.Installation) {
+	if err := json.Unmarshal(data, &rec); err != nil || !core.ValidID(rec.Installation) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
 	if !s.now().Before(rec.Expires) {
@@ -397,7 +388,7 @@ func (s *Store) Gateways() []GatewayRecord {
 // CLI). A running hub stops accepting its secret at the next request; the
 // installation and its clubs stay, so a new join code restores service.
 func RevokeGateway(dir, installation string) error {
-	if !ValidClubID(installation) {
+	if !core.ValidID(installation) {
 		return ErrNotRegistered
 	}
 	err := os.Remove(filepath.Join(dir, gatewaysDir, installation+".json"))
@@ -423,7 +414,7 @@ func (s *Store) loadInstallations() error {
 			return err
 		}
 		var in Installation
-		if err := json.Unmarshal(data, &in); err != nil || !ValidClubID(in.ID) {
+		if err := json.Unmarshal(data, &in); err != nil || !core.ValidID(in.ID) {
 			return fmt.Errorf("state_dir: повреждённая запись установки %s", e.Name())
 		}
 		if in.Clubs == nil {
@@ -453,7 +444,7 @@ func (s *Store) saveInstallation(in *Installation) error {
 func (s *Store) CreateInstallation(id, name string) (Installation, error) {
 	name = strings.TrimSpace(name)
 	switch {
-	case !ValidNewID(id):
+	case !core.ValidID(id):
 		return Installation{}, ErrInvalidID
 	case !validName(name):
 		return Installation{}, ErrInvalidName
@@ -529,7 +520,7 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 		return false, 0, ErrClubTaken
 	}
 	_, existed := in.Clubs[spec.ID]
-	if !ValidNewID(spec.ID) && !existed {
+	if !core.ValidID(spec.ID) && !existed {
 		return false, 0, ErrInvalidID
 	}
 	next := in.clone()

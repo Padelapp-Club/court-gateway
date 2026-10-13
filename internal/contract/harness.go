@@ -74,6 +74,19 @@ func (b *Built) Handler() http.Handler {
 	}
 	api := b.Clubs.TunnelHandler()
 	return core.Observe(slog.New(slog.DiscardHandler), nil, a.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/clubs" { // the hub lists the clubs; here, the built ones
+			type club struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}
+			list := []club{}
+			for _, id := range b.Clubs.IDs() {
+				srv, _ := b.Clubs.Server(id)
+				list = append(list, club{ID: id, Name: srv.Settings().ClubName})
+			}
+			core.WriteJSON(w, http.StatusOK, map[string][]club{"clubs": list})
+			return
+		}
 		api.ServeHTTP(w, r.WithContext(core.WithRequestID(r.Context(), core.RequestID(r))))
 	})))
 }

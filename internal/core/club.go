@@ -116,7 +116,8 @@ func normalize(v any) any {
 	}
 }
 
-// ValidID reports whether id is a valid club or court id.
+// ValidID reports whether id is a valid id of an installation, a club or a
+// court: the one id rule of the gateway and the hub.
 func ValidID(id string) bool { return slugRe.MatchString(id) }
 
 // applyClub validates c and writes it into s (whose installation part is
@@ -134,7 +135,7 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 	case s.ClubID == "":
 		add("id: параметр обязателен (короткое имя латиницей, например my-club)")
 	case !slugRe.MatchString(s.ClubID):
-		add("id: «%s» — допустимы строчные латинские буквы, цифры и дефис, до 63 символов", s.ClubID)
+		add("id: «%s» — от 2 до 63 символов: строчные латинские буквы, цифры и дефис", s.ClubID)
 	}
 	if s.ClubName == "" {
 		add("name: параметр обязателен (название клуба)")
@@ -184,7 +185,7 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 		case id == "":
 			add("%s.id: параметр обязателен (например court-1)", path)
 		case !slugRe.MatchString(id):
-			add("%s.id: «%s» — допустимы строчные латинские буквы, цифры и дефис", path, id)
+			add("%s.id: «%s» — от 2 до 63 символов: строчные латинские буквы, цифры и дефис", path, id)
 		case seenCourt[id]:
 			add("%s.id: корт «%s» указан дважды", path, id)
 		}
@@ -222,7 +223,6 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 	}
 	s.Driver.CRM = crm
 	s.Driver.Timezone = s.Location
-	s.Driver.SlotMinutes = s.SlotMinutes
 	return errs
 }
 

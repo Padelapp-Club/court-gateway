@@ -439,7 +439,7 @@ func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
 		ok, metrics := readyCheck()
 		return !ok && strings.Contains(metrics, "check_club_net_one_ready=0\n")
 	})
-	if h := mon.Health("net-one"); h.State != hub.StateNotReady || h.Reason != "CONFIG_REFUSED" || h.Failures < 3 {
+	if h := mon.Health("net-one"); h.State != hub.StateNotReady || h.Reason != "CONFIG_REFUSED" {
 		t.Fatalf("health: %+v", h)
 	}
 	// the served club still answers partners

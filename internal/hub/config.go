@@ -35,7 +35,6 @@ const (
 	DefaultInterval       = 60 * time.Second
 	DefaultOfflineAfter   = 3 * time.Minute
 	DefaultReadyFailures  = 3
-	minKeyLength          = 24
 )
 
 type fileConfig struct {
@@ -93,9 +92,6 @@ type Settings struct {
 	// the prefix of every path partners see.
 	publicPath string
 }
-
-// ValidClubID reports whether id is a valid club (or installation) id.
-func ValidClubID(id string) bool { return core.ValidID(id) }
 
 // LoadFile reads hub.yaml; secrets come from getenv, which callers usually
 // extend with the .env file next to hub.yaml.
@@ -168,8 +164,8 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	}
 	if env := strings.TrimSpace(fc.OperatorKeyEnv); env != "" {
 		s.OperatorKey = strings.TrimSpace(getenv(env))
-		if len(s.OperatorKey) < minKeyLength {
-			add("operator_key_env: ключ оператора в %s не задан или короче %d символов", env, minKeyLength)
+		if len(s.OperatorKey) < core.MinKeyLength {
+			add("operator_key_env: ключ оператора в %s не задан или короче %d символов", env, core.MinKeyLength)
 		} else {
 			s.Secrets = append(s.Secrets, s.OperatorKey)
 		}
@@ -209,7 +205,7 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			add("%s.clubs: укажите клубы партнёра списком или [\"*\"] — все клубы", path)
 		}
 		for _, c := range p.Clubs {
-			if c != "*" && !ValidClubID(c) {
+			if c != "*" && !core.ValidID(c) {
 				add("%s.clubs: «%s» — не идентификатор клуба", path, c)
 			}
 		}

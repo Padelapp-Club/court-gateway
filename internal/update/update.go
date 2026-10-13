@@ -138,12 +138,10 @@ type Result struct {
 type Updater struct {
 	PublicKey   ed25519.PublicKey
 	ManifestURL string
-	// SignatureURL defaults to ManifestURL + ".sig".
-	SignatureURL string
-	Current      string
-	Platform     string
-	Client       *http.Client
-	Versions     *Versions
+	Current     string
+	Platform    string
+	Client      *http.Client
+	Versions    *Versions
 	// CheckBinary runs the downloaded binary's self-check before the
 	// switch. Nil skips it (tests only).
 	CheckBinary func(ctx context.Context, path, version string) error
@@ -197,10 +195,7 @@ func (u *Updater) Fetch(ctx context.Context) (*Manifest, error) {
 	if mURL == "" {
 		mURL = DefaultManifestURL
 	}
-	sURL := u.SignatureURL
-	if sURL == "" {
-		sURL = mURL + ".sig"
-	}
+	sURL := mURL + ".sig"
 	data, err := u.get(ctx, mURL, maxManifest)
 	if err != nil {
 		return nil, err

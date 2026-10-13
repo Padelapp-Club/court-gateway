@@ -190,7 +190,7 @@ func (s *Server) handlePutClub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec.ID = club
-	if !ValidClubID(club) {
+	if !core.ValidID(club) {
 		s.storeError(w, r, ErrInvalidID)
 		return
 	}

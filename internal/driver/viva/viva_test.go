@@ -541,11 +541,10 @@ func TestPricesEndpoint(t *testing.T) {
 func TestDriverConfigValidation(t *testing.T) {
 	base := func() driver.Config {
 		return driver.Config{
-			SlotMinutes: 30,
-			Password:    "x",
-			CRM:         driver.Params{"username": "u", "studio": studio},
-			Courts:      []driver.CourtConfig{{ID: "court-1", Name: "C", Params: driver.Params{"viva_room": room1}}},
-			Services:    map[string]driver.Params{},
+			Password: "x",
+			CRM:      driver.Params{"username": "u", "studio": studio},
+			Courts:   []driver.CourtConfig{{ID: "court-1", Name: "C", Params: driver.Params{"viva_room": room1}}},
+			Services: map[string]driver.Params{},
 		}
 	}
 	if _, err := viva.NewDriver(base()); err != nil {
