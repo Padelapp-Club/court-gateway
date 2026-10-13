@@ -80,10 +80,10 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 }
 
 // studioList returns the account's studios: read once per evaluation
-// (driver.Once), so the clubs of one readiness round or one config share
+// (driver.Shared), so the clubs of one readiness round or one config share
 // it, and never reused after it.
 func (c *client) studioList(ctx context.Context) ([]vivaStudio, error) {
-	return driver.Once(ctx, "viva studios "+c.apiURL, func() ([]vivaStudio, error) { return listStudios(ctx, c) })
+	return driver.Shared(ctx, func(ctx context.Context) ([]vivaStudio, error) { return listStudios(ctx, c) })
 }
 
 // invalidate drops the cached token if it is still the one that failed.
