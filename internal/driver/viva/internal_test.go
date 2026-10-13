@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 func ts(s string) time.Time {

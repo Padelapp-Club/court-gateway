@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"court-gateway/internal/auth"
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // ReadyTimeout bounds the readiness probe.

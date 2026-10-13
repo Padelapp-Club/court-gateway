@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // Price list model, as far as the driver reads it.

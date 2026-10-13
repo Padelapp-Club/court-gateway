@@ -1,4 +1,4 @@
-module court-gateway
+module github.com/Padelapp-Club/court-gateway
 
 go 1.24
 

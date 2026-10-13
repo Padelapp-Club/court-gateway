@@ -14,8 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"court-gateway/internal/auth"
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // PasswordEnv is the environment variable holding the CRM password.

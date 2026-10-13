@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 var (

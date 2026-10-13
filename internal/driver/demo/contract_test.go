@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"court-gateway/internal/contract"
-	"court-gateway/internal/driver/demo"
+	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 )
 
 const demoConfig = `club: { id: demo-club, name: "Демо-клуб" }

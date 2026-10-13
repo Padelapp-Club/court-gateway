@@ -13,7 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // Response DTOs. Every response is built from these whitelisted structs

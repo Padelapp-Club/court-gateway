@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"court-gateway/internal/core"
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // Test keys used by harnesses. They exist only in tests.

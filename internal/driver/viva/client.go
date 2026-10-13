@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // tokenSafety is subtracted from the token lifetime so a token is never

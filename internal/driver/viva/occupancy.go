@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // slot is the subset of an exercise/break the driver reads. Unknown fields

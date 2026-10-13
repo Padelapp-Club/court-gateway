@@ -22,10 +22,10 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"court-gateway/internal/core"
-	"court-gateway/internal/driver"
-	"court-gateway/internal/driver/demo"
-	"court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".

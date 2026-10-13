@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"court-gateway/internal/contract"
-	"court-gateway/internal/driver"
-	"court-gateway/internal/driver/viva"
-	"court-gateway/internal/driver/viva/vivastub"
+	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 )
 
 // Obviously fake identifiers: nothing here refers to a real studio.

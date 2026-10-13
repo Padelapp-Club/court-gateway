@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"court-gateway/internal/contract"
-	"court-gateway/internal/driver"
-	"court-gateway/internal/driver/viva"
-	"court-gateway/internal/driver/viva/vivastub"
+	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 )
 
 func call(t *testing.T, f *fixture, method, path, key string, body string) (int, map[string]any, string) {

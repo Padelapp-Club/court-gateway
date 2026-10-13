@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 const validConfig = `club: { id: my-club, name: "Мой клуб" }

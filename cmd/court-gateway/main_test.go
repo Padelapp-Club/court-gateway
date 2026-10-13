@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
 func noEnv(string) string { return "" }

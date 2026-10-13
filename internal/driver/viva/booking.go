@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // markerPrefix starts the ownership marker appended to the comment of every
