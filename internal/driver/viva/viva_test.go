@@ -506,3 +506,23 @@ func TestCancelledItemsAreNotOccupancy(t *testing.T) {
 		t.Fatalf("cancelled item returned: %d %s", st, raw)
 	}
 }
+
+// A Viva discount from 10:15 to 10:45 on the club's 30-minute grid is part
+// of the quote and of /prices, not silently dropped.
+func TestPriceImpactOffTheGrid(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.stub.SetPricing(priceList, `{"basePrices":[{"condition":{"type":"NONE"},"valueFrom":2000}],"priceImpacts":{"TIME":[`+
+		`{"impactType":"FIXED","impactDirection":"DISCOUNT","value":500,"condition":{"type":"TIME","days":`+allDaysJSON+`,"timeStart":"10:15:00","timeEnd":"10:45:00"}}]}}`)
+	day := futureDay().In(f.built.Settings.Location)
+	from := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
+	st, m, raw := call(t, f, http.MethodGet, "/v1/clubs/test-club/quote?court=court-1&start="+q(from)+"&end="+q(from.Add(time.Hour)), contract.ReadKey, "")
+	if st != http.StatusOK || m["total"] != float64(1750) {
+		t.Fatalf("quote: %d %s; want total 1750 (half an hour at 2000/h, half an hour at 1500/h)", st, raw)
+	}
+	st, m, raw = call(t, f, http.MethodGet, "/v1/clubs/test-club/prices?court=court-1&date="+from.Format("2006-01-02"), contract.ReadKey, "")
+	got, _ := json.Marshal(m["periods"])
+	want := `[{"end":"10:15","price_per_hour":2000,"start":"00:00"},{"end":"10:45","price_per_hour":1500,"start":"10:15"},{"end":"24:00","price_per_hour":2000,"start":"10:45"}]`
+	if st != http.StatusOK || string(got) != want {
+		t.Fatalf("prices: %d %s", st, raw)
+	}
+}

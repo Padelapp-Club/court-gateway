@@ -29,9 +29,9 @@ type PriceAdjustment struct {
 	PerHourDelta int64 // kopecks per hour, may be negative
 }
 
-// PriceTable is a court's complete price model. For a slot the first base
-// rule that fully contains it gives the price; every adjustment that fully
-// contains it is then added.
+// PriceTable is a court's complete price model. For every minute the first
+// base rule that contains it gives the price, and every adjustment that
+// contains it is added; rules need not follow the club's booking grid.
 type PriceTable struct {
 	Base        []PriceRule
 	Adjustments []PriceAdjustment

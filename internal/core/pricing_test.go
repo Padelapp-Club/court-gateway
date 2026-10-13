@@ -99,18 +99,49 @@ func TestFirstMatchingBaseRuleWins(t *testing.T) {
 		{Days: driver.AllWeekdays, From: 600, To: 720, PerHour: 5000_00},
 		{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: 1000_00},
 	}}
-	if p, _ := priceAt(tb, 0, 600, 630); p != 5000_00 {
-		t.Fatalf("got %d", p)
+	loc := mustLoc(t)
+	at := func(hh, mm int) time.Time { return time.Date(2030, 3, 4, hh, mm, 0, 0, loc) }
+	// 10:00-10:30 inside the first rule
+	if got, _ := quote(tb, loc, 30, at(10, 0), at(10, 30)); got != 2500 {
+		t.Fatalf("got %d", got)
 	}
-	// a slot that is only partly inside the first rule falls to the second
-	if p, _ := priceAt(tb, 0, 690, 750); p != 1000_00 {
-		t.Fatalf("got %d", p)
+	// 11:30-12:30: half an hour of each rule
+	if got, _ := quote(tb, loc, 30, at(11, 30), at(12, 30)); got != 2500+500 {
+		t.Fatalf("got %d", got)
+	}
+}
+
+// Price rules need not follow the booking grid: a discount from 10:15 to
+// 10:45 on a 30-minute grid applies to the quarter hours it covers, and
+// /prices shows the same periods.
+func TestPriceAdjustmentOffTheGrid(t *testing.T) {
+	loc := mustLoc(t)
+	tb := driver.PriceTable{
+		Base:        []driver.PriceRule{{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: 2000_00}},
+		Adjustments: []driver.PriceAdjustment{{Days: driver.AllWeekdays, From: 615, To: 645, PerHourDelta: -500_00}},
+	}
+	at := func(hh, mm int) time.Time { return time.Date(2030, 3, 4, hh, mm, 0, 0, loc) }
+	if got, err := quote(tb, loc, 30, at(10, 0), at(11, 0)); err != nil || got != 1750 {
+		t.Fatalf("quote = %d, %v; want 1750", got, err)
+	}
+	if got, err := quote(tb, loc, 30, at(10, 0), at(10, 30)); err != nil || got != 875 {
+		t.Fatalf("first half hour = %d, %v; want 875 (15 min at 2000/h + 15 min at 1500/h)", got, err)
+	}
+	want := []pricePeriod{{0, 615, 2000_00, true}, {615, 645, 1500_00, true}, {645, 1440, 2000_00, true}}
+	got := dayPeriods(tb, 0)
+	if len(got) != len(want) {
+		t.Fatalf("periods %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("period %d = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
 func TestDayPeriods(t *testing.T) {
-	got := dayPeriods(testTable(), 30, 4) // Friday
-	want := []pricePeriod{{420, 540, 1500_00}, {540, 1020, 1800_00}, {1020, 1200, 2600_00}, {1200, 1440, 3000_00}}
+	got := dayPeriods(testTable(), 4) // Friday
+	want := []pricePeriod{{420, 540, 1500_00, true}, {540, 1020, 1800_00, true}, {1020, 1200, 2600_00, true}, {1200, 1440, 3000_00, true}}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)
 	}
