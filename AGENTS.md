@@ -103,7 +103,9 @@ curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
   grep " $F\$" SHA256SUMS | shasum -a 256 -c - && mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
 ```
 
-Windows (on ARM64 put `windows-arm64.exe` in `$f`):
+On Windows ARM64 put `windows-arm64.exe` in `$f`.
+
+Windows:
 
 ```powershell
 & {
