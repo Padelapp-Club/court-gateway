@@ -130,9 +130,9 @@ func info(r *http.Request) *reqInfo {
 func newRequestID() string {
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "req-unknown"
+		return "rq-unknown"
 	}
-	return "req-" + hex.EncodeToString(b[:])
+	return "rq-" + hex.EncodeToString(b[:])
 }
 
 type statusRecorder struct {
