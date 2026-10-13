@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -298,7 +299,11 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 	}
 	rest, ok := strings.CutPrefix(p, "/v1/clubs/")
 	club, _, _ := strings.Cut(rest, "/")
-	if !ok || !ValidClubID(club) || !s.cfg.partnerMayReach(partner, club) {
+	// only canonical paths go on: an encoded slash or dot segment could
+	// name another club than the one checked here (the gateway refuses
+	// them too)
+	canonical := r.URL.RawPath == "" && path.Clean(p) == p && !strings.Contains(p, "%")
+	if !ok || !canonical || !ValidClubID(club) || !s.cfg.partnerMayReach(partner, club) {
 		core.WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 		return
 	}

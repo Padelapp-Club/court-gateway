@@ -380,3 +380,38 @@ func assertNoPlaintext(t *testing.T, dir string, secrets []string) {
 		t.Fatalf("walk: %v (%d files)", err, n)
 	}
 }
+
+// The hub forwards only canonical paths: an encoded slash or dot segment
+// is refused by the hub itself (404) and never reaches the broker, here
+// a registered gateway that is not connected (which would answer 503).
+func TestHubRefusesNonCanonicalPaths(t *testing.T) {
+	w := newWorld(t, hub.Options{}, "")
+	w.hub.Register("demo-club", "Демо-клуб")
+	client := &http.Client{Transport: w.hub.Transport(), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	get := func(p string) (int, string) {
+		req, _ := http.NewRequest(http.MethodGet, w.hub.URL()+p, nil)
+		req.Header.Set("Authorization", "Bearer "+contract.ReadKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := get("/v1/clubs/demo-club/courts"); code != http.StatusServiceUnavailable || !strings.Contains(body, "CLUB_OFFLINE") {
+		t.Fatalf("canonical path: %d %s", code, body)
+	}
+	for _, p := range []string{
+		"/v1/clubs/demo-club%2F..%2Fother/courts",
+		"/v1/clubs/demo-club/..%2Fother/courts",
+		"/v1/clubs/demo-club/%2E%2E/other/courts",
+		"/v1/clubs/demo-club/.%2E/other/courts",
+		"/v1/clubs/demo-club/courts/..%2F..%2F..%2Fgateway%2Fdiscover",
+		"/v1/clubs/demo-club/court%73",
+	} {
+		if code, body := get(p); code != http.StatusNotFound && code != http.StatusMovedPermanently {
+			t.Errorf("%s: %d %s", p, code, body)
+		}
+	}
+}
