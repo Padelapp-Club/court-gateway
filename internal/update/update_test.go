@@ -225,6 +225,7 @@ func TestChildCheckRejectsBrokenBinary(t *testing.T) {
 		{"passes", script("court-gateway 1.1.0", 0), nil, false},
 		{"fails self-check", script("court-gateway 1.1.0", 1), ErrBroken, true},
 		{"mislabelled", script("court-gateway 1.0.5", 0), ErrBroken, true},
+		{"version prefix only", script("court-gateway 1.1.01 (release, x)", 0), ErrBroken, true},
 		{"environment down", script("court-gateway 1.1.0", SelfCheckTransientExit), ErrTransient, false},
 	}
 	for _, c := range cases {
