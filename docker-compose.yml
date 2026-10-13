@@ -1,0 +1,14 @@
+# Gateway of one club. Prepare gateway.yaml and .env first (README, «Docker»):
+#   docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" court-gateway:local setup --config /config/gateway.yaml
+# then: docker compose up -d --build
+#
+# No ports are published: the gateway connects out to the hub.
+services:
+  court-gateway:
+    build: .
+    image: court-gateway:local
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./gateway.yaml:/config/gateway.yaml:ro
+    # the image declares the healthcheck: /court-gateway healthcheck

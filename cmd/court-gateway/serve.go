@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,7 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
@@ -272,8 +276,12 @@ func cmdHealthcheck(args []string, stdout, stderr io.Writer, getenv func(string)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "config file")
 	addr := fs.String("addr", "", "host:port of the running service (overrides the config)")
+	hubCfg := fs.String("hub", "", "probe the hub running with this hub.yaml instead of a gateway")
 	if fs.Parse(args) != nil {
 		return 2
+	}
+	if *hubCfg != "" {
+		return probeHub(*hubCfg, stdout, stderr, getenv)
 	}
 	if *addr != "" {
 		return probeHTTP(*addr, stdout, stderr)
@@ -300,6 +308,53 @@ func probeStatusFile(dir string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !st.Ready {
+		return 1
+	}
+	return 0
+}
+
+// probeHub asks the hub on this machine for /health/ready over loopback.
+// The hub's certificate is issued for its public name, not for 127.0.0.1,
+// so this local liveness probe does not verify it; it sends no secret.
+func probeHub(cfgPath string, stdout, stderr io.Writer, getenv func(string) string) int {
+	var c struct {
+		Listen string `yaml:"listen"`
+		TLS    struct {
+			CertFile string `yaml:"cert_file"`
+		} `yaml:"tls"`
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err == nil {
+		err = yaml.Unmarshal(data, &c)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	if c.Listen == "" {
+		c.Listen = hub.DefaultListen
+	}
+	_, port, err := net.SplitHostPort(c.Listen)
+	if err != nil {
+		fmt.Fprintf(stderr, "healthcheck: неверный listen %q\n", c.Listen)
+		return 1
+	}
+	scheme := "http"
+	tr := &http.Transport{}
+	if c.TLS.CertFile != "" {
+		scheme = "https"
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // loopback liveness probe, no secret sent
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: tr}
+	resp, err := client.Get(scheme + "://127.0.0.1:" + port + "/health/ready")
+	if err != nil {
+		fmt.Fprintln(stderr, "healthcheck: хаб не отвечает")
+		return 1
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	fmt.Fprintf(stdout, "%d %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
 		return 1
 	}
 	return 0

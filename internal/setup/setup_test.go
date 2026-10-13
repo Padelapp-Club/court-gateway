@@ -31,7 +31,7 @@ func TestHourGroupsAndRounding(t *testing.T) {
 }
 
 func TestEnvValueRoundTrip(t *testing.T) {
-	for _, v := range []string{"plain", "with space", " lead", "trail ", "has#hash", `dq"inside`, "sq'inside", `both"and'`, "=eq=", "кириллица"} {
+	for _, v := range []string{"plain", "with space", " lead", "trail ", "has#hash", `dq"inside`, "sq'inside", `both"and'`, "=eq=", "кириллица", `"starts`, "'starts", "a #b", ""} {
 		vals, err := core.ParseDotEnv([]byte("K=" + envValue(v) + "\n"))
 		if err != nil || vals["K"] != v {
 			t.Fatalf("%q -> %q -> %q (%v)", v, envValue(v), vals["K"], err)

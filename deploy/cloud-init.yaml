@@ -1,0 +1,59 @@
+#cloud-config
+# court-gateway на облачной ВМ (Ubuntu/Debian, amd64 или arm64; 1 vCPU, до 1 ГБ памяти).
+#
+# 1. Впишите пять значений в блок «Заполните» ниже.
+# 2. Вставьте весь файл в поле «Пользовательские данные» (user data / cloud-init) при создании ВМ.
+# 3. Белый IP, домен и входящие порты НЕ нужны: шлюз сам подключается к хабу.
+#    Если облако предлагает открыть порты — не открывайте (SSH можно оставить для себя).
+#
+# Через 2–3 минуты после старта ВМ шлюз появится «на связи» у нас в хабе.
+# Итог установки: /root/court-gateway-setup.json и /root/court-gateway-doctor.txt.
+#
+# Важно: облако хранит этот текст в настройках ВМ. После установки шлюз забирает пароль
+# в свой файл .env, а этот текст на диске ВМ удаляется. Если не хотите передавать пароль
+# через настройки облака, удалите строки CRM_PASSWORD и GATEWAY_JOIN_CODE и выполните
+# по SSH: sudo /opt/court-gateway/court-gateway setup --config /opt/court-gateway/gateway.yaml
+write_files:
+  - path: /root/court-gateway-setup.env
+    permissions: "0600"
+    content: |
+      # ---- Заполните ----
+      GATEWAY_HUB_URL='https://hub.example.com'
+      GATEWAY_JOIN_CODE='XXXX-XXXX-XXXX-XXXX'
+      CRM_USERNAME='admin@example.com'
+      CRM_STUDIO='00000000-0000-0000-0000-000000000000'
+      CRM_PASSWORD='пароль-администратора-Viva'
+      # --------------------
+
+runcmd:
+  - - sh
+    - -c
+    - |
+      set -eu
+      BASE=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
+      DIR=/opt/court-gateway
+      ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+      case "$ARCH" in
+        amd64|x86_64) ARCH=amd64 ;;
+        arm64|aarch64) ARCH=arm64 ;;
+        *) echo "court-gateway: архитектура $ARCH не поддерживается" >&2; exit 1 ;;
+      esac
+      id court-gateway >/dev/null 2>&1 || useradd --system --home-dir "$DIR" --shell /usr/sbin/nologin court-gateway
+      mkdir -p "$DIR"
+      cd "$DIR"
+      # download and verify the checksum of the release binary
+      curl -fsSL --retry 5 -o SHA256SUMS "$BASE/SHA256SUMS"
+      FILE="$(awk '/-linux-'"$ARCH"'$/ {print $2}' SHA256SUMS)"
+      curl -fsSL --retry 5 -o "$FILE" "$BASE/$FILE"
+      grep " $FILE\$" SHA256SUMS | sha256sum -c -
+      install -m 0755 "$FILE" court-gateway
+      rm -f "$FILE"
+      # one-time setup: CRM discovery, join code -> gateway.yaml and .env (0600)
+      set -a; . /root/court-gateway-setup.env; set +a
+      ./court-gateway setup --non-interactive --json --config "$DIR/gateway.yaml" > /root/court-gateway-setup.json || true
+      shred -u /root/court-gateway-setup.env 2>/dev/null || rm -f /root/court-gateway-setup.env
+      rm -f /var/lib/cloud/instance/user-data.txt /var/lib/cloud/instance/user-data.txt.i
+      chown -R court-gateway:court-gateway "$DIR"
+      ./court-gateway install-service -config "$DIR/gateway.yaml" --run-as court-gateway
+      sleep 30
+      ./court-gateway doctor -config "$DIR/gateway.yaml" > /root/court-gateway-doctor.txt 2>&1 || true

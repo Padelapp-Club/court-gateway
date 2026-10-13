@@ -10,3 +10,8 @@
 .env
 .env.*
 !.env.example
+
+# Signing keys: never commit a private key
+*.key
+/hub.yaml
+/state/

@@ -163,9 +163,11 @@ func (d *draft) render() string {
 	return b.String()
 }
 
-// envValue writes a value our .env parser reads back unchanged.
+// envValue writes a value that our .env parser, docker compose env_file
+// and docker run --env-file all read back unchanged whenever possible:
+// quotes are added only when a value cannot be written bare.
 func envValue(v string) string {
-	needs := v != strings.TrimSpace(v) || strings.ContainsAny(v, "#\"'") || v == ""
+	needs := v == "" || v != strings.TrimSpace(v) || v[0] == '"' || v[0] == '\'' || strings.Contains(v, " #")
 	if !needs {
 		return v
 	}
