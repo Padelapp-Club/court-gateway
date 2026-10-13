@@ -306,7 +306,16 @@ func (m *Monitor) Tick(context.Context) {
 	}
 	type change struct{ installation, event string }
 	var changes []change
+	registered := map[string]bool{}
+	for _, g := range gateways {
+		registered[g.Installation] = true
+	}
 	m.mu.Lock()
+	for id := range m.state {
+		if !registered[id] {
+			delete(m.state, id) // deleted installation or revoked gateway
+		}
+	}
 	for _, g := range gateways {
 		h := m.health(g.Installation)
 		st := m.evaluate(h, g.RegisteredAt, now)

@@ -447,7 +447,7 @@ func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
 		_ = json.Unmarshal(data, &doc)
 		metrics, _ := os.ReadFile(filepath.Join(statusDir, hub.MetricsFile))
 		for _, c := range doc.Checks {
-			if c.Check == "club_net_one_ready" {
+			if c.Check == "installation_net_one_ready" {
 				return c.OK, string(metrics)
 			}
 		}
@@ -459,7 +459,7 @@ func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
 	})
 	testkit.WaitFor(t, "not ready in the status files", 15*time.Second, func() bool {
 		ok, metrics := readyCheck()
-		return !ok && strings.Contains(metrics, "check_club_net_one_ready=0\n")
+		return !ok && strings.Contains(metrics, "check_installation_net_one_ready=0\n")
 	})
 	if h := mon.Health("net-one"); h.State != hub.StateNotReady || h.Reason != "CONFIG_REFUSED" {
 		t.Fatalf("health: %+v", h)
@@ -481,7 +481,7 @@ func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
 	s.hub.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-one/clubs/club-two", club("club-two", roomB))
 	testkit.WaitFor(t, "ready again in the status files", 15*time.Second, func() bool {
 		ok, metrics := readyCheck()
-		return ok && strings.Contains(metrics, "check_club_net_one_ready=1\n")
+		return ok && strings.Contains(metrics, "check_installation_net_one_ready=1\n")
 	})
 }
 

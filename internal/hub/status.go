@@ -24,7 +24,7 @@ import (
 // A metric key matches [a-z][a-z0-9_]*, a value is a plain decimal number
 // with at most 15 digits, and no key repeats. The checker decides how and
 // where to alert; the hub only reports. Nothing secret is written: details
-// are built from the club id and name, times, the gateway's version and
+// are built from the installation id and name, times, the gateway's version and
 // build and fixed reason codes.
 const (
 	StatusFile  = "status.json"
@@ -38,8 +38,8 @@ var (
 )
 
 // MetricKey turns parts into a metric or check name: lower case, every
-// character outside [a-z0-9_] becomes "_". Club ids hold only [a-z0-9-],
-// so "club_" + id is injective over valid ids.
+// character outside [a-z0-9_] becomes "_". Installation ids hold only
+// [a-z0-9-], so "installation_" + id is injective over valid ids.
 func MetricKey(parts ...string) string {
 	k := keyBadChars.ReplaceAllString(strings.ToLower(strings.Join(parts, "_")), "_")
 	if k == "" || k[0] < 'a' || k[0] > 'z' {
@@ -119,7 +119,7 @@ func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []by
 	var online, ready int64
 	for _, v := range views {
 		st := v.state
-		id := MetricKey("club", v.Installation)
+		id := MetricKey("installation", v.Installation)
 		isOnline := st != StateOffline
 		check(id+"_online", isOnline, onlineDetail(v, now, o.offlineAfter))
 		check(id+"_ready", st != StateNotReady, readyDetail(v, o.readyFailures))
@@ -134,9 +134,9 @@ func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []by
 		}
 		ms.addBool(id+"_outdated", o.latest != "" && v.version != "" && version.Compare(v.version, o.latest) < 0)
 	}
-	ms.addInt("clubs_total", int64(len(views)))
-	ms.addInt("clubs_online", online)
-	ms.addInt("clubs_ready", ready)
+	ms.addInt("installations_total", int64(len(views)))
+	ms.addInt("installations_online", online)
+	ms.addInt("installations_ready", ready)
 	ms.addBool("status_ok", doc.OK)
 	ms.addInt("run_last_utc_epoch", now.Unix())
 	data, _ := json.Marshal(doc)

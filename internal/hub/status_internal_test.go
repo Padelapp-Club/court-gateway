@@ -1,19 +1,22 @@
 package hub
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
 func TestMetricKey(t *testing.T) {
 	for in, want := range map[string]string{
-		"demo-club":   "club_demo_club",
-		"club-2b":     "club_club_2b",
-		"Club.Name x": "club_club_name_x",
+		"demo-club":   "installation_demo_club",
+		"club-2b":     "installation_club_2b",
+		"Club.Name x": "installation_club_name_x",
 	} {
-		if got := MetricKey("club", in); got != want {
-			t.Fatalf("MetricKey(club, %q) = %q, want %q", in, got, want)
+		if got := MetricKey("installation", in); got != want {
+			t.Fatalf("MetricKey(installation, %q) = %q, want %q", in, got, want)
 		}
 	}
 	if got := MetricKey("9lives"); got != "m_9lives" {
@@ -49,10 +52,40 @@ func TestStatusDropsCollidingKeys(t *testing.T) {
 		{GatewayRecord: GatewayRecord{Installation: "a_b", Name: "y"}, clubHealth: clubHealth{state: StatePending}},
 	}
 	status, metrics, dropped := buildStatus(now, statusOptions{offlineAfter: time.Minute, readyFailures: 3}, views)
-	if strings.Count(string(status), `"club_a_b_online"`) != 1 || strings.Count(string(metrics), "club_a_b_outdated=") != 1 {
+	if strings.Count(string(status), `"installation_a_b_online"`) != 1 || strings.Count(string(metrics), "installation_a_b_outdated=") != 1 {
 		t.Fatalf("collision written twice:\n%s\n%s", status, metrics)
 	}
 	if len(dropped) == 0 {
 		t.Fatal("collision not reported")
+	}
+}
+
+// A deleted installation leaves nothing behind in the monitor: no state,
+// no checks in the status files.
+func TestMonitorForgetsDeletedInstallations(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := CreateJoinCode(dir, "gone-net", "", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Redeem(code.Code); err != nil {
+		t.Fatal(err)
+	}
+	m := NewMonitor(st, NewBroker(time.Second, nil), MonitorConfig{OfflineAfter: time.Minute})
+	m.Heartbeat("gone-net", tunnel.Heartbeat{Ready: true})
+	m.Tick(context.Background())
+	if err := st.DeleteInstallation("gone-net"); err != nil {
+		t.Fatal(err)
+	}
+	m.Tick(context.Background())
+	m.mu.Lock()
+	n := len(m.state)
+	m.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d monitor entries left after the installation was deleted", n)
 	}
 }

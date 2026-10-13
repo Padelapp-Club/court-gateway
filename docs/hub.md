@@ -288,10 +288,12 @@ partners:
 временем проверки. Хаб
 сам шлюз не опрашивает, поэтому CRM клуба видит не больше одной проверки в минуту на шлюз.
 
-Сигнал шлюза — один на установку, сколько бы клубов она ни обслуживала; в именах проверок и
-метрик ниже `club_<id>` — это шлюз установки, а `<id>` — идентификатор установки.
+Сигнал шлюза — один на установку, сколько бы клубов она ни обслуживала, поэтому проверки и
+метрики ниже называются по установке: `installation_<id>`, где `<id>` — её идентификатор. (До этой
+версии они назывались `club_<id>` и `clubs_*` — внешнюю проверку, читающую старые имена, надо
+перевести на новые.)
 
-Каждые `heartbeat.interval` (60 с) хаб пересчитывает состояние каждого зарегистрированного клуба:
+Каждые `heartbeat.interval` (60 с) хаб пересчитывает состояние каждой зарегистрированной установки:
 
 - `offline` — сигнала нет дольше `offline_after` (3 мин). Открытый туннель без сигналов не
   считается: сигнал перестаёт приходить и тогда, когда шлюз завис, а соединение ещё держится;
@@ -316,33 +318,34 @@ partners:
 
 ```json
 {"ts": "2030-01-07T12:00:00Z", "ok": false, "version": "0.2.0", "checks": [
-  {"check": "club_my_club_online", "ok": true,
-   "detail": "«Мой клуб»: last heartbeat 12s ago at 2030-01-07T11:59:48Z (limit 3m0s), version 0.1.0 (release), tunnel connected"},
-  {"check": "club_my_club_ready", "ok": false, "detail": "not ready: CRM_AUTH_FAILED, 3 heartbeats in a row (limit 3)"}
+  {"check": "installation_my_net_online", "ok": true,
+   "detail": "«Моя сеть»: last heartbeat 12s ago at 2030-01-07T11:59:48Z (limit 3m0s), version 0.1.0 (release), tunnel connected"},
+  {"check": "installation_my_net_ready", "ok": false, "detail": "not ready: CRM_AUTH_FAILED, 3 heartbeats in a row (limit 3)"}
 ]}
 ```
 
 `metrics` — строки `ключ=число`:
 
 ```
-check_club_my_club_online=1
-check_club_my_club_ready=0
-club_my_club_last_seen_age_seconds=12
-club_my_club_outdated=1
-clubs_total=1
-clubs_online=1
-clubs_ready=0
+check_installation_my_net_online=1
+check_installation_my_net_ready=0
+installation_my_net_last_seen_age_seconds=12
+installation_my_net_outdated=1
+installations_total=1
+installations_online=1
+installations_ready=0
 status_ok=0
 run_last_utc_epoch=1894017600
 ```
 
-На каждый клуб две проверки: `club_<id>_online` и `club_<id>_ready`; `ok` верхнего уровня —
-`false`, если не прошла хоть одна. Пока клуб `offline`, `club_<id>_ready` остаётся `ok: true` с
-пояснением «unknown while offline»: одна причина — одна тревога. В идентификаторе клуба дефис
-заменяется на `_`. Ключ метрики — `[a-z][a-z0-9_]*`, значение — обычное десятичное число не
+На каждую установку две проверки: `installation_<id>_online` и `installation_<id>_ready`; `ok`
+верхнего уровня — `false`, если не прошла хоть одна. Пока установка `offline`,
+`installation_<id>_ready` остаётся `ok: true` с пояснением «unknown while offline»: одна причина —
+одна тревога. В идентификаторе дефис заменяется на `_`. Ключ метрики — `[a-z][a-z0-9_]*`, значение — обычное десятичное число не
 длиннее 15 цифр, ключи не повторяются (неподходящий ключ в файл не попадает и пишется в журнал).
-`club_<id>_last_seen_age_seconds` есть только у клубов, от которых был сигнал; `club_<id>_outdated`
-— 1, если версия шлюза ниже `latest_version`. Секретов в файлах нет: только id и название клуба,
+`installation_<id>_last_seen_age_seconds` есть только у установок, от которых был сигнал;
+`installation_<id>_outdated` — 1, если версия шлюза ниже `latest_version`. Удалённая установка и
+отозванный шлюз пропадают из файлов на следующем пересчёте. Секретов в файлах нет: только id и название установки,
 время, версия, тип сборки и коды причин.
 
 Как и куда доставлять тревоги, решает внешняя проверка, которая читает эти файлы; по `ts` и

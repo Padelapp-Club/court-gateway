@@ -424,26 +424,26 @@ func TestStatusFilesFormat(t *testing.T) {
 	mon.Tick(context.Background())
 
 	checks, metrics := validateStatusFiles(t, w.status)
-	for _, name := range []string{"club_demo_club_online", "club_demo_club_ready", "club_club_2b_online", "club_club_2b_ready"} {
+	for _, name := range []string{"installation_demo_club_online", "installation_demo_club_ready", "installation_club_2b_online", "installation_club_2b_ready"} {
 		if checks[name] == nil {
 			t.Fatalf("missing check %s; have %v", name, checks)
 		}
 	}
-	if d := checks["club_demo_club_online"]["detail"].(string); !strings.Contains(d, "Демо-клуб") || !strings.Contains(d, "version 1.0.0") ||
+	if d := checks["installation_demo_club_online"]["detail"].(string); !strings.Contains(d, "Демо-клуб") || !strings.Contains(d, "version 1.0.0") ||
 		!strings.Contains(d, "last heartbeat") {
 		t.Fatalf("online detail: %s", d)
 	}
 	want := map[string]string{
-		"clubs_total": "2", "clubs_online": "2", "clubs_ready": "1",
-		"club_demo_club_last_seen_age_seconds": "0", "club_demo_club_outdated": "1", "club_club_2b_outdated": "0",
-		"check_club_demo_club_online": "1", "status_ok": "1",
+		"installations_total": "2", "installations_online": "2", "installations_ready": "1",
+		"installation_demo_club_last_seen_age_seconds": "0", "installation_demo_club_outdated": "1", "installation_club_2b_outdated": "0",
+		"check_installation_demo_club_online": "1", "status_ok": "1",
 	}
 	for k, v := range want {
 		if metrics[k] != v {
 			t.Fatalf("metric %s = %q, want %q; all: %v", k, metrics[k], v, metrics)
 		}
 	}
-	if _, ok := metrics["club_club_2b_last_seen_age_seconds"]; ok {
+	if _, ok := metrics["installation_club_2b_last_seen_age_seconds"]; ok {
 		t.Fatal("an age for a club never seen")
 	}
 
@@ -451,13 +451,13 @@ func TestStatusFilesFormat(t *testing.T) {
 	w.clock.Advance(4 * time.Minute)
 	mon.Tick(context.Background())
 	checks, metrics = validateStatusFiles(t, w.status)
-	if checks["club_demo_club_online"]["ok"] != false || metrics["clubs_online"] != "0" || metrics["status_ok"] != "0" ||
-		metrics["club_demo_club_last_seen_age_seconds"] != "240" {
+	if checks["installation_demo_club_online"]["ok"] != false || metrics["installations_online"] != "0" || metrics["status_ok"] != "0" ||
+		metrics["installation_demo_club_last_seen_age_seconds"] != "240" {
 		t.Fatalf("after 4 silent minutes: %v %v", checks, metrics)
 	}
 	// readiness of an offline club is not a second alarm
-	if checks["club_demo_club_ready"]["ok"] != true || !strings.Contains(checks["club_demo_club_ready"]["detail"].(string), "unknown") {
-		t.Fatalf("ready while offline: %v", checks["club_demo_club_ready"])
+	if checks["installation_demo_club_ready"]["ok"] != true || !strings.Contains(checks["installation_demo_club_ready"]["detail"].(string), "unknown") {
+		t.Fatalf("ready while offline: %v", checks["installation_demo_club_ready"])
 	}
 
 	// nothing secret in either file, and no leftover temporary files
