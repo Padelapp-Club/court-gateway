@@ -72,28 +72,46 @@ variables of the `setup` command in step 3 and nowhere else; never repeat them b
 | Windows x64 | `C:\court-gateway` | `court-gateway-<v>-windows-amd64.exe` |
 
 Detect: `uname -s -m` (Linux/macOS) or `$env:PROCESSOR_ARCHITECTURE` (Windows). Create the folder
-and `cd` into it. On Windows restrict it first:
-`icacls C:\court-gateway /inheritance:r /grant:r "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F"`.
+and `cd` into it. (On Windows `setup` closes the folder to everyone but Administrators and SYSTEM
+itself.)
 
 **Verify:** `pwd` / `Get-Location`. **Expect:** the folder from the table.
 
 ## Step 2 — download and verify
 
 Release page: `https://github.com/Padelapp-Club/court-gateway/releases/latest/download/<file>`.
-Download `SHA256SUMS` and the release file for the platform, then:
+Download `SHA256SUMS` and the release file for the platform, set `F` to the release file name, and
+run the one command for the OS. The file is renamed (and can be run) **only** if its checksum
+matches.
+
+Linux:
 
 ```sh
-sha256sum -c --ignore-missing SHA256SUMS        # Linux
-shasum -a 256 -c --ignore-missing SHA256SUMS    # macOS
-mv court-gateway-*-* court-gateway && chmod +x court-gateway
+F=court-gateway-<v>-linux-amd64
+grep " $F\$" SHA256SUMS | sha256sum -c - && mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
 ```
 
-```powershell
-$f = Get-ChildItem court-gateway-*-windows-amd64.exe
-$want = (Select-String -Path SHA256SUMS -Pattern $f.Name).Line.Split(' ')[0]
-if ((Get-FileHash $f -Algorithm SHA256).Hash -ieq $want) { 'checksum-ok' } else { 'CHECKSUM MISMATCH' }
-Rename-Item $f court-gateway.exe
+macOS:
+
+```sh
+F=court-gateway-<v>-darwin-arm64
+grep " $F\$" SHA256SUMS | shasum -a 256 -c - && mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
 ```
+
+Windows:
+
+```powershell
+& {
+  $f = 'court-gateway-<v>-windows-amd64.exe'
+  $want = (Select-String -Path SHA256SUMS -Pattern (' ' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
+  if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "CHECKSUM MISMATCH: do not run $f" }
+  Move-Item -Force $f court-gateway.exe
+  'checksum-ok'
+}
+```
+
+Anything but `checksum-ok` (a `FAILED` line, `CHECKSUM MISMATCH`, no output): **stop**, delete the
+downloaded file, never run it, and report to the human.
 
 On macOS, if the binary is quarantined: `xattr -d com.apple.quarantine court-gateway`.
 

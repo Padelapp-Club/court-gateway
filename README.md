@@ -45,47 +45,52 @@
 
 Выпуски лежат на странице
 <https://github.com/Padelapp-Club/court-gateway/releases/latest>. Там же файл `SHA256SUMS` с
-контрольными суммами. Во всех вариантах шаги одинаковые: скачать → `setup` → `install-service` →
-`doctor`.
+контрольными суммами. Во всех вариантах шаги одинаковые: скачать → сверить сумму → `setup` →
+`install-service` → `doctor`. Команды ниже идут цепочкой: если сумма не сошлась, программа
+**не запускается**, и дальше ничего не выполняется.
 
 ### Windows
 
-1. Создайте папку `C:\court-gateway` и скачайте в неё `court-gateway-<версия>-windows-amd64.exe`,
-   переименуйте в `court-gateway.exe`. Если Windows предупредит о неизвестном издателе, нажмите
-   «Подробнее» → «Выполнить в любом случае».
-2. Откройте **PowerShell от имени администратора** и выполните:
+1. Создайте папку `C:\court-gateway` и скачайте в неё со страницы выпуска
+   `court-gateway-<версия>-windows-amd64.exe` и `SHA256SUMS`. Если Windows предупредит о
+   неизвестном издателе, нажмите «Подробнее» → «Выполнить в любом случае».
+2. Откройте **PowerShell от имени администратора** и выполните, вписав версию в строку `$f`:
 
    ```powershell
    cd C:\court-gateway
-   # закрыть папку от других пользователей компьютера: в ней будет пароль Viva
-   icacls C:\court-gateway /inheritance:r /grant:r "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
-   .\court-gateway.exe setup
+   & {
+     $f = 'court-gateway-<версия>-windows-amd64.exe'
+     $want = (Select-String -Path SHA256SUMS -Pattern (' ' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
+     if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "Контрольная сумма $f не совпала: не запускайте файл, скачайте его заново" }
+     Move-Item -Force $f court-gateway.exe
+     .\court-gateway.exe setup --install-service
+     .\court-gateway.exe doctor
+   }
    ```
 
    Программа спросит тип CRM, логин и пароль Viva и код подключения — больше ничего (адрес хаба —
-   только самостоятельно собранная программа). Пароль и код при вводе не отображаются.
-3. Установите службу — она будет запускаться сама при включении компьютера и перезапускаться при
-   сбое:
-
-   ```powershell
-   .\court-gateway.exe install-service
-   .\court-gateway.exe doctor
-   ```
+   только самостоятельно собранная программа). Пароль и код при вводе не отображаются. Затем она
+   закроет папку от других пользователей компьютера (в ней пароль Viva) и установит службу: та
+   запускается сама при включении компьютера и перезапускается при сбое.
 
    Журнал службы: `C:\court-gateway\court-gateway.log`.
 
 ### macOS
 
+Впишите в строку `F=` версию и процессор: Apple Silicon (M1–M4) — `darwin-arm64`, Intel —
+`darwin-amd64`. `install-service` идёт через `sudo`: служба стартует при включении Mac и работает от
+вашего имени.
+
 ```sh
-mkdir -p ~/court-gateway && cd ~/court-gateway
-# Apple Silicon (M1–M4): darwin-arm64; Intel: darwin-amd64
-curl -fLO https://github.com/Padelapp-Club/court-gateway/releases/latest/download/SHA256SUMS
-curl -fLO https://github.com/Padelapp-Club/court-gateway/releases/latest/download/court-gateway-<версия>-darwin-arm64
-shasum -a 256 -c --ignore-missing SHA256SUMS
-mv court-gateway-*-darwin-arm64 court-gateway && chmod +x court-gateway
-./court-gateway setup
-sudo ./court-gateway install-service    # служба стартует при включении Mac, работает от вашего имени
-./court-gateway doctor
+F=court-gateway-<версия>-darwin-arm64
+B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
+mkdir -p ~/court-gateway && cd ~/court-gateway &&
+  curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
+  grep " $F\$" SHA256SUMS | shasum -a 256 -c - &&
+  mv "$F" court-gateway && chmod +x court-gateway &&
+  ./court-gateway setup &&
+  sudo ./court-gateway install-service &&
+  ./court-gateway doctor
 ```
 
 Если файл скачан браузером и macOS не даёт его запустить: `xattr -d com.apple.quarantine court-gateway`.
@@ -95,16 +100,19 @@ sudo ./court-gateway install-service    # служба стартует при �
 
 ### Linux (ПК или мини-ПК)
 
+Впишите в строку `F=` версию и процессор: x86-64 — `linux-amd64`, ARM (Raspberry Pi 4/5 и т. п.) —
+`linux-arm64`. Служба (systemd) работает от вашего пользователя.
+
 ```sh
-mkdir -p ~/court-gateway && cd ~/court-gateway
-# x86-64: linux-amd64; ARM (Raspberry Pi 4/5 и т. п.): linux-arm64
-curl -fLO https://github.com/Padelapp-Club/court-gateway/releases/latest/download/SHA256SUMS
-curl -fLO https://github.com/Padelapp-Club/court-gateway/releases/latest/download/court-gateway-<версия>-linux-amd64
-sha256sum -c --ignore-missing SHA256SUMS
-mv court-gateway-*-linux-amd64 court-gateway && chmod +x court-gateway
-./court-gateway setup
-sudo ./court-gateway install-service    # systemd; служба работает от вашего пользователя
-./court-gateway doctor
+F=court-gateway-<версия>-linux-amd64
+B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
+mkdir -p ~/court-gateway && cd ~/court-gateway &&
+  curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
+  grep " $F\$" SHA256SUMS | sha256sum -c - &&
+  mv "$F" court-gateway && chmod +x court-gateway &&
+  ./court-gateway setup &&
+  sudo ./court-gateway install-service &&
+  ./court-gateway doctor
 ```
 
 Журнал: `journalctl -u court-gateway -f`.
@@ -112,14 +120,20 @@ sudo ./court-gateway install-service    # systemd; служба работает
 ### Облачная машина
 
 Создайте самую маленькую машину с Ubuntu (1 vCPU, 512 МБ–1 ГБ). Белый IP и открытые порты не нужны.
-Откройте файл [deploy/cloud-init.yaml](deploy/cloud-init.yaml), впишите в него четыре значения (адрес
-хаба, код подключения, логин и пароль Viva) и вставьте весь текст в поле «Пользовательские
-данные» (user data, cloud-init) при создании машины. Через 2–3 минуты шлюз будет на связи; итог
-установки — в `/root/court-gateway-setup.json` и `/root/court-gateway-doctor.txt`.
+Вставьте весь текст [deploy/cloud-init.yaml](deploy/cloud-init.yaml) в поле «Пользовательские
+данные» (user data, cloud-init) при создании машины — он скачает программу, сверит её сумму и
+поставит. Через 2–3 минуты зайдите на машину по SSH и выполните:
 
-Облако хранит этот текст в настройках машины. Если не хотите передавать пароль так — уберите пароль
-и код из файла, а после создания машины зайдите по SSH и выполните
-`sudo /opt/court-gateway/court-gateway setup --config /opt/court-gateway/gateway.yaml`.
+```sh
+sudo -u court-gateway /opt/court-gateway/court-gateway setup --config /opt/court-gateway/gateway.yaml &&
+  sudo /opt/court-gateway/court-gateway install-service -config /opt/court-gateway/gateway.yaml --run-as court-gateway
+```
+
+**Пароль Viva в пользовательские данные не вписывайте.** Облако хранит их в настройках машины, и
+любая программа на машине может прочитать их через сервис метаданных облака всё время её жизни;
+файлы на диске скрипт удаляет, а эту копию удалить нельзя. Вписанные в файл пароль и код (так шлюз
+ставится без SSH; итог — в `/root/court-gateway-setup.json` и `/root/court-gateway-doctor.txt`)
+остаются читаемыми там же.
 
 ### Docker
 

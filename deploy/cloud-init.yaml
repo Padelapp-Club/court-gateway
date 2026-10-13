@@ -1,31 +1,30 @@
 #cloud-config
 # court-gateway на облачной ВМ (Ubuntu/Debian, amd64 или arm64; 1 vCPU, до 1 ГБ памяти).
 #
-# 1. Впишите четыре значения в блок «Заполните» ниже. Клуб, корты и часы не нужны:
-#    их настраивает оператор на хабе.
-# 2. Вставьте весь файл в поле «Пользовательские данные» (user data / cloud-init) при создании ВМ.
-# 3. Белый IP, домен и входящие порты НЕ нужны: шлюз сам подключается к хабу.
-#    Если облако предлагает открыть порты — не открывайте (SSH можно оставить для себя).
+# Вставьте весь файл в поле «Пользовательские данные» (user data / cloud-init) при создании ВМ.
+# Белый IP, домен и входящие порты НЕ нужны: шлюз сам подключается к хабу. Если облако
+# предлагает открыть порты — не открывайте (SSH можно оставить для себя).
 #
-# Через 2–3 минуты после старта ВМ шлюз появится «на связи» у нас в хабе.
+# По умолчанию (рекомендуется) файл только ставит программу: пароль и код подключения в нём
+# пустые. Через 2–3 минуты после старта ВМ зайдите по SSH и выполните:
+#   sudo -u court-gateway /opt/court-gateway/court-gateway setup --config /opt/court-gateway/gateway.yaml &&
+#     sudo /opt/court-gateway/court-gateway install-service -config /opt/court-gateway/gateway.yaml --run-as court-gateway
+#
+# Почему не вписывать пароль сюда: облако хранит этот текст в настройках ВМ, и любая программа
+# на ВМ может прочитать его через сервис метаданных облака всё время жизни машины. Файлы на
+# диске скрипт удаляет, но копию в облаке и в сервисе метаданных удалить нельзя.
+#
 # Итог установки: /root/court-gateway-setup.json и /root/court-gateway-doctor.txt.
-# Если setup не удался (неверный пароль, код подключения), служба не устанавливается:
-# причина — в /root/court-gateway-setup.json; исправьте и выполните setup по SSH.
-#
-# Важно: облако хранит этот текст в настройках ВМ. После установки шлюз забирает пароль
-# в свой файл .env, а этот текст на диске ВМ удаляется. Если не хотите передавать пароль
-# через настройки облака, удалите строки CRM_PASSWORD и GATEWAY_JOIN_CODE и выполните
-# по SSH: sudo /opt/court-gateway/court-gateway setup --config /opt/court-gateway/gateway.yaml
 write_files:
   - path: /root/court-gateway-setup.env
     permissions: "0600"
     content: |
-      # ---- Заполните ----
-      GATEWAY_HUB_URL='https://hub.example.test'
-      GATEWAY_JOIN_CODE='XXXX-XXXX-XXXX-XXXX'
-      CRM_USERNAME='admin@example.test'
-      CRM_PASSWORD='пароль-администратора-Viva'
-      # --------------------
+      # Логин Viva можно вписать; пароль и код лучше ввести по SSH (см. выше).
+      CRM_USERNAME=''
+      CRM_PASSWORD=''
+      GATEWAY_JOIN_CODE=''
+      # только для самостоятельно собранной программы:
+      GATEWAY_HUB_URL=''
 
 runcmd:
   - - sh
@@ -34,6 +33,16 @@ runcmd:
       set -eu
       BASE=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
       DIR=/opt/court-gateway
+      SECRETS=/root/court-gateway-setup.env
+      # the secrets and cloud-init's on-disk copies of the user data go on
+      # every exit, a failed one included
+      forget() {
+        shred -u "$SECRETS" 2>/dev/null || rm -f "$SECRETS"
+        for f in user-data.txt user-data.txt.i cloud-config.txt obj.pkl; do
+          rm -f "/var/lib/cloud/instance/$f"
+        done
+      }
+      trap forget EXIT
       ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
       case "$ARCH" in
         amd64|x86_64) ARCH=amd64 ;;
@@ -43,25 +52,27 @@ runcmd:
       id court-gateway >/dev/null 2>&1 || useradd --system --home-dir "$DIR" --shell /usr/sbin/nologin court-gateway
       mkdir -p "$DIR"
       cd "$DIR"
-      # download and verify the checksum of the release binary
+      # download; nothing runs unless the checksum matches (set -e)
       curl -fsSL --retry 5 -o SHA256SUMS "$BASE/SHA256SUMS"
       FILE="$(awk '/-linux-'"$ARCH"'$/ {print $2}' SHA256SUMS)"
       curl -fsSL --retry 5 -o "$FILE" "$BASE/$FILE"
       grep " $FILE\$" SHA256SUMS | sha256sum -c -
       install -m 0755 "$FILE" court-gateway
       rm -f "$FILE"
-      # one-time setup: CRM login check, join code -> gateway.yaml and .env (0600)
-      set -a; . /root/court-gateway-setup.env; set +a
+      chown -R court-gateway:court-gateway "$DIR"
+      set -a; . "$SECRETS"; set +a
+      forget
+      if [ -z "${CRM_PASSWORD:-}" ] || [ -z "${GATEWAY_JOIN_CODE:-}" ]; then
+        echo '{"ok": false, "error": {"code": "SETUP_OVER_SSH", "message": "программа установлена; выполните setup по SSH (см. начало cloud-init)"}}' > /root/court-gateway-setup.json
+        exit 0
+      fi
       rc=0
-      ./court-gateway setup --non-interactive --json --config "$DIR/gateway.yaml" > /root/court-gateway-setup.json || rc=$?
-      shred -u /root/court-gateway-setup.env 2>/dev/null || rm -f /root/court-gateway-setup.env
-      rm -f /var/lib/cloud/instance/user-data.txt /var/lib/cloud/instance/user-data.txt.i
+      runuser -u court-gateway -- ./court-gateway setup --non-interactive --json --config "$DIR/gateway.yaml" > /root/court-gateway-setup.json || rc=$?
       if [ "$rc" -ne 0 ]; then
         # no service without a working config: the reason is in the JSON
         echo "court-gateway: setup не удался (код $rc), служба не установлена — см. /root/court-gateway-setup.json" >&2
         exit 1
       fi
-      chown -R court-gateway:court-gateway "$DIR"
       ./court-gateway install-service -config "$DIR/gateway.yaml" --run-as court-gateway
       sleep 30
       ./court-gateway doctor -config "$DIR/gateway.yaml" > /root/court-gateway-doctor.txt 2>&1 || true
