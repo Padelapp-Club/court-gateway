@@ -192,9 +192,7 @@ func (in *Installation) WaitServing(t *testing.T, ids ...string) {
 // Beat sends one heartbeat with the syncer's state, as serve does.
 func (in *Installation) Beat(t *testing.T, ready bool) {
 	t.Helper()
-	cs := in.Syncer.State()
-	hb := tunnel.Heartbeat{Version: "1.0.0", Build: tunnel.BuildRelease, Ready: ready, CheckedAt: time.Now(),
-		ConfigVersion: cs.Version, ConfigError: cs.Error, ClubErrors: cs.ClubErrors, Clubs: cs.Clubs}
+	hb := tunnel.Heartbeat{Version: "1.0.0", Build: tunnel.BuildRelease, Ready: ready, CheckedAt: time.Now(), AppliedConfig: in.Syncer.State()}
 	if !ready {
 		hb.Reason = "CRM_UNREACHABLE"
 	}

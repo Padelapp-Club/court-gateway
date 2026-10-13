@@ -328,7 +328,7 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 	mon := s.hub.Server().Monitor()
 	testkit.WaitFor(t, "the service applied the club config", 15*time.Second, func() bool {
 		h := mon.Health("club-one")
-		return h.ConfigVersion == 1 && strings.Join(h.ClubsServed, ",") == "club-one"
+		return h.ConfigVersion == 1 && strings.Join(h.Clubs, ",") == "club-one"
 	})
 
 	out.Reset()
@@ -455,7 +455,7 @@ func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
 	}
 	testkit.WaitFor(t, "the refused club reported", 15*time.Second, func() bool {
 		h := mon.Health("net-one")
-		return strings.Join(h.ClubsServed, ",") == "club-one" && h.ClubErrors["club-two"] != ""
+		return strings.Join(h.Clubs, ",") == "club-one" && h.ClubErrors["club-two"] != ""
 	})
 	testkit.WaitFor(t, "not ready in the status files", 15*time.Second, func() bool {
 		ok, metrics := readyCheck()

@@ -144,7 +144,7 @@ func TestUnconfirmedClubIsNotServed(t *testing.T) {
 		t.Fatal("the client's booking is gone")
 	}
 	_ = in.syncer.Ready(context.Background())
-	if st := in.syncer.State(); !strings.Contains(st.ClubErrors["club-a"], "courts[0].viva_room") || len(st.Clubs) != 0 || st.Version != 1 {
+	if st := in.syncer.State(); !strings.Contains(st.ClubErrors["club-a"], "courts[0].viva_room") || len(st.Clubs) != 0 || st.ConfigVersion != 1 {
 		t.Fatalf("after the readiness round: %+v", st)
 	}
 	if w := in.create(); !blocked(w) {
@@ -173,7 +173,7 @@ func TestUnconfirmedChangeKeepsThePreviousConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, _ = in.clubs.Server("club-a")
-	if st := in.syncer.State(); len(srv.Settings().Courts) != 2 || st.Error != "" || st.Version != 2 {
+	if st := in.syncer.State(); len(srv.Settings().Courts) != 2 || st.ConfigError != "" || st.ConfigVersion != 2 {
 		t.Fatalf("after the readiness round: %d courts, %+v", len(srv.Settings().Courts), st)
 	}
 }
@@ -200,7 +200,7 @@ func TestRefusedClubIsServedOnceTheCRMMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, _ := in.clubs.Server("club-a")
-	if st := in.syncer.State(); st.Error != "" || st.Version != 2 || !strings.HasSuffix(srv.Driver().(*viva.Driver).Resource("court-2"), " "+vRoom3) {
+	if st := in.syncer.State(); st.ConfigError != "" || st.ConfigVersion != 2 || !strings.HasSuffix(srv.Driver().(*viva.Driver).Resource("court-2"), " "+vRoom3) {
 		t.Fatalf("after the readiness round: %+v", st)
 	}
 }

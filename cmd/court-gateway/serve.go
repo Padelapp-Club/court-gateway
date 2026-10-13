@@ -165,11 +165,11 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 				return
 			}
 			cs := syncer.State()
-			hs.configRefused = cs.Error != ""
+			hs.configRefused = cs.ConfigError != ""
 			if due {
 				crm = hb
 				hb.Ready, hb.Reason = readiness(hb.Ready, hb.Reason, hs)
-				hb.ConfigVersion, hb.ConfigError, hb.ClubErrors, hb.Clubs = cs.Version, cs.Error, cs.ClubErrors, cs.Clubs
+				hb.AppliedConfig = cs
 				go sendHeartbeat(ctx, client, hb, log)
 			}
 			ready, reason := readiness(crm.Ready, crm.Reason, hs)

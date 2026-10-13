@@ -123,7 +123,7 @@ func TestRefusedClubDoesNotStopTheOthers(t *testing.T) {
 	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-2/clubs/club-c", demoClub("club-c", "demo-south", "Корт 1"))
 	in.WaitServing(t, "club-a", "club-c")
 	st := in.Syncer.State()
-	if st.Version != 3 || !strings.Contains(st.ClubErrors["club-b"], "crm.studio") || len(st.ClubErrors) != 1 {
+	if st.ConfigVersion != 3 || !strings.Contains(st.ClubErrors["club-b"], "crm.studio") || len(st.ClubErrors) != 1 {
 		t.Fatalf("state: %+v", st)
 	}
 	if r := call(t, h, http.MethodGet, "/v1/clubs/club-b/courts", contract.ReadKey, ""); r.status != http.StatusServiceUnavailable || !strings.Contains(string(r.body), "CLUB_UNAVAILABLE") {
@@ -145,7 +145,7 @@ func TestRefusedClubDoesNotStopTheOthers(t *testing.T) {
 	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-2/clubs/club-a", demoClub("club-a", "demo-north", "Корт 1"))
 	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-2/clubs/club-b", demoClub("club-b", "demo-south", "Корт 1"))
 	in.WaitServing(t, "club-a", "club-b", "club-c")
-	testkit.WaitFor(t, "errors cleared", 10*time.Second, func() bool { st := in.Syncer.State(); return st.Version == 6 && st.Error == "" })
+	testkit.WaitFor(t, "errors cleared", 10*time.Second, func() bool { st := in.Syncer.State(); return st.ConfigVersion == 6 && st.ConfigError == "" })
 }
 
 // The hub refuses a club that sets installation keys of the crm section:
@@ -358,7 +358,7 @@ func TestInstallationsSurviveRestart(t *testing.T) {
 	if r := call(t, h, http.MethodGet, "/v1/clubs/club-r/courts", contract.ReadKey, ""); r.status != http.StatusOK {
 		t.Fatalf("after restart: %d %s", r.status, r.body)
 	}
-	if st := in.Syncer.State(); st.Version != 1 {
+	if st := in.Syncer.State(); st.ConfigVersion != 1 {
 		t.Fatalf("state: %+v", st)
 	}
 }

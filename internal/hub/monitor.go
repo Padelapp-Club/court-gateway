@@ -57,11 +57,7 @@ type clubHealth struct {
 	reason    string
 	notReady  int // heartbeats in a row with ready=false
 	beats     int
-	// what the gateway reported about its club config
-	configVersion int64
-	configError   string
-	clubErrors    map[string]string
-	clubsServed   []string
+	applied   tunnel.AppliedConfig // as reported, cleaned
 
 	state string // as of the last Tick
 }
@@ -78,12 +74,8 @@ type Health struct {
 	Ready        bool
 	Reason       string
 	OfflineSince time.Time
-	// ConfigVersion, ConfigError and ClubsServed are the gateway's report
-	// on the club config it runs.
-	ConfigVersion int64
-	ConfigError   string
-	ClubErrors    map[string]string
-	ClubsServed   []string
+	// the gateway's report on the club config it runs
+	tunnel.AppliedConfig
 }
 
 // MonitorConfig configures a Monitor.
@@ -188,14 +180,13 @@ func (m *Monitor) Heartbeat(club string, hb tunnel.Heartbeat) {
 	} else {
 		h.notReady++
 	}
-	h.configVersion, h.configError, h.clubsServed = hb.ConfigVersion, cleanConfigError(hb.ConfigError, 2000), cleanClubs(hb.Clubs)
-	h.clubErrors = nil
+	h.applied = tunnel.AppliedConfig{ConfigVersion: hb.ConfigVersion, ConfigError: cleanConfigError(hb.ConfigError, 2000), Clubs: cleanClubs(hb.Clubs)}
 	for id, why := range hb.ClubErrors {
-		if core.ValidID(id) && len(h.clubErrors) < 1000 {
-			if h.clubErrors == nil {
-				h.clubErrors = map[string]string{}
+		if core.ValidID(id) && len(h.applied.ClubErrors) < 1000 {
+			if h.applied.ClubErrors == nil {
+				h.applied.ClubErrors = map[string]string{}
 			}
-			h.clubErrors[id] = cleanConfigError(why, 500)
+			h.applied.ClubErrors[id] = cleanConfigError(why, 500)
 		}
 	}
 }
@@ -277,7 +268,8 @@ func (m *Monitor) Health(club string) Health {
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
 		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason,
-		ConfigVersion: h.configVersion, ConfigError: h.configError, ClubErrors: maps.Clone(h.clubErrors), ClubsServed: append([]string(nil), h.clubsServed...),
+		AppliedConfig: tunnel.AppliedConfig{ConfigVersion: h.applied.ConfigVersion, ConfigError: h.applied.ConfigError,
+			ClubErrors: maps.Clone(h.applied.ClubErrors), Clubs: append([]string(nil), h.applied.Clubs...)},
 	}
 	if out.State == StateOffline {
 		out.OfflineSince = m.silentSince(h, g.RegisteredAt)

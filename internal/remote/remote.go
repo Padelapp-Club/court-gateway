@@ -95,31 +95,20 @@ func (s *Syncer) Notify(v int64) {
 	}
 }
 
-// State is what the heartbeat reports.
-type State struct {
-	// Version is the applied config version (0 before the first one).
-	Version int64
-	// Error sums up ClubErrors in one text; empty when every club loaded.
-	Error string
-	// ClubErrors says why the config of a club was refused.
-	ClubErrors map[string]string
-	Clubs      []string
-}
-
 // State returns the applied version, the refused clubs and the clubs served.
-func (s *Syncer) State() State {
+func (s *Syncer) State() tunnel.AppliedConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := State{Version: max(s.applied, 0), Clubs: s.clubs.IDs()}
+	st := tunnel.AppliedConfig{ConfigVersion: max(s.applied, 0), Clubs: s.clubs.IDs()}
 	if len(s.refused) > 0 {
 		st.ClubErrors = maps.Clone(s.refused)
 		var lines []string
 		for _, id := range slices.Sorted(maps.Keys(s.refused)) {
 			lines = append(lines, s.refused[id])
 		}
-		st.Error = strings.Join(lines, "\n")
-		if len(st.Error) > maxErrorText {
-			st.Error = st.Error[:maxErrorText] + "…"
+		st.ConfigError = strings.Join(lines, "\n")
+		if len(st.ConfigError) > maxErrorText {
+			st.ConfigError = st.ConfigError[:maxErrorText] + "…"
 		}
 	}
 	return st

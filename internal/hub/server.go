@@ -299,7 +299,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, g GatewayR
 	info := s.broker.Info(g.Installation)
 	h := s.monitor.Health(g.Installation)
 	out := tunnel.Whoami{Installation: g.Installation, Connected: info.Connected,
-		Clubs: []string{}, AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.ClubsServed}
+		Clubs: []string{}, AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubsServed: h.Clubs}
 	if out.ClubsServed == nil {
 		out.ClubsServed = []string{}
 	}
@@ -477,7 +477,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
 		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
-		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.ClubsServed,
+		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.Clubs,
 	}
 	if row.ClubsServed == nil {
 		row.ClubsServed = []string{}
