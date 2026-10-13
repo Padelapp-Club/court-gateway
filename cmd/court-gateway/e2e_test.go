@@ -52,7 +52,7 @@ type stack struct {
 	dir  string
 }
 
-func newStack(t *testing.T) *stack {
+func newStack(t *testing.T, hubYAML ...string) *stack {
 	t.Helper()
 	stub := vivastub.New(crmUser, crmPass, studio)
 	stub.AddRoom(roomA, "Корт 10")
@@ -70,7 +70,7 @@ func newStack(t *testing.T) *stack {
 	}
 	crm := httptest.NewServer(stub)
 	t.Cleanup(crm.Close)
-	h := testkit.StartHub(t, "poll_wait: 1s\noperator_key_env: HUB_OPERATOR_KEY\n"+testkit.HubPartnersYAML, func() map[string]string {
+	h := testkit.StartHub(t, "poll_wait: 1s\noperator_key_env: HUB_OPERATOR_KEY\n"+strings.Join(hubYAML, "")+testkit.HubPartnersYAML, func() map[string]string {
 		e := contract.KeyEnv()
 		e["HUB_OPERATOR_KEY"] = "test-operator-key-0123456789abcdef"
 		return e
@@ -358,6 +358,90 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 			t.Fatalf("leaked %q", secret)
 		}
 	}
+}
+
+// A club the gateway refuses makes the installation not ready while its
+// other clubs are served: the heartbeat of the running service says
+// CONFIG_REFUSED, and after three of them the hub's status files show the
+// installation not ready, until the operator fixes the club. An update
+// installed meanwhile is still confirmed: that needs the CRM login and the
+// hub, not every club.
+func TestRefusedClubMakesTheInstallationNotReady(t *testing.T) {
+	statusDir := filepath.Join(t.TempDir(), "status")
+	s := newStack(t, "status_dir: "+statusDir+"\n")
+	statusInterval = 200 * time.Millisecond
+	defer func() { statusInterval = 60 * time.Second }()
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("net-one", "Сеть")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	club := func(id, room string) core.ClubSpec {
+		return core.ClubSpec{ID: id, Name: id, Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "07:00-23:00"},
+			CRM: map[string]any{"studio": studio}, Courts: []core.CourtSpec{{ID: "court-1", Name: "Корт", Params: map[string]any{"viva_room": room}}}}
+	}
+	s.hub.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-one/clubs/club-one", club("club-one", roomA))
+	s.hub.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/net-one/clubs/club-two", club("club-two", "not-a-room-id"))
+	// this binary was just installed by an update and must confirm itself
+	pending := filepath.Join(s.dir, "state", "update-pending.json")
+	_ = os.MkdirAll(filepath.Dir(pending), 0o700)
+	if err := os.WriteFile(pending, []byte(`{"version":"`+version+`","from":"0.0.1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, cfg, "", &contract.LogBuffer{}, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	mon := s.hub.Server().Monitor()
+	readyCheck := func() (bool, string) {
+		mon.Tick(ctx)
+		var doc struct {
+			Checks []struct {
+				Check string `json:"check"`
+				OK    bool   `json:"ok"`
+			} `json:"checks"`
+		}
+		data, _ := os.ReadFile(filepath.Join(statusDir, hub.StatusFile))
+		_ = json.Unmarshal(data, &doc)
+		metrics, _ := os.ReadFile(filepath.Join(statusDir, hub.MetricsFile))
+		for _, c := range doc.Checks {
+			if c.Check == "club_net_one_ready" {
+				return c.OK, string(metrics)
+			}
+		}
+		return false, ""
+	}
+	testkit.WaitFor(t, "the refused club reported", 15*time.Second, func() bool {
+		h := mon.Health("net-one")
+		return strings.Join(h.ClubsServed, ",") == "club-one" && h.ClubErrors["club-two"] != ""
+	})
+	testkit.WaitFor(t, "not ready in the status files", 15*time.Second, func() bool {
+		ok, metrics := readyCheck()
+		return !ok && strings.Contains(metrics, "check_club_net_one_ready=0\n")
+	})
+	if h := mon.Health("net-one"); h.State != hub.StateNotReady || h.Reason != "CONFIG_REFUSED" || h.Failures < 3 {
+		t.Fatalf("health: %+v", h)
+	}
+	// the served club still answers partners
+	req, _ := http.NewRequest(http.MethodGet, s.hub.URL()+"/v1/clubs/club-one/courts", nil)
+	req.Header.Set("Authorization", "Bearer "+contract.ReadKey)
+	resp, err := (&http.Client{Transport: s.hub.Transport()}).Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("served club: %v %v", resp, err)
+	}
+	resp.Body.Close()
+	testkit.WaitFor(t, "the update confirmed", 15*time.Second, func() bool {
+		_, err := os.Stat(pending)
+		return os.IsNotExist(err)
+	})
+
+	// the operator fixes the club
+	s.hub.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/net-one/clubs/club-two", club("club-two", roomB))
+	testkit.WaitFor(t, "ready again in the status files", 15*time.Second, func() bool {
+		ok, metrics := readyCheck()
+		return ok && strings.Contains(metrics, "check_club_net_one_ready=1\n")
+	})
 }
 
 func decodeDoctor(t *testing.T, b []byte) doctor.Report {

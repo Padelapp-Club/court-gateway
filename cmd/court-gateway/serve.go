@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,12 +55,6 @@ func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defau
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return serve(ctx, *cfgPath, *logFile, stderr, getenv)
-}
-
-type gateway struct {
-	ready     atomic.Bool
-	reason    atomic.Value // string
-	connected func() bool
 }
 
 func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, getenv func(string) string) int {
@@ -123,9 +116,6 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		default:
 		}
 	}
-	gw := &gateway{}
-	gw.reason.Store("STARTING")
-
 	// the outbound tunnel to the hub: the only way in
 	hint := make(chan struct{}, 1)
 	roots, err := tunnel.LoadRoots(s.Hub.CAFile)
@@ -148,7 +138,6 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
 		return 2
 	}
-	gw.connected = client.Connected
 	syncer.SetFetch(client.FetchConfig)
 	go syncer.Run(ctx)
 	go client.Run(ctx)
@@ -158,7 +147,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	// connection every 2 seconds; the file is rewritten after each CRM check
 	// and whenever the readiness or the hub connection changes, and each CRM
 	// check is sent to the hub as a heartbeat over the gateway's own
-	// connection
+	// connection. Both carry the same readiness: the CRM, the hub and the
+	// club config (a refused club makes the installation not ready while
+	// the other clubs are served)
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
@@ -170,21 +161,20 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		var crm tunnel.Heartbeat
 		lastSeen := time.Now() // the hub, or the start
 		for {
-			hs := hubState{connected: gw.connected(), authFailed: client.Unauthorized()}
+			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized()}
 			if hs.connected {
 				lastSeen = time.Now()
 			}
 			hs.silentFor = time.Since(lastSeen)
-			hs.configRefused = syncer.State().Error != ""
 			hb, due := check.Step(ctx)
 			if ctx.Err() != nil {
 				return
 			}
+			cs := syncer.State()
+			hs.configRefused = cs.Error != ""
 			if due {
 				crm = hb
-				gw.ready.Store(hb.Ready)
-				gw.reason.Store(hb.Reason)
-				cs := syncer.State()
+				hb.Ready, hb.Reason = readiness(hb.Ready, hb.Reason, hs)
 				hb.ConfigVersion, hb.ConfigError, hb.ClubErrors, hb.Clubs = cs.Version, cs.Error, cs.ClubErrors, cs.Clubs
 				go sendHeartbeat(ctx, client, hb, log)
 			}
@@ -205,11 +195,13 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		}
 	}()
 
-	// a freshly updated binary confirms itself or rolls back
+	// a freshly updated binary confirms itself or rolls back: it must log
+	// in to the CRM and connect to the hub, as the version before it did;
+	// the clubs' own readiness is reported by the heartbeat, not judged here
 	if canUpdate {
 		go func() {
 			again, err := update.Confirm(ctx, vers, version, func(ctx context.Context) error {
-				return waitHealthy(ctx, gw, confirmDeadline)
+				return waitHealthy(ctx, s.Driver.Account.CheckLogin, client.Connected, confirmDeadline)
 			}, log, nil)
 			if err != nil && ctx.Err() == nil {
 				log.Error("update confirmation", "error", err)
@@ -327,22 +319,28 @@ func sendHeartbeat(ctx context.Context, c *tunnel.Client, hb tunnel.Heartbeat, l
 	}
 }
 
-// waitHealthy waits until the gateway is ready and connected to the hub.
-func waitHealthy(ctx context.Context, gw *gateway, deadline time.Duration) error {
+// waitHealthy waits until the CRM login works and the hub connection is
+// up.
+func waitHealthy(ctx context.Context, login func(context.Context) error, connected func() bool, deadline time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
+	reason := "STARTING"
 	for {
-		if gw.ready.Load() && gw.connected() {
+		lctx, lcancel := context.WithTimeout(ctx, core.ReadyTimeout)
+		err := login(lctx)
+		lcancel()
+		switch {
+		case err != nil:
+			reason = "CRM: " + core.ReadyReason(err)
+		case !connected():
+			reason = "HUB_DISCONNECTED"
+		default:
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			reason, _ := gw.reason.Load().(string)
-			if !gw.connected() {
-				reason += " HUB_DISCONNECTED"
-			}
 			return fmt.Errorf("not healthy within %s: %s", deadline, reason)
 		case <-t.C:
 		}
