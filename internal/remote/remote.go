@@ -233,7 +233,10 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 		s.waiting[srv.Settings().ClubID] = srv
 	}
 	s.mu.Unlock()
-	problems = append(problems, s.verify(driver.WithEvaluation(ctx), configCheckTimeout)...)
+	// the whole check is bounded too: a readiness round must not wait long
+	ectx, cancel := context.WithTimeout(ctx, configCheckTimeout)
+	defer cancel()
+	problems = append(problems, s.verify(driver.WithEvaluation(ectx), configCheckTimeout)...)
 	if len(problems) > 0 {
 		s.log.Error("club config from the hub applied without the clubs that are not confirmed", "version", rc.Version,
 			"clubs", strings.Join(s.clubs.IDs(), ","), "error", strings.Join(problems, "; "))
@@ -246,19 +249,21 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 // Ready is the installation's readiness round: it asks the CRM again
 // about the clubs not yet confirmed, serving those it confirms, then
 // checks every served club (core.Clubs.Ready). The account's reads are
-// shared by the whole round.
+// shared by the whole round. While an Apply runs, it checks the new
+// clubs itself, and the round does not wait for it.
 func (s *Syncer) Ready(ctx context.Context) error {
 	ctx = driver.WithEvaluation(ctx)
-	s.op.Lock()
-	s.mu.Lock()
-	n := len(s.waiting)
-	s.mu.Unlock()
-	if n > 0 {
-		if problems := s.verify(ctx, core.ReadyTimeout); len(problems) == 0 {
-			s.log.Info("club config confirmed by the CRM", "clubs", strings.Join(s.clubs.IDs(), ","))
+	if s.op.TryLock() {
+		s.mu.Lock()
+		n := len(s.waiting)
+		s.mu.Unlock()
+		if n > 0 {
+			if problems := s.verify(ctx, core.ReadyTimeout); len(problems) == 0 {
+				s.log.Info("club config confirmed by the CRM", "clubs", strings.Join(s.clubs.IDs(), ","))
+			}
 		}
+		s.op.Unlock()
 	}
-	s.op.Unlock()
 	return s.clubs.Ready(ctx)
 }
 

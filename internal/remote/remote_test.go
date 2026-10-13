@@ -13,6 +13,8 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/remote"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
@@ -169,4 +171,56 @@ func TestBehindMeasuresAnUnappliedVersion(t *testing.T) {
 	if d := s.Behind(); d != time.Minute {
 		t.Fatalf("version 2 announced a minute ago: %v", d)
 	}
+}
+
+// slowCheck is a demo driver whose CRM check makes the account's shared
+// read (driver.Shared, under the evaluation's own context), which waits
+// until that context ends.
+type slowCheck struct {
+	driver.Driver
+	deadline chan time.Time
+}
+
+func (d slowCheck) CheckConfig(ctx context.Context) error {
+	_, err := driver.Shared(ctx, func(ctx context.Context) (struct{}, error) {
+		dl, _ := ctx.Deadline()
+		d.deadline <- dl
+		<-ctx.Done()
+		return struct{}{}, ctx.Err()
+	})
+	return err
+}
+
+// Applying a config is bounded as a whole by configCheckTimeout — the
+// account's shared reads too — and a readiness round (the heartbeat) does
+// not wait behind it.
+func TestReadyDoesNotWaitForApply(t *testing.T) {
+	s, err := core.Load([]byte("hub:\n  url: https://hub.example.test\n  installation: test-net\n  key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ncrm:\n  type: demo\n"), func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := make(chan time.Time, 1)
+	slow := func(c driver.Config) (driver.Driver, error) {
+		d, err := demo.New(c)
+		return slowCheck{d, deadline}, err
+	}
+	clubs := core.NewClubs(core.ClubsOptions{})
+	syn := remote.New(remote.Options{Base: s, Factories: map[string]driver.Factory{"demo": slow}, Clubs: clubs})
+	c := club("club-a", map[string]any{"studio": "demo-north"})
+	c["courts"] = []map[string]any{{"id": "court-1", "name": "C1"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	applied := make(chan struct{})
+	start := time.Now()
+	go func() { defer close(applied); _ = syn.Apply(ctx, config(t, 1, c)) }()
+	if dl := <-deadline; dl.IsZero() || dl.Sub(start) > 21*time.Second {
+		t.Fatalf("the shared read of an Apply has deadline %v", dl)
+	}
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rcancel()
+	_ = syn.Ready(rctx)
+	if rctx.Err() != nil {
+		t.Fatal("the readiness round waited for the Apply")
+	}
+	cancel()
+	<-applied
 }
