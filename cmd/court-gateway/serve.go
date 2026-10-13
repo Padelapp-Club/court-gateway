@@ -149,31 +149,45 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		go client.Run(ctx)
 	}
 
-	// readiness -> health status file (read by `healthcheck`)
+	// readiness -> health status file (read by `healthcheck`): the CRM is
+	// checked every statusInterval, the hub connection every 2 seconds, and
+	// the file is rewritten after each CRM check and whenever the hub
+	// connection changes
 	go func() {
-		t := time.NewTicker(statusInterval)
+		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
+		var st core.HealthStatus
+		var lastCheck time.Time
+		lastHub := ""
 		for {
-			rctx, rcancel := context.WithTimeout(ctx, core.ReadyTimeout)
-			err := drv.Ready(rctx)
-			rcancel()
-			if ctx.Err() != nil {
-				return
-			}
-			st := core.HealthStatus{Time: time.Now().UTC(), Version: version, Ready: err == nil}
-			if err != nil {
-				st.Reason = core.ReadyReason(err)
-			}
-			gw.ready.Store(st.Ready)
-			gw.reason.Store(st.Reason)
+			hubState := ""
 			if s.Hub != nil {
-				st.Hub = "disconnected"
+				hubState = "disconnected"
 				if gw.connected() {
-					st.Hub = "connected"
+					hubState = "connected"
 				}
 			}
-			if werr := core.WriteHealthStatus(s.StateDir, st); werr != nil {
-				log.Warn("cannot write the health status file", "error", werr)
+			due := time.Since(lastCheck) >= statusInterval
+			if due {
+				rctx, rcancel := context.WithTimeout(ctx, core.ReadyTimeout)
+				err := drv.Ready(rctx)
+				rcancel()
+				if ctx.Err() != nil {
+					return
+				}
+				lastCheck = time.Now()
+				st = core.HealthStatus{Version: version, Ready: err == nil}
+				if err != nil {
+					st.Reason = core.ReadyReason(err)
+				}
+				gw.ready.Store(st.Ready)
+				gw.reason.Store(st.Reason)
+			}
+			if due || hubState != lastHub {
+				st.Time, st.Hub, lastHub = time.Now().UTC(), hubState, hubState
+				if werr := core.WriteHealthStatus(s.StateDir, st); werr != nil {
+					log.Warn("cannot write the health status file", "error", werr)
+				}
 			}
 			select {
 			case <-ctx.Done():
