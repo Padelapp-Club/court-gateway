@@ -1,6 +1,8 @@
 package service
 
 import (
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,5 +27,19 @@ func TestSystemdLogsToTheJournal(t *testing.T) {
 	u := SystemdUnit(Spec{Exe: "/opt/example/court-gateway", Config: "/opt/example/gateway.yaml"})
 	if strings.Contains(u, "StandardOutput=file") || strings.Contains(u, "StandardError=file") || strings.Contains(u, "-log-file") {
 		t.Fatalf("the unit must leave the log to journald:\n%s", u)
+	}
+}
+
+// On Windows install-service first closes the install folder to everyone
+// but Administrators and SYSTEM, by SID (group names are localized).
+func TestWindowsPlanRestrictsTheFolder(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "court gateway") // a native path: the plan is built on Windows
+	p, err := MakePlan("windows", Spec{Exe: filepath.Join(dir, "court-gateway.exe"), Config: filepath.Join(dir, "gateway.yaml")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"icacls", dir, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F"}
+	if !slices.Equal(p.Commands[0], want) {
+		t.Fatalf("first command %q, want %q", p.Commands[0], want)
 	}
 }

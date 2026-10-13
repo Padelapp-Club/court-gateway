@@ -2,8 +2,10 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,5 +83,37 @@ func TestSetupRateLimitedByTheHub(t *testing.T) {
 	res, err := Run(context.Background(), in, Deps{HubTransport: statusTransport(http.StatusTooManyRequests)})
 	if err == nil || res.Error == nil || res.Error.Code != "HUB_RATE_LIMITED" || !strings.Contains(res.Error.Message, "повторите позже") {
 		t.Fatalf("result: %+v %v", res.Error, err)
+	}
+}
+
+type registerTransport struct{}
+
+func (registerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	body := `{"installation_id":"inst-1","name":"Сеть","secret":"cgs_0123456789abcdef0123456789abcdef"}`
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
+}
+
+// On Windows setup closes the config folder before the secrets are written
+// to it; when it cannot, setup still succeeds and says so.
+func TestSetupRestrictsTheFolderFirst(t *testing.T) {
+	dir := t.TempDir()
+	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
+	var restricted []string
+	deps := Deps{HubTransport: registerTransport{}, RestrictDir: func(d string) error {
+		if _, err := os.Stat(filepath.Join(d, core.EnvFileName)); err == nil {
+			t.Error(".env was written before the folder was restricted")
+		}
+		restricted = append(restricted, d)
+		return nil
+	}}
+	res, err := Run(context.Background(), in, deps)
+	if err != nil || len(restricted) != 1 || restricted[0] != dir || len(res.Warnings) != 0 {
+		t.Fatalf("restricted %v, result %+v, %v", restricted, res, err)
+	}
+	in.Force = true
+	deps.RestrictDir = func(string) error { return errors.New("access denied") }
+	res, err = Run(context.Background(), in, deps)
+	if err != nil || len(res.Warnings) != 1 || res.Warnings[0].Code != "FOLDER_NOT_RESTRICTED" {
+		t.Fatalf("failed restriction: %+v, %v", res, err)
 	}
 }

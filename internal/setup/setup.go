@@ -45,6 +45,10 @@ type Deps struct {
 	Version      string
 	// Accounts default to the built-in drivers.
 	Accounts map[string]driver.AccountFactory
+	// RestrictDir, when set, closes the config folder to other users before
+	// the secrets are written (Windows: the folder's ACL). A failure is a
+	// warning: doctor reports the folder until it is fixed.
+	RestrictDir func(dir string) error
 }
 
 // Warning is something the administrator must look at.
@@ -212,6 +216,12 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		return fail(problem("WRITE_FAILED", "%v", err))
+	}
+	if deps.RestrictDir != nil {
+		if err := deps.RestrictDir(filepath.Dir(cfgPath)); err != nil {
+			res.Warnings = append(res.Warnings, Warning{Code: "FOLDER_NOT_RESTRICTED",
+				Message: "не удалось закрыть папку " + filepath.Dir(cfgPath) + " от других пользователей (запустите setup от имени администратора): " + err.Error()})
+		}
 	}
 	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(in.Password, reg.Secret, d.CRMType)), 0o600); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", envPath, err))

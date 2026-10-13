@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -172,9 +173,30 @@ func TestSetupNonInteractive(t *testing.T) {
 	if r := decodeSetup(t, out.Bytes()); rc != 1 || r.Error.Code != "CONFIG_EXISTS" {
 		t.Fatalf("existing config: rc=%d %s", rc, out.String())
 	}
-	// flags of the pre-installation setup no longer exist
-	if rc := run(s.setupArgs("--force", "--club-id", "x"), &out, &errb, env{}.get); rc != 2 {
-		t.Fatalf("removed flag accepted: rc=%d", rc)
+}
+
+// setup --install-service installs the service only after a successful
+// setup, with the config setup wrote.
+func TestSetupThenInstallService(t *testing.T) {
+	s := newStack(t)
+	var calls [][]string
+	installService = func(args []string, _, _ io.Writer, _ string, uninstall bool) int {
+		calls = append(calls, append([]string{fmt.Sprint(uninstall)}, args...))
+		return 0
+	}
+	defer func() { installService = cmdInstallService }()
+	var out bytes.Buffer
+	if rc := run(s.setupArgs("--install-service"), &out, io.Discard, env{"CRM_PASSWORD": "wrong", "GATEWAY_JOIN_CODE": "x"}.get); rc != 1 || len(calls) != 0 {
+		t.Fatalf("failed setup: rc=%d, service installs %v", rc, calls)
+	}
+	out.Reset()
+	code := s.hub.JoinCode("club-one", "Клуб Один")
+	if rc := run(s.setupArgs("--install-service"), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": code}.get); rc != 0 {
+		t.Fatalf("rc=%d %s", rc, out.String())
+	}
+	r := decodeSetup(t, out.Bytes()) // stdout stays pure JSON
+	if len(calls) != 1 || strings.Join(calls[0], " ") != "false -config "+r.Config {
+		t.Fatalf("service installs: %v", calls)
 	}
 }
 

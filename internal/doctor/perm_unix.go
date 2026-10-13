@@ -2,22 +2,13 @@
 
 package doctor
 
-import (
-	"os"
-	"path/filepath"
+import "os"
 
-	"github.com/Padelapp-Club/court-gateway/internal/core"
-)
-
-func secretsFileCheck(cfgPath string) Check {
-	p := filepath.Join(filepath.Dir(cfgPath), core.EnvFileName)
-	info, err := os.Stat(p)
-	if err != nil {
-		return Check{Code: CodeSecretFile, Status: Skip, Message: "файла .env нет: секреты берутся из окружения"}
+// secretsExposure: .env must be readable by its owner only.
+func secretsExposure(env string) (Status, string, string) {
+	info, err := os.Stat(env)
+	if err == nil && info.Mode().Perm()&0o077 != 0 {
+		return Warn, ".env доступен другим пользователям компьютера", "chmod 600 " + env
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return Check{Code: CodeSecretFile, Status: Warn, Message: ".env доступен другим пользователям компьютера",
-			Hint: "chmod 600 " + p}
-	}
-	return Check{Code: CodeSecretFile, Status: OK, Message: ".env доступен только владельцу"}
+	return OK, ".env доступен только владельцу", ""
 }

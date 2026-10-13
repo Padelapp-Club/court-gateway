@@ -116,12 +116,29 @@ func LaunchdPlist(s Spec) string {
 	return b.String()
 }
 
-// WindowsCommands are the sc.exe invocations that register the service:
-// automatic (delayed) start, and recovery actions that restart it after
-// any exit — which is also how an update takes effect on Windows.
+// Well-known SIDs of the Windows accounts that may read the install
+// folder: the local Administrators group and LocalSystem, which runs the
+// service. SIDs, not names: the names are localized.
+const (
+	SIDAdministrators = "S-1-5-32-544"
+	SIDSystem         = "S-1-5-18"
+)
+
+// WindowsRestrictCommand closes dir (and what it holds: .env has the CRM
+// password) to everyone but Administrators and SYSTEM: inherited entries
+// are removed and these two get full control, inherited by the contents.
+func WindowsRestrictCommand(dir string) []string {
+	return []string{"icacls", dir, "/inheritance:r", "/grant:r", "*" + SIDAdministrators + ":(OI)(CI)F", "*" + SIDSystem + ":(OI)(CI)F"}
+}
+
+// WindowsCommands restrict the install folder (WindowsRestrictCommand)
+// and register the service with sc.exe: automatic (delayed) start, and
+// recovery actions that restart it after any exit — which is also how an
+// update takes effect on Windows.
 func WindowsCommands(s Spec) [][]string {
 	bin := `"` + s.Exe + `" service -config "` + s.Config + `"`
 	return [][]string{
+		WindowsRestrictCommand(s.dir()),
 		{"sc.exe", "create", Name, "binPath=", bin, "start=", "delayed-auto", "DisplayName=", Name},
 		{"sc.exe", "description", Name, "Partner API of the club; connects out to the hub, opens no ports."},
 		{"sc.exe", "failure", Name, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000"},

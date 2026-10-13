@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,9 +25,11 @@ import (
 // stdin and terminal detection are variables so tests can drive the
 // interactive setup.
 var (
-	stdin      io.Reader = os.Stdin
-	isTerminal           = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-	readSecret           = func() (string, error) {
+	stdin io.Reader = os.Stdin
+	// installService is what setup --install-service runs after success.
+	installService = cmdInstallService
+	isTerminal     = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	readSecret     = func() (string, error) {
 		b, err := term.ReadPassword(int(os.Stdin.Fd()))
 		return string(b), err
 	}
@@ -39,6 +42,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	nonInteractive := fs.Bool("non-interactive", false, "never prompt; take everything from flags and the environment")
 	asJSON := fs.Bool("json", false, "print the result as JSON (no secrets)")
 	passwordStdin := fs.Bool("password-stdin", false, "read the CRM password from the first line of stdin")
+	withService := fs.Bool("install-service", false, "after a successful setup, install and start the service (as install-service does)")
 	fs.StringVar(&in.ConfigPath, "config", defaultConfig, "where to write gateway.yaml (.env goes next to it)")
 	fs.BoolVar(&in.Force, "force", false, "overwrite existing gateway.yaml and .env")
 	// Flags have no environment defaults: the flag package prints defaults
@@ -82,7 +86,17 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if !*asJSON {
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
-	res, err := setup.Run(context.Background(), in, setup.Deps{Version: version})
+	deps := setup.Deps{Version: version}
+	if runtime.GOOS == "windows" {
+		deps.RestrictDir = func(dir string) error {
+			c := service.WindowsRestrictCommand(dir)
+			if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
+				return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}
+	}
+	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -92,6 +106,13 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	}
 	if err != nil {
 		return 1
+	}
+	if *withService {
+		out := stdout
+		if *asJSON {
+			out = stderr // stdout carries the JSON result only
+		}
+		return installService([]string{"-config", res.Config}, out, stderr, defaultConfig, false)
 	}
 	return 0
 }
