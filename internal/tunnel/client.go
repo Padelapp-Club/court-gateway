@@ -98,15 +98,15 @@ func hubClient(rt http.RoundTripper) *http.Client {
 	return &http.Client{Transport: rt, CheckRedirect: core.RefuseRedirects}
 }
 
-// LoadRoots returns the system root pool plus the certificates in caFile.
+// LoadRoots returns the roots the hub's certificate is checked against:
+// nil (the system roots) without caFile, otherwise ONLY the certificates
+// in caFile. That pins the hub's CA: a TLS-inspecting proxy that this
+// machine trusts can then not stand in for the hub.
 func LoadRoots(caFile string) (*x509.CertPool, error) {
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
 	if caFile == "" {
-		return pool, nil
+		return nil, nil
 	}
+	pool := x509.NewCertPool()
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("hub.ca_file: %w", err)

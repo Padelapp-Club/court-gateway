@@ -49,7 +49,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	// in --help and in the error for a mistyped flag, and the join code is a
 	// secret. The environment is read after parsing.
 	fs.StringVar(&in.HubURL, "hub-url", "", "hub address (env GATEWAY_HUB_URL)")
-	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "extra CA certificate for a self-hosted hub")
+	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "trust only this CA certificate for the hub (a self-hosted hub, or pinning)")
 	fs.StringVar(&in.JoinCode, "join-code", "", "one-time join code (env GATEWAY_JOIN_CODE)")
 	fs.StringVar(&in.CRMType, "crm", "", "CRM type: viva (default) or demo")
 	fs.StringVar(&in.Username, "crm-username", "", "CRM administrator login (env CRM_USERNAME)")

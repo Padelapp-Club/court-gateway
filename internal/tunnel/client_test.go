@@ -2,7 +2,12 @@ package tunnel
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +119,30 @@ func TestExecuteClampsTheTimeout(t *testing.T) {
 		if left < tc.min || left > tc.max {
 			t.Errorf("timeout_ms %d: the handler got %s", tc.ms, left)
 		}
+	}
+}
+
+// hub.ca_file pins the hub's CA: only its certificates are trusted, not
+// the system roots next to them (which would let a TLS-inspecting proxy
+// trusted by the machine stand in for the hub). Without it, the system
+// roots are used.
+func TestCAFilePinsTheHubCA(t *testing.T) {
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	defer srv.Close()
+	caFile := filepath.Join(t.TempDir(), "hub-ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := LoadRoots(caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	only := x509.NewCertPool()
+	only.AddCert(srv.Certificate())
+	if !pool.Equal(only) {
+		t.Fatal("hub.ca_file trusts more than its own certificates")
+	}
+	if pool, err := LoadRoots(""); pool != nil || err != nil {
+		t.Fatalf("without hub.ca_file: %v %v", pool, err)
 	}
 }

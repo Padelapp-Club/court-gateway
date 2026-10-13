@@ -7,10 +7,9 @@
 // its own timeout, so a broken path is noticed by the next request.
 //
 // Trust: the gateway authenticates the hub by its TLS certificate (system
-// roots, or a CA file for self-hosted hubs and tests) and the hub
-// authenticates the gateway by its per-gateway secret (Bearer). A request
-// that arrives in a poll response is therefore known to come from the hub;
-// that is what "requests from the hub are signed" means for this design.
+// roots, or only the CA of hub.ca_file) and follows no redirect; the hub
+// authenticates the gateway by its secret (Bearer). Requests carry no
+// signature of their own.
 package tunnel
 
 import (
