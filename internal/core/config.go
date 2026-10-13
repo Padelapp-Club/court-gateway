@@ -475,11 +475,18 @@ func ParseHubKey(s string) (ed25519.PublicKey, error) {
 }
 
 // CheckHTTPSURL accepts https URLs, and plain http only for loopback hosts
-// (local test doubles and development).
+// (local test doubles and development). A URL may not carry a user or
+// password (they would end up in files and logs) nor a fragment; an error
+// never repeats a URL that might hold either.
 func CheckHTTPSURL(path, raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	switch {
+	case strings.Contains(raw, "@") && (err != nil || u.User != nil):
+		return fmt.Errorf("%s: в адресе не должно быть имени пользователя и пароля (…@)", path)
+	case err != nil || u.Host == "":
 		return fmt.Errorf("%s: «%s» — неверный адрес", path, raw)
+	case u.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%s: «%s» — в адресе не должно быть «#»", path, raw)
 	}
 	switch u.Scheme {
 	case "https":

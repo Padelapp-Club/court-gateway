@@ -135,3 +135,31 @@ func TestBuildDriverUnknownTypeAndDriverErrors(t *testing.T) {
 		t.Fatalf("driver errors must become config problems: %v", err)
 	}
 }
+
+// A URL in the config may carry neither a user and password nor a
+// fragment, and the error does not repeat the password.
+func TestURLsWithCredentialsAreRefusedUnechoed(t *testing.T) {
+	const marker = "FIXTURE-URL-PASSWORD"
+	const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	for name, yaml := range map[string]string{
+		"hub":             "hub: {url: https://operator:" + marker + "@hub.example.test, installation: n1, key: " + key + "}\ncrm: {type: demo}\n",
+		"hub, bad port":   "hub: {url: \"https://operator:" + marker + "@hub.example.test:x\", installation: n1, key: " + key + "}\ncrm: {type: demo}\n",
+		"hub, # password": "hub: {url: \"https://operator:" + marker + "#1@hub.example.test\", installation: n1, key: " + key + "}\ncrm: {type: demo}\n",
+		"hub fragment":    "hub: {url: \"https://hub.example.test/#" + marker + "\", installation: n1, key: " + key + "}\ncrm: {type: demo}\n",
+		"manifest":        "hub: {url: https://hub.example.test, installation: n1, key: " + key + "}\nupdate: {manifest_url: https://u:" + marker + "@example.test/m.json}\ncrm: {type: demo}\n",
+	} {
+		_, err := Load([]byte(yaml), env(goodEnv))
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if strings.Contains(err.Error(), marker) && name != "hub fragment" {
+			t.Errorf("%s: the error repeats the password: %v", name, err)
+		}
+	}
+	for _, ok := range []string{"https://hub.example.test/prefix", "http://127.0.0.1:8443", "https://hub.example.test/a@b"} {
+		if err := CheckHTTPSURL("u", ok); err != nil {
+			t.Errorf("%s refused: %v", ok, err)
+		}
+	}
+}

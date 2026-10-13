@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -188,5 +190,27 @@ func TestSetupPinsTheHubKey(t *testing.T) {
 	}
 	if _, err := os.Stat(fresh); err == nil {
 		t.Fatal("config written without a hub key")
+	}
+}
+
+// setup refuses a hub or CRM address with a user and password before any
+// network call, and neither its result nor any file repeats the password.
+func TestSetupRefusesURLCredentials(t *testing.T) {
+	const marker = "FIXTURE-URL-PASSWORD"
+	for _, in := range []Input{
+		{HubURL: "https://operator:" + marker + "@hub.example.test", CRMType: "demo"},
+		{HubURL: "https://hub.example.test", Username: "admin@example.test", Password: "pw", AuthURL: "https://u:" + marker + "@crm.example.test/token"},
+	} {
+		dir := t.TempDir()
+		in.ConfigPath, in.JoinCode = filepath.Join(dir, "gateway.yaml"), "AAAA-AAAA-AAAA-AAAA"
+		calls := 0
+		res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{&calls}})
+		encoded, _ := json.Marshal(res)
+		if err == nil || res.Error.Code != "INVALID_INPUT" || calls != 0 || bytes.Contains(encoded, []byte(marker)) {
+			t.Fatalf("%+v: %s (%v), hub calls %d", in, encoded, err, calls)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("files written: %v", entries)
+		}
 	}
 }
