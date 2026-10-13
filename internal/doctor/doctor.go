@@ -226,7 +226,7 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 			out = append(out, Check{Code: CodeHubReach, Status: Fail, Message: err.Error()})
 			return skipRest(1, "хаб недоступен"), nil
 		}
-		rt = tunnel.NewTransport(roots)
+		rt = tunnel.NewTransport(roots, s.Hub.Proxy)
 	}
 	hctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
@@ -345,6 +345,9 @@ func versionCheck(ctx context.Context, o Options, s *core.Settings) Check {
 	}
 	if u.Client == nil {
 		u.Client = &http.Client{Timeout: 20 * time.Second}
+		if s != nil {
+			u.Client.Transport = s.Hub.Proxy.Transport()
+		}
 	}
 	vctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()

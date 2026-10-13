@@ -196,7 +196,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		if err != nil {
 			return fail(problem("INVALID_INPUT", "%v", err))
 		}
-		rt = tunnel.NewTransport(roots)
+		rt = tunnel.NewTransport(roots, nil)
 	}
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	reg, err := tunnel.Register(rctx, rt, d.HubURL, in.JoinCode, deps.Version)

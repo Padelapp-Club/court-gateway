@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -184,8 +185,10 @@ type Config struct {
 	// Services maps "booking"/"tournament" to driver-specific parameters.
 	Services map[string]Params
 	Logger   *slog.Logger
-	// HTTPClient is optional; drivers create their own when nil.
+	// HTTPClient is optional; drivers create their own when nil, through
+	// Proxy when that is set.
 	HTTPClient *http.Client
+	Proxy      func(*http.Request) (*url.URL, error)
 	// Now is optional; drivers use time.Now when nil.
 	Now func() time.Time
 	// Account is the installation's CRM account, when there is one: a

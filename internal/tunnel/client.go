@@ -41,7 +41,7 @@ type ClientConfig struct {
 	// OnConfigVersion is called with the hub's club configuration version
 	// from every poll and heartbeat answer that carries one.
 	OnConfigVersion func(version int64)
-	// Transport defaults to NewTransport(nil).
+	// Transport defaults to NewTransport(nil, nil).
 	Transport http.RoundTripper
 	// Backoff after a failed poll grows from MinBackoff to MaxBackoff with
 	// full jitter (defaults 1s and 60s).
@@ -89,8 +89,8 @@ func LoadRoots(caFile string) (*x509.CertPool, error) {
 // from the environment (clubs behind a corporate proxy), HTTP/2 with
 // pings so a silently dead path is noticed, TLS 1.2+ verified against
 // roots (nil means the system roots).
-func NewTransport(roots *x509.CertPool) *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
+func NewTransport(roots *x509.CertPool, proxy core.ProxyFunc) *http.Transport {
+	t := proxy.Transport()
 	t.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	t.ForceAttemptHTTP2 = true
 	t.HTTP2 = &http.HTTP2Config{SendPingTimeout: 20 * time.Second, PingTimeout: 10 * time.Second}
@@ -120,7 +120,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		cfg.PollTimeout = 60 * time.Second
 	}
 	if cfg.Transport == nil {
-		cfg.Transport = NewTransport(nil)
+		cfg.Transport = NewTransport(nil, nil)
 	}
 	if cfg.Build == "" {
 		cfg.Build = BuildSelf

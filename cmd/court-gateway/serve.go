@@ -126,7 +126,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	client, err := tunnel.NewClient(tunnel.ClientConfig{
 		HubURL: s.Hub.URL, Secret: s.Hub.Secret, Polls: s.Hub.Polls, Handler: clubs.TunnelHandler(),
 		Version: version, Build: build(), Platform: platform(), Logger: log,
-		Transport: tunnel.NewTransport(roots), OnConfigVersion: syncer.Notify,
+		Transport: tunnel.NewTransport(roots, s.Hub.Proxy), OnConfigVersion: syncer.Notify,
 		OnHint: func(string) {
 			select {
 			case hint <- struct{}{}:
@@ -220,7 +220,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		log.Warn("the state directory is not writable; automatic updates are off", "path", s.StateDir)
 	default:
 		u := &update.Updater{
-			PublicKey: key, ManifestURL: s.Update.ManifestURL, Current: version, Client: &http.Client{Timeout: 5 * time.Minute},
+			PublicKey: key, ManifestURL: s.Update.ManifestURL, Current: version, Client: &http.Client{Timeout: 5 * time.Minute, Transport: s.Hub.Proxy.Transport()},
 			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log,
 		}
 		first := 5*time.Minute + time.Duration(time.Now().UnixNano()%int64(10*time.Minute))
@@ -472,7 +472,7 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if _, err := tunnel.FetchWhoami(ctx, tunnel.NewTransport(roots), s.Hub.URL, s.Hub.Secret); err != nil {
+	if _, err := tunnel.FetchWhoami(ctx, tunnel.NewTransport(roots, s.Hub.Proxy), s.Hub.URL, s.Hub.Secret); err != nil {
 		fmt.Fprintln(stderr, "hub: unreachable or secret rejected")
 		return update.SelfCheckTransientExit
 	}

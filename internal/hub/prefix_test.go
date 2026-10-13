@@ -77,7 +77,7 @@ func (p *prefixProxy) URL() string { return p.srv.URL + p.prefix }
 func (p *prefixProxy) transport() *http.Transport {
 	roots := x509.NewCertPool()
 	roots.AddCert(p.srv.Certificate())
-	return tunnel.NewTransport(roots)
+	return tunnel.NewTransport(roots, nil)
 }
 
 func (p *prefixProxy) seen() (upstream, unprefixed []string) {

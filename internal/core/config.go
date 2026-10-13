@@ -52,6 +52,8 @@ type fileConfig struct {
 		CAFile    string `yaml:"ca_file"`
 		SecretEnv string `yaml:"secret_env"`
 		Polls     int    `yaml:"polls"`
+		ProxyURL  string `yaml:"proxy_url"`
+		NoProxy   string `yaml:"no_proxy"`
 	} `yaml:"hub"`
 	Update *struct {
 		Enabled     *bool  `yaml:"enabled"`
@@ -158,7 +160,9 @@ type HubSettings struct {
 	URL    string
 	CAFile string
 	Secret string
-	Polls  int
+	// Proxy, when set, routes every outbound request (ProxyFunc).
+	Proxy ProxyFunc
+	Polls int
 }
 
 // UpdateSettings configure automatic updates.
@@ -306,6 +310,15 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			s.Secrets = append(s.Secrets, h.Secret)
 		}
 		s.Hub = h
+		// a corporate proxy: gateway.yaml, else HTTPS_PROXY / NO_PROXY
+		// (also from .env, which a service reads and a shell export is not)
+		if raw := cmp.Or(strings.TrimSpace(fc.Hub.ProxyURL), getenv("HTTPS_PROXY"), getenv("https_proxy")); raw != "" {
+			p, err := parseProxy(raw, cmp.Or(fc.Hub.NoProxy, getenv("NO_PROXY"), getenv("no_proxy")))
+			if err != nil {
+				add("hub.proxy_url: %v", err)
+			}
+			h.Proxy, s.Driver.Proxy = p, p
+		}
 	}
 
 	// update

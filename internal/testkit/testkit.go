@@ -157,7 +157,7 @@ func (h *Hub) JoinCode(club, name string) string {
 }
 
 // Transport returns a transport that trusts the test hub only.
-func (h *Hub) Transport() *http.Transport { return tunnel.NewTransport(h.Roots) }
+func (h *Hub) Transport() *http.Transport { return tunnel.NewTransport(h.Roots, nil) }
 
 // Register makes an installation with the same id as club that serves
 // club, redeems a join code for it and returns the gateway secret. The

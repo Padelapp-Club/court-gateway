@@ -3,8 +3,12 @@ package viva_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
@@ -149,5 +153,30 @@ func TestCheckLoginCallsTheAPI(t *testing.T) {
 	}
 	if err := a.CheckLogin(ctx); err != nil || stub.Logins() != 1 {
 		t.Fatalf("recovered: %v, logins %d", err, stub.Logins())
+	}
+}
+
+// With a proxy configured, the CRM is reached through it.
+func TestCRMThroughTheProxy(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	crm := httptest.NewServer(stub)
+	defer crm.Close()
+	target, _ := url.Parse(crm.URL)
+	var hits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+	pu, _ := url.Parse(proxy.URL)
+	a, err := viva.NewAccount(driver.Config{
+		CRM:      driver.Params{"username": stubUser, "auth_url": crm.URL + "/token", "api_url": crm.URL + "/api/v1"},
+		Password: stubPass, Proxy: http.ProxyURL(pu),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CheckLogin(context.Background()); err != nil || hits.Load() == 0 {
+		t.Fatalf("login %v, %d requests through the proxy", err, hits.Load())
 	}
 }

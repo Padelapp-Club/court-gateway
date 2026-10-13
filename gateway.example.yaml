@@ -12,6 +12,8 @@ hub:
   url: https://hub.example.test
   # secret_env: GATEWAY_HUB_SECRET   # переменная с секретом подключения (по умолчанию эта)
   # polls: 4                         # сколько запросов партнёров шлюз обслуживает одновременно
+  # proxy_url: http://proxy.example.test:3128   # корпоративный прокси: через него идут хаб, CRM и выпуски
+  # no_proxy: crm.example.test, .lan             # хосты и домены мимо прокси
 
 crm:
   type: viva                      # тип CRM
