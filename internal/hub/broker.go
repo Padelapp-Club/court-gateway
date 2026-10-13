@@ -45,6 +45,9 @@ type call struct {
 // Broker errors.
 var (
 	ErrOffline = errors.New("club gateway is not connected")
+	// ErrBusy: the gateway is connected but every poll is serving a
+	// request; none picked this one up in time.
+	ErrBusy    = errors.New("club gateway is busy")
 	ErrTimeout = errors.New("club gateway did not answer in time")
 )
 
@@ -113,8 +116,8 @@ func (b *Broker) Reply(club string, r tunnel.Response) bool {
 	return true
 }
 
-// Connected reports whether club's gateway has a poll open (or had one a
-// moment ago).
+// Connected reports whether club's gateway has a poll open, is serving a
+// request it picked up, or had a poll open a moment ago.
 func (b *Broker) Connected(club string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -122,7 +125,7 @@ func (b *Broker) Connected(club string) bool {
 	if !ok {
 		return false
 	}
-	return c.active > 0 || (!c.lastEnd.IsZero() && time.Since(c.lastEnd) < b.grace)
+	return c.active > 0 || len(c.inflight) > 0 || (!c.lastEnd.IsZero() && time.Since(c.lastEnd) < b.grace)
 }
 
 // ConnInfo is the broker's view of one gateway.
@@ -160,7 +163,7 @@ func (b *Broker) Do(ctx context.Context, club string, req tunnel.Request, pickup
 		if !b.Connected(club) {
 			return tunnel.Response{}, ErrOffline
 		}
-		return tunnel.Response{}, ErrTimeout
+		return tunnel.Response{}, ErrBusy
 	case <-ctx.Done():
 		return tunnel.Response{}, ctx.Err()
 	}

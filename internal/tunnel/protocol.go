@@ -123,9 +123,15 @@ type RemoteConfig struct {
 	Clubs   []json.RawMessage `json:"clubs"`
 }
 
-// forwardedHeaders are the only request/response headers carried through
-// the tunnel. Authorization never is: partner keys stay on the hub.
-var forwardedHeaders = []string{"Content-Type", "Accept", "Retry-After"}
+// The only headers carried through the tunnel, each way. Authorization
+// never is: partner keys stay on the hub.
+var (
+	requestHeaders  = []string{"Content-Type", "Accept"}
+	responseHeaders = []string{"Content-Type", "Retry-After", "Cache-Control", "Location"}
+)
 
-// ForwardedHeaders returns the header names carried through the tunnel.
-func ForwardedHeaders() []string { return append([]string(nil), forwardedHeaders...) }
+// RequestHeaders are the partner request headers handed to a gateway.
+func RequestHeaders() []string { return append([]string(nil), requestHeaders...) }
+
+// ResponseHeaders are the gateway response headers handed to a partner.
+func ResponseHeaders() []string { return append([]string(nil), responseHeaders...) }

@@ -63,6 +63,7 @@ type client struct {
 
 type response struct {
 	Status int
+	Header http.Header
 	Body   []byte
 	JSON   map[string]any
 }
@@ -91,7 +92,7 @@ func (c *client) do(method, path, key string, body any) response {
 	}
 	rec := httptest.NewRecorder()
 	c.env.Handler.ServeHTTP(rec, req)
-	r := response{Status: rec.Code, Body: rec.Body.Bytes()}
+	r := response{Status: rec.Code, Header: rec.Header(), Body: rec.Body.Bytes()}
 	if len(bytes.TrimSpace(r.Body)) > 0 {
 		var m map[string]any
 		if json.Unmarshal(r.Body, &m) == nil {
@@ -352,6 +353,9 @@ func testLifecycle(t *testing.T, env *Env) {
 	}
 	sameInstant(t, r.JSON["start"].(string), start)
 	sameInstant(t, r.JSON["end"].(string), end)
+	if loc := r.Header.Get("Location"); loc != c.base()+"/bookings/"+id {
+		t.Fatalf("Location = %q, want %s", loc, c.base()+"/bookings/"+id)
+	}
 
 	iv, ok := findInterval(c.occupancy(d, d.AddDate(0, 0, 1), court), id)
 	if !ok {

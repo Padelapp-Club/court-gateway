@@ -268,6 +268,10 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_OFFLINE", "the installation's gateway is not connected")
 		return
+	case errors.Is(err, ErrBusy):
+		w.Header().Set("Retry-After", "5")
+		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_BUSY", "the gateway is busy with other requests, retry")
+		return
 	case errors.Is(err, ErrTimeout):
 		core.WriteError(w, r, http.StatusGatewayTimeout, "GATEWAY_TIMEOUT", "the gateway did not answer in time")
 		return

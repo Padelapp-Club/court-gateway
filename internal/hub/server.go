@@ -322,7 +322,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		Header: map[string]string{}, Body: body, Partner: partner,
 		TimeoutMS: int(s.cfg.RequestTimeout / time.Millisecond),
 	}
-	for _, h := range tunnel.ForwardedHeaders() {
+	for _, h := range tunnel.RequestHeaders() {
 		if v := r.Header.Get(h); v != "" {
 			rq.Header[h] = v
 		}
@@ -333,14 +333,22 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_OFFLINE", "the club's gateway is not connected")
 		return
+	case errors.Is(err, ErrBusy):
+		w.Header().Set("Retry-After", "5")
+		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_BUSY", "the club's gateway is busy with other requests, retry")
+		return
 	case errors.Is(err, ErrTimeout):
 		core.WriteError(w, r, http.StatusGatewayTimeout, "CLUB_TIMEOUT", "the club's gateway did not answer in time")
 		return
 	case err != nil:
 		return // the partner went away
 	}
-	for _, h := range append(tunnel.ForwardedHeaders(), "Cache-Control") {
-		if v := resp.Header[h]; v != "" {
+	for _, h := range tunnel.ResponseHeaders() {
+		v := resp.Header[h]
+		if h == "Location" && !strings.HasPrefix(v, "/v1/clubs/"+club+"/") {
+			continue // only the gateway's own relative booking path
+		}
+		if v != "" {
 			w.Header().Set(h, v)
 		}
 	}
