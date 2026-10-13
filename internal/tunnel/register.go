@@ -28,21 +28,17 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 		return out, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Transport: rt}).Do(req)
-	if err != nil {
-		return out, cleanError(err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+	status, err := exchange(&http.Client{Transport: rt}, req, 64<<10, &out)
+	switch {
+	case status == 0:
+		return out, err
+	case status == http.StatusForbidden || status == http.StatusNotFound || status == http.StatusGone:
 		return out, ErrJoinCodeRejected
-	case http.StatusTooManyRequests:
+	case status == http.StatusTooManyRequests:
 		return out, ErrRateLimited
-	default:
-		return out, fmt.Errorf("hub answered HTTP %d to registration", resp.StatusCode)
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil || out.Secret == "" || out.Installation == "" {
+	case status != http.StatusOK:
+		return out, fmt.Errorf("hub answered HTTP %d to registration", status)
+	case err != nil || out.Secret == "" || out.Installation == "":
 		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
 	}
 	return out, nil
@@ -56,20 +52,31 @@ func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret strin
 		return out, err
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
-	resp, err := (&http.Client{Transport: rt}).Do(req)
-	if err != nil {
-		return out, cleanError(err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusUnauthorized:
+	status, err := exchange(&http.Client{Transport: rt}, req, 64<<10, &out)
+	switch {
+	case status == 0:
+		return out, err
+	case status == http.StatusUnauthorized:
 		return out, ErrUnauthorized
-	default:
-		return out, fmt.Errorf("hub answered HTTP %d", resp.StatusCode)
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
+	case status != http.StatusOK:
+		return out, fmt.Errorf("hub answered HTTP %d", status)
+	case err != nil:
 		return Whoami{}, errors.New("hub sent a malformed answer")
 	}
 	return out, nil
+}
+
+// exchange sends req and, when the hub answers 200, decodes at most limit
+// bytes of JSON into out. status is 0 when no answer came (err says why);
+// otherwise err is a decoding failure of a 200 answer.
+func exchange(hc *http.Client, req *http.Request, limit int64, out any) (status int, err error) {
+	resp, err := hc.Do(req)
+	if err != nil {
+		return 0, cleanError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		err = json.NewDecoder(io.LimitReader(resp.Body, limit)).Decode(out)
+	}
+	return resp.StatusCode, err
 }

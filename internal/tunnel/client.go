@@ -333,20 +333,16 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	if err != nil {
 		return out, err
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return out, cleanError(err)
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusUnauthorized:
+	status, err := exchange(c.http, req, MaxConfigBody, &out)
+	switch {
+	case status == 0:
+		return out, err
+	case status == http.StatusUnauthorized:
 		c.authFail.Store(true)
 		return out, ErrUnauthorized
-	default:
-		return out, fmt.Errorf("hub answered HTTP %d to a config request", resp.StatusCode)
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxConfigBody)).Decode(&out); err != nil {
+	case status != http.StatusOK:
+		return out, fmt.Errorf("hub answered HTTP %d to a config request", status)
+	case err != nil:
 		return RemoteConfig{}, errors.New("hub sent a malformed config")
 	}
 	return out, nil
