@@ -117,18 +117,12 @@ func Run(ctx context.Context, o Options) Report {
 	s, err := core.LoadFile(o.ConfigPath, getenv)
 	var acct driver.Account
 	if err == nil {
-		if f, ok := o.Accounts[s.CRMType]; ok {
-			cfg := s.Driver
-			if o.DriverHook != nil {
-				o.DriverHook(&cfg)
-			}
-			if acct, err = f(cfg); err != nil {
-				err = &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
-			}
-			s.Driver.Account = acct
-		} else {
-			err = &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
+		cfg := s.Driver
+		if o.DriverHook != nil {
+			o.DriverHook(&cfg)
 		}
+		acct, err = core.BuildAccount(s, o.Accounts, cfg)
+		s.Driver.Account = acct
 	}
 	if err != nil {
 		add(Check{Code: CodeConfig, Status: Fail, Message: err.Error(), Hint: "исправьте gateway.yaml или запустите court-gateway setup"})

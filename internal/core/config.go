@@ -391,6 +391,20 @@ func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Drive
 	return d, nil
 }
 
+// BuildAccount runs the account factory registered for the configured
+// CRM type on cfg (normally s.Driver). Errors are *ConfigError.
+func BuildAccount(s *Settings, accounts map[string]driver.AccountFactory, cfg driver.Config) (driver.Account, error) {
+	f, ok := accounts[s.CRMType]
+	if !ok {
+		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
+	}
+	a, err := f(cfg)
+	if err != nil {
+		return nil, &ConfigError{Problems: strings.Split(err.Error(), "\n")}
+	}
+	return a, nil
+}
+
 var (
 	yamlUnknownRe = regexp.MustCompile(`line (\d+): field (\S+) not found in type`)
 	yamlTypeRe    = regexp.MustCompile("line (\\d+): cannot unmarshal !!(\\w+) `?([^`]*)`? into (\\S+)")

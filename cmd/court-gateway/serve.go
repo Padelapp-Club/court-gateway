@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -265,13 +264,9 @@ func serveArgs(cfgPath, logFile string) []string {
 // multi-club handler and the syncer that keeps the clubs equal to the
 // installation's config on the hub.
 func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, error) {
-	f, ok := drivers.Accounts[s.CRMType]
-	if !ok {
-		return nil, nil, &core.ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
-	}
-	acct, err := f(s.Driver)
+	acct, err := core.BuildAccount(s, drivers.Accounts, s.Driver)
 	if err != nil {
-		return nil, nil, &core.ConfigError{Problems: strings.Split(err.Error(), "\n")}
+		return nil, nil, err
 	}
 	s.Driver.Account = acct // one CRM session for the account and its clubs
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
