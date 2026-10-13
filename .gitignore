@@ -1,0 +1,12 @@
+# Build output
+/court-gateway
+/court-gateway.exe
+/dist/
+*.test
+*.out
+
+# Local configuration and secrets
+/gateway.yaml
+.env
+.env.*
+!.env.example
