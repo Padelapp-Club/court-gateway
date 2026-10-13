@@ -13,8 +13,10 @@ import (
 const EnvFileName = ".env"
 
 // ParseDotEnv parses KEY=VALUE lines. Blank lines and lines starting with
-// # are ignored; an optional "export " prefix and matching single or double
-// quotes around the value are removed. Values are never logged.
+// # are ignored, and an optional "export " prefix is removed. Quoting
+// follows docker compose for what setup writes: 'single-quoted' is literal
+// except \' for a quote; "double-quoted" understands \\, \" and $$ for $.
+// Values are never logged.
 func ParseDotEnv(data []byte) (map[string]string, error) {
 	out := map[string]string{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -32,13 +34,20 @@ func ParseDotEnv(data []byte) (map[string]string, error) {
 			// the line number only: the line itself may hold a secret
 			return nil, fmt.Errorf("%s: строка %d — ожидается ИМЯ=значение", EnvFileName, n)
 		}
-		v = strings.TrimSpace(v)
-		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-			v = v[1 : len(v)-1]
-		}
-		out[k] = v
+		out[k] = unquote(strings.TrimSpace(v))
 	}
 	return out, sc.Err()
+}
+
+func unquote(v string) string {
+	if len(v) < 2 || (v[0] != '"' && v[0] != '\'') || v[len(v)-1] != v[0] {
+		return v
+	}
+	inner := v[1 : len(v)-1]
+	if v[0] == '\'' {
+		return strings.ReplaceAll(inner, `\'`, "'")
+	}
+	return strings.NewReplacer(`\\`, `\`, `\"`, `"`, "$$", "$").Replace(inner)
 }
 
 // EnvWithDotEnv returns a getenv that prefers the process environment and

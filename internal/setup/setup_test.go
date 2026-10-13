@@ -8,10 +8,21 @@ import (
 )
 
 func TestEnvValueRoundTrip(t *testing.T) {
-	for _, v := range []string{"plain", "with space", " lead", "trail ", "has#hash", `dq"inside`, "sq'inside", `both"and'`, "=eq=", "кириллица", `"starts`, "'starts", "a #b", ""} {
+	for _, v := range []string{"plain", "with space", " lead", "trail ", "has#hash", `dq"inside`, "sq'inside", `both"and'`, "=eq=", "кириллица",
+		`"starts`, "'starts", "a #b", "", "pa$word", "$HOME", "${X}", `back\slash`, `trailing\`, `it's $5\`, "tick`s", `\'`, "$$"} {
 		vals, err := core.ParseDotEnv([]byte("K=" + envValue(v) + "\n"))
 		if err != nil || vals["K"] != v {
 			t.Fatalf("%q -> %q -> %q (%v)", v, envValue(v), vals["K"], err)
+		}
+	}
+}
+
+// docker compose interpolates $ in bare and double-quoted env_file values,
+// so a password with $ must never be written that way.
+func TestEnvValueQuotesDollar(t *testing.T) {
+	for v, want := range map[string]string{"pa$word": `'pa$word'`, "$HOME": `'$HOME'`, "it's $5": `"it's $$5"`, "plain-Value_1": "plain-Value_1"} {
+		if got := envValue(v); got != want {
+			t.Errorf("envValue(%q) = %s, want %s", v, got, want)
 		}
 	}
 }

@@ -54,18 +54,22 @@ func (d *draft) render(installation, name string) string {
 	return b.String()
 }
 
-// envValue writes a value that our .env parser, docker compose env_file
-// and docker run --env-file all read back unchanged whenever possible:
-// quotes are added only when a value cannot be written bare.
+// envValue writes a value so that our .env parser and docker compose
+// env_file read it back unchanged. A value of plain characters is written
+// bare; anything else is single-quoted, which both read literally (no $
+// interpolation, no escapes but \'). A value with a single quote or a
+// trailing backslash is double-quoted instead, with \, " and $ escaped as
+// compose expects (\\, \", $$).
 func envValue(v string) string {
-	needs := v == "" || v != strings.TrimSpace(v) || v[0] == '"' || v[0] == '\'' || strings.Contains(v, " #")
-	if !needs {
+	if v != "" && strings.IndexFunc(v, func(r rune) bool {
+		return r <= ' ' || strings.ContainsRune("$\\'\"`#", r)
+	}) < 0 {
 		return v
 	}
-	if !strings.Contains(v, "\"") {
-		return "\"" + v + "\""
+	if !strings.Contains(v, "'") && !strings.HasSuffix(v, "\\") {
+		return "'" + v + "'"
 	}
-	return "'" + v + "'"
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$").Replace(v) + `"`
 }
 
 func renderEnv(password, secret, crmType string) string {
