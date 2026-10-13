@@ -16,6 +16,9 @@ type Broker struct {
 	pollWait time.Duration
 	// grace keeps a gateway "connected" for a moment between two polls.
 	grace time.Duration
+	// pickedUp, when set, runs between a poll taking a call and recording
+	// it in flight (tests widen that gap with it).
+	pickedUp func()
 
 	mu    sync.Mutex
 	conns map[string]*gwConn
@@ -40,6 +43,9 @@ type ConnMeta struct {
 type call struct {
 	req  tunnel.Request
 	resp chan tunnel.Response
+	// abandoned is set, under Broker.mu, when the sender gave up after the
+	// handoff; a poll that sees it drops the call instead of recording it.
+	abandoned bool
 }
 
 // Broker errors.
@@ -90,9 +96,15 @@ func (b *Broker) Poll(ctx context.Context, club string, meta ConnMeta) *tunnel.R
 	defer t.Stop()
 	select {
 	case cl := <-c.pending:
+		if b.pickedUp != nil {
+			b.pickedUp()
+		}
 		b.mu.Lock()
+		defer b.mu.Unlock()
+		if cl.abandoned {
+			return nil // nobody waits: do not run it, do not keep it
+		}
 		c.inflight[cl.req.ID] = cl
-		b.mu.Unlock()
 		return &cl.req
 	case <-t.C:
 		return nil
@@ -171,6 +183,7 @@ func (b *Broker) Do(ctx context.Context, club string, req tunnel.Request, pickup
 	defer wt.Stop()
 	drop := func() {
 		b.mu.Lock()
+		cl.abandoned = true
 		delete(c.inflight, req.ID)
 		b.mu.Unlock()
 	}

@@ -47,3 +47,44 @@ func TestBusyGatewayIsNotOffline(t *testing.T) {
 		t.Fatalf("after it left: %v, want ErrOffline", err)
 	}
 }
+
+// A partner that gives up right after a poll took its request leaves
+// nothing behind: the poll, even if it records the call later than the
+// partner's cleanup ran, drops it, so no reply owner is missing and the
+// gateway is not shown connected by a call nobody will ever answer.
+func TestCancelAtPickupLeavesNothingInFlight(t *testing.T) {
+	b := NewBroker(time.Second, nil)
+	b.grace = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var doErr error
+	b.pickedUp = func() { // the partner goes away before the poll records the call
+		cancel()
+		doErr = <-done
+	}
+	polled := make(chan *tunnel.Request, 1)
+	go func() { polled <- b.Poll(context.Background(), "inst", ConnMeta{}) }()
+	for !b.Connected("inst") {
+		time.Sleep(time.Millisecond)
+	}
+	go func() {
+		_, err := b.Do(ctx, "inst", tunnel.Request{ID: "gone"}, time.Second, time.Minute)
+		done <- err
+	}()
+	if rq := <-polled; rq != nil {
+		t.Fatalf("the poll handed out a request nobody waits for: %+v", rq)
+	}
+	if !errors.Is(doErr, context.Canceled) {
+		t.Fatalf("Do: %v", doErr)
+	}
+	b.mu.Lock()
+	n := len(b.conns["inst"].inflight)
+	b.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d calls retained in flight", n)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if b.Connected("inst") {
+		t.Fatal("a gateway with no poll and nothing to answer is still connected")
+	}
+}
