@@ -160,7 +160,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `GET /hub/installations/{id}` | — | `200 {"installation_id", "name", "created_at", "config_version", "clubs": [клуб…], "gateway": строка /hub/status или null}` |
 | `DELETE /hub/installations/{id}` | — | `204`; шлюз получает `401` при следующем запросе, неиспользованные коды гаснут |
 | `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at"}` |
-| `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки |
+| `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки |
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
 | `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM |
 

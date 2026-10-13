@@ -269,7 +269,10 @@ func TestOperatorAPIAuthAndValidation(t *testing.T) {
 	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/x1/clubs/c1", good)
 	h.MustOperator(t, http.StatusCreated, http.MethodPost, "/hub/installations", map[string]string{"installation_id": "x2"})
 	bad(409, "CLUB_TAKEN", http.MethodPut, "/hub/installations/x2/clubs/c1", good)
-	bad(404, "NOT_FOUND", http.MethodDelete, "/hub/installations/x1/clubs/c2", nil)
+	// one CRM studio, two installations: two gateways would serve it
+	bad(409, "STUDIO_TAKEN", http.MethodPut, "/hub/installations/x2/clubs/c2", demoClub("c2", "DEMO-NORTH", "Корт 1"))
+	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/x2/clubs/c2", demoClub("c2", "demo-south", "Корт 1"))
+	bad(404, "NOT_FOUND", http.MethodDelete, "/hub/installations/x1/clubs/c3", nil)
 	// the operator's view
 	dto := installation(t, h, "x1")
 	if dto.Name != "Сеть" || dto.ConfigVersion != 1 || len(dto.Clubs) != 1 || dto.Clubs[0].ID != "c1" || dto.Gateway != nil {

@@ -211,6 +211,7 @@ var (
 	ErrInstallationExists  = errors.New("the installation already exists")
 	ErrUnknownClub         = errors.New("no such club")
 	ErrClubTaken           = errors.New("the club id is already served by another installation")
+	ErrStudioTaken         = errors.New("the club's CRM studio is already served by another installation")
 	ErrNotRegistered       = errors.New("no gateway is registered for this installation")
 	// ErrStateUnavailable: the state directory cannot be read right now;
 	// nothing is forgotten because of it.
@@ -550,6 +551,9 @@ func (s *Store) DeleteInstallation(id string) error {
 // must have passed core.ValidateClubSpec. It returns whether the club is
 // new and the installation's new config version.
 func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, error) {
+	if !core.ValidID(spec.ID) {
+		return false, 0, ErrInvalidID
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	in, ok := s.installs[installation]
@@ -559,10 +563,16 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	if other, taken := s.clubs[spec.ID]; taken && other != installation {
 		return false, 0, ErrClubTaken
 	}
-	_, existed := in.Clubs[spec.ID]
-	if !core.ValidID(spec.ID) && !existed {
-		return false, 0, ErrInvalidID
+	if studio := clubStudio(spec); studio != "" {
+		for id, other := range s.installs {
+			for _, c := range other.Clubs {
+				if id != installation && clubStudio(c) == studio {
+					return false, 0, ErrStudioTaken
+				}
+			}
+		}
 	}
+	_, existed := in.Clubs[spec.ID]
 	next := in.clone()
 	next.Clubs[spec.ID] = spec
 	next.Version++
@@ -572,6 +582,12 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	*in = next
 	s.clubs[spec.ID] = installation
 	return !existed, in.Version, nil
+}
+
+// clubStudio is the CRM studio a club reads (crm.studio), normalized.
+func clubStudio(c core.ClubSpec) string {
+	v, _ := c.CRM["studio"].(string)
+	return strings.ToLower(strings.TrimSpace(v))
 }
 
 // DeleteClub removes a club of an installation and returns the new
