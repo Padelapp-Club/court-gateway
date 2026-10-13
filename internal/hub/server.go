@@ -27,16 +27,43 @@ import (
 
 // Server is the hub's HTTP side.
 type Server struct {
-	cfg     *Settings
-	store   *Store
-	broker  *Broker
-	monitor *Monitor
-	auth    *auth.Authenticator
-	log     *slog.Logger
-	now     func() time.Time
-	opKey   [sha256.Size]byte
-	hasOp   bool
-	regLim  *failLimiter
+	cfg      *Settings
+	store    *Store
+	broker   *Broker
+	monitor  *Monitor
+	auth     *auth.Authenticator
+	log      *slog.Logger
+	now      func() time.Time
+	opKey    [sha256.Size]byte
+	hasOp    bool
+	regLim   *failLimiter
+	inflight inflight
+}
+
+// inflight counts the requests in flight per key (a partner at a gateway).
+type inflight struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// acquire takes a place for key if fewer than limit are taken.
+func (f *inflight) acquire(key string, limit int) (release func(), ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n[key] >= limit {
+		return nil, false
+	}
+	if f.n == nil {
+		f.n = map[string]int{}
+	}
+	f.n[key]++
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.n[key]--; f.n[key] == 0 {
+			delete(f.n, key)
+		}
+	}, true
 }
 
 // Options for NewServer.
@@ -179,10 +206,15 @@ func meta(r *http.Request) ConnMeta {
 		}
 		return v
 	}
+	polls, err := strconv.Atoi(r.Header.Get(tunnel.HeaderPolls))
+	if err != nil || polls < 1 || polls > 32 {
+		polls = core.DefaultHubPolls
+	}
 	return ConnMeta{
 		Version:  clip(r.Header.Get(tunnel.HeaderVersion)),
 		Build:    clip(r.Header.Get(tunnel.HeaderBuild)),
 		Platform: clip(r.Header.Get(tunnel.HeaderPlatform)),
+		Polls:    polls,
 	}
 }
 
@@ -317,6 +349,16 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_OFFLINE", "the club's gateway is not connected")
 		return
 	}
+	// one partner may hold all polls of a gateway but one, so the other
+	// partners of its clubs still get through
+	polls := s.broker.Info(inst).Meta.Polls
+	release, ok := s.inflight.acquire(partner+" "+inst, max(polls-1, 1))
+	if !ok {
+		w.Header().Set("Retry-After", "1")
+		core.WriteError(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests in flight for this API key at this club's gateway")
+		return
+	}
+	defer release()
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, tunnel.MaxRequestBody))
 	if err != nil {
 		core.WriteError(w, r, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body is too large")
@@ -350,13 +392,19 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, h := range tunnel.ResponseHeaders {
 		v := resp.Header[h]
-		if h == "Location" && !strings.HasPrefix(v, "/v1/clubs/"+club+"/") {
+		switch {
+		case h == "Content-Type":
+			continue // set below: every partner API answer is JSON
+		case h == "Location" && !strings.HasPrefix(v, "/v1/clubs/"+club+"/"):
 			continue // only the gateway's own relative booking path
+		case h == "Location":
+			v = s.cfg.publicPath + v // as partners see the hub (behind a prefix)
 		}
 		if v != "" {
 			w.Header().Set(h, v)
 		}
 	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(resp.Status)
 	_, _ = w.Write(resp.Body)
 }

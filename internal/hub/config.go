@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -87,6 +88,10 @@ type Settings struct {
 	ReadyFailures int
 	// Secrets must never appear in logs.
 	Secrets []string
+
+	// publicPath is the path of PublicURL ("" at the root of its host):
+	// the prefix of every path partners see.
+	publicPath string
 }
 
 // ValidClubID reports whether id is a valid club (or installation) id.
@@ -130,6 +135,8 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	if s.PublicURL != "" {
 		if err := core.CheckHTTPSURL("public_url", s.PublicURL); err != nil {
 			add("%s", err.Error())
+		} else if u, err := url.Parse(s.PublicURL); err == nil {
+			s.publicPath = strings.TrimRight(u.EscapedPath(), "/")
 		}
 	}
 	s.TLSCertFile, s.TLSKeyFile = strings.TrimSpace(fc.TLS.CertFile), strings.TrimSpace(fc.TLS.KeyFile)

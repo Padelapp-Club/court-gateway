@@ -54,7 +54,9 @@ type Options struct {
 	WriteError ErrorWriter
 	Now        func() time.Time
 	// MaxInFlight caps the requests of one key being served at once, reads
-	// included: one partner cannot take every connection to a club's CRM.
+	// included, over all its clubs together. It bounds the load one key
+	// puts on the server; a club's gateway is guarded by the hub's own
+	// per-gateway cap.
 	MaxInFlight int
 }
 

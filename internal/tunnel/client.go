@@ -252,6 +252,7 @@ func (c *Client) newRequest(ctx context.Context, method, p string, body []byte) 
 	req.Header.Set(HeaderVersion, c.cfg.Version)
 	req.Header.Set(HeaderBuild, c.cfg.Build)
 	req.Header.Set(HeaderPlatform, c.cfg.Platform)
+	req.Header.Set(HeaderPolls, strconv.Itoa(c.cfg.Polls))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

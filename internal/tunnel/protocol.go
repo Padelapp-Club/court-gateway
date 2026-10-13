@@ -35,9 +35,11 @@ const PathDiscover = "/gateway/discover"
 
 // Headers a gateway sends with every poll, and the hub's update hint.
 const (
-	HeaderVersion    = "X-Gateway-Version"
-	HeaderBuild      = "X-Gateway-Build" // BuildRelease or BuildSelf
-	HeaderPlatform   = "X-Gateway-Platform"
+	HeaderVersion  = "X-Gateway-Version"
+	HeaderBuild    = "X-Gateway-Build" // BuildRelease or BuildSelf
+	HeaderPlatform = "X-Gateway-Platform"
+	// HeaderPolls is how many polls the gateway keeps open.
+	HeaderPolls      = "X-Gateway-Polls"
 	HeaderUpdateHint = "X-Update-Hint"
 	// HeaderConfigVersion is set by the hub on poll and heartbeat answers:
 	// the current version of the installation's club configuration. A

@@ -38,6 +38,8 @@ type ConnMeta struct {
 	Version  string
 	Build    string
 	Platform string
+	// Polls is how many polls the gateway keeps open.
+	Polls int
 }
 
 type call struct {
