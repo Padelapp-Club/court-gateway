@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,13 +198,39 @@ func TestLauncherClosesTheLogBeforeEveryStart(t *testing.T) {
 	}
 }
 
-// After set-password the Docker container must be created again: a
-// restart keeps its old environment, and with it the old password.
-func TestPasswordHintRecreatesTheDockerContainer(t *testing.T) {
-	h := passwordSetHint("linux")
-	if !strings.Contains(h, "docker compose up -d --force-recreate court-gateway") || strings.Contains(h, "compose restart") ||
-		!strings.Contains(h, "systemctl restart court-gateway") {
-		t.Fatalf("hint: %s", h)
+// After set-password the hint names the restart of the installation found
+// here, and every way when none is found. In Docker the container must be
+// created again: a restart keeps its old environment, and the old password.
+func TestPasswordHintNamesTheInstalledService(t *testing.T) {
+	only := func(paths ...string) func(string) bool {
+		return func(p string) bool { return slices.Contains(paths, p) }
+	}
+	const docker, systemd = "docker compose up -d --force-recreate court-gateway", "sudo systemctl restart court-gateway"
+	const daemon, agent = "sudo launchctl kickstart -k system/court-gateway", "launchctl kickstart -k gui/$(id -u)/court-gateway"
+	for _, tc := range []struct {
+		goos      string
+		exists    func(string) bool
+		want, not []string
+	}{
+		{"linux", only("/.dockerenv"), []string{docker}, []string{systemd, "compose restart"}},
+		{"linux", only("/etc/systemd/system/court-gateway.service"), []string{systemd}, []string{docker}},
+		{"linux", only(), []string{systemd, docker}, nil},
+		{"darwin", only("/Library/LaunchDaemons/court-gateway.plist"), []string{daemon}, []string{agent, docker}},
+		{"darwin", only("/Users/u/Library/LaunchAgents/court-gateway.plist"), []string{agent}, []string{daemon, docker}},
+		{"darwin", only(), []string{daemon, agent, docker}, nil},
+		{"windows", only(), []string{"Restart-Service court-gateway"}, []string{docker}},
+	} {
+		h := passwordSetHint(tc.goos, tc.exists, "/Users/u")
+		for _, w := range tc.want {
+			if !strings.Contains(h, w) {
+				t.Errorf("%s: %q lacks %q", tc.goos, h, w)
+			}
+		}
+		for _, n := range tc.not {
+			if strings.Contains(h, n) {
+				t.Errorf("%s: %q has %q", tc.goos, h, n)
+			}
+		}
 	}
 }
 

@@ -167,8 +167,13 @@ If `"ok": false`, act on `error.code`:
 | OS | Command | Verify | Expect |
 |---|---|---|---|
 | Linux | `sudo ./court-gateway install-service` | `systemctl is-active court-gateway` | `active` |
-| macOS | `sudo ./court-gateway install-service` | `sudo launchctl print system/court-gateway \| grep state` | `state = running` |
+| macOS (club) | `sudo ./court-gateway install-service` | `sudo launchctl print system/court-gateway \| grep state` | `state = running` |
+| macOS (trial, no sudo) | `./court-gateway install-service` | `launchctl print gui/$(id -u)/court-gateway \| grep state` | `state = running` |
 | Windows | `.\court-gateway.exe install-service` (Administrator) | `sc.exe query court-gateway` | `STATE : 4 RUNNING` |
+
+On macOS always use the club row (a system service: starts at boot). Without `sudo` the gateway
+becomes a per-user LaunchAgent that runs only while that user is logged in — tell the human it is
+for a trial only; a later `sudo … install-service` replaces it.
 
 On a cloud VM without a regular user, add `--run-as <user>` with a dedicated user that owns the
 folder (the folder must stay writable by that user: updates are kept in its `state/versions/`;
@@ -223,4 +228,4 @@ service with the command it prints, `unset CRM_PASSWORD`, and run step 5.
 ## Uninstall
 
 `sudo ./court-gateway uninstall-service` (Windows: `.\court-gateway.exe uninstall-service`), then
-delete the folder.
+delete the folder. On macOS it removes whichever exists: the system service and the per-user one.

@@ -1,7 +1,10 @@
 package service
 
 import (
+	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -56,5 +59,58 @@ func TestSystemdUnitPaths(t *testing.T) {
 		if !strings.Contains(u, want) {
 			t.Fatalf("missing %q in\n%s", want, u)
 		}
+	}
+}
+
+// macOS has two paths: the system service for clubs (starts at boot,
+// replaces a trial per-user job, which would be a second copy) and the
+// per-user LaunchAgent for trials, whose message says that it runs only
+// while the user is logged in. Uninstall removes whichever exists.
+func TestMacOSPaths(t *testing.T) {
+	s := Spec{Exe: "/Users/u/court-gateway/court-gateway", Config: "/Users/u/court-gateway/gateway.yaml", Home: "/Users/u", UID: 501}
+	agentPlist, daemonPlist := "/Users/u/Library/LaunchAgents/court-gateway.plist", "/Library/LaunchDaemons/court-gateway.plist"
+	has := func(cmds [][]string, want ...string) bool {
+		for _, c := range cmds {
+			if strings.Join(c, " ") == strings.Join(want, " ") {
+				return true
+			}
+		}
+		return false
+	}
+	user, _ := MakePlan("darwin", s)
+	if user.Files[agentPlist] == "" || !strings.Contains(user.Done, "только пока вы вошли") || strings.Contains(user.Done, "стартовать сам после перезагрузки") ||
+		!strings.Contains(strings.Join(user.Notes, "\n"), "launchctl print gui/$(id -u)/court-gateway") {
+		t.Fatalf("per-user plan: %+v", user)
+	}
+	s.System = true
+	sys, _ := MakePlan("darwin", s)
+	if sys.Files[daemonPlist] == "" || !has(sys.Commands, "rm", "-f", agentPlist) || !has(sys.Commands, "launchctl", "bootout", "gui/501/court-gateway") ||
+		!strings.Contains(sys.Done, "после перезагрузки") || !strings.Contains(strings.Join(sys.Notes, "\n"), "sudo launchctl print system/court-gateway") {
+		t.Fatalf("system plan: %+v", sys)
+	}
+	for _, system := range []bool{false, true} {
+		s.System = system
+		un, _ := UninstallPlan("darwin", s)
+		if !has(un.Commands, "rm", "-f", agentPlist) || !has(un.Commands, "rm", "-f", daemonPlist) || !has(un.Commands, "launchctl", "bootout", "system/court-gateway") {
+			t.Fatalf("uninstall (system=%v) leaves a job: %q", system, un.Commands)
+		}
+	}
+}
+
+// A first install boots out a job that is not loaded yet; launchctl's
+// complaint about it is not shown.
+func TestBootoutComplaintIsQuiet(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell")
+	}
+	r, w, _ := os.Pipe()
+	saved := os.Stderr
+	os.Stderr = w
+	err := ExecRunner("sh", "bootout") // sh complains: no such file
+	os.Stderr = saved
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if err == nil || len(out) != 0 {
+		t.Fatalf("err=%v, shown: %q", err, out)
 	}
 }

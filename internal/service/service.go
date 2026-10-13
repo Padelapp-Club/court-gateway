@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -28,10 +29,14 @@ type Spec struct {
 	// System: on macOS a LaunchDaemon (starts at boot, needs sudo) rather
 	// than a LaunchAgent (runs while the user is logged in).
 	System bool
-	// Home is the user's home directory (macOS LaunchAgent location).
+	// Home and UID are the user's (under sudo: the user who called it):
+	// where a macOS LaunchAgent lives.
 	Home string
 	UID  int
 }
+
+// agent is s's macOS LaunchAgent: the per-user job.
+func (s Spec) agent() Spec { s.System = false; return s }
 
 func (s Spec) dir() string { return filepath.Dir(s.Config) }
 
@@ -141,10 +146,13 @@ func WindowsCommands(s Spec) [][]string {
 // Runner executes a command (replaced in tests).
 type Runner func(name string, args ...string) error
 
-// ExecRunner runs commands with output to the terminal.
+// ExecRunner runs commands with output to the terminal, except a
+// "bootout", whose complaint about a job that is not loaded is expected.
 func ExecRunner(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if len(args) == 0 || args[0] != "bootout" {
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	}
 	return cmd.Run()
 }
 
@@ -152,7 +160,8 @@ func ExecRunner(name string, args ...string) error {
 type Plan struct {
 	Files    map[string]string
 	Commands [][]string
-	// Notes are shown to the person after installation.
+	// Done and Notes are shown to the person after installation.
+	Done  string
 	Notes []string
 }
 
@@ -167,14 +176,16 @@ func MakePlan(goos string, s Spec) (Plan, error) {
 	case "darwin":
 		path := PlistPath(s)
 		p.Files[path] = LaunchdPlist(s)
-		domain := "gui/" + strconv.Itoa(s.UID)
-		if s.System {
-			domain = "system"
-		}
+		domain := launchdDomain(s)
 		p.Commands = [][]string{{"launchctl", "bootout", domain + "/" + Name}, {"launchctl", "bootstrap", domain, path}}
-		p.Notes = []string{"журнал: " + s.LogFile()}
-		if !s.System {
-			p.Notes = append(p.Notes, "служба пользователя работает, пока пользователь вошёл в систему; чтобы шлюз работал с момента включения, запустите install-service через sudo")
+		p.Notes = []string{"проверка: " + LaunchdCheck(s), "журнал: " + s.LogFile()}
+		if s.System {
+			// a trial per-user job would run a second copy: it goes
+			p.Commands = append([][]string{{"launchctl", "bootout", launchdDomain(s.agent()) + "/" + Name}, {"rm", "-f", PlistPath(s.agent())}}, p.Commands...)
+		} else {
+			p.Done = "Служба пользователя (LaunchAgent) установлена и запущена. Она работает, только пока вы вошли в систему, " +
+				"и после перезагрузки стартует при вашем входе — так годится для пробы. Для клуба нужна системная служба, " +
+				"которая работает с момента включения Mac: sudo ./court-gateway install-service (служба пользователя при этом снимается)."
 		}
 	case "windows":
 		p.Commands = WindowsCommands(s)
@@ -182,7 +193,26 @@ func MakePlan(goos string, s Spec) (Plan, error) {
 	default:
 		return p, fmt.Errorf("установка службы на %s не поддерживается", goos)
 	}
+	if p.Done == "" {
+		p.Done = "Служба установлена и запущена; шлюз будет стартовать сам после перезагрузки."
+	}
 	return p, nil
+}
+
+// launchdDomain is where s's launchd job lives.
+func launchdDomain(s Spec) string {
+	if s.System {
+		return "system"
+	}
+	return "gui/" + strconv.Itoa(s.UID)
+}
+
+// LaunchdCheck is the command that shows whether s's launchd job runs.
+func LaunchdCheck(s Spec) string {
+	if s.System {
+		return "sudo launchctl print system/" + Name + " | grep state"
+	}
+	return "launchctl print gui/$(id -u)/" + Name + " | grep state"
 }
 
 // Install writes the files and runs the commands of the plan. A failing
@@ -209,11 +239,12 @@ func UninstallPlan(goos string, s Spec) (Plan, error) {
 	case "linux":
 		p.Commands = [][]string{{"systemctl", "disable", "--now", Name}, {"rm", "-f", SystemdPath}, {"systemctl", "daemon-reload"}}
 	case "darwin":
-		domain := "gui/" + strconv.Itoa(s.UID)
-		if s.System {
-			domain = "system"
-		}
-		p.Commands = [][]string{{"launchctl", "bootout", domain + "/" + Name}, {"rm", "-f", PlistPath(s)}}
+		// whichever exists: the user's job and the system one (whose file
+		// only sudo can remove)
+		sys := s
+		sys.System = true
+		p.Commands = [][]string{{"launchctl", "bootout", launchdDomain(s.agent()) + "/" + Name}, {"rm", "-f", PlistPath(s.agent())},
+			{"launchctl", "bootout", "system/" + Name}, {"rm", "-f", PlistPath(sys)}}
 	case "windows":
 		p.Commands = [][]string{{"sc.exe", "stop", Name}, {"sc.exe", "delete", Name}}
 	default:
@@ -242,6 +273,10 @@ func CurrentSpec(cfgPath string, system bool) (Spec, error) {
 		// run as the person who called sudo, not as root
 		if u := os.Getenv("SUDO_USER"); u != "" && os.Getuid() == 0 {
 			s.User = u
+			if who, err := user.Lookup(u); err == nil {
+				s.Home = who.HomeDir
+				s.UID, _ = strconv.Atoi(who.Uid)
+			}
 		}
 	}
 	return s, nil

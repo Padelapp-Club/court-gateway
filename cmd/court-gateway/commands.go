@@ -108,18 +108,35 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	return 0
 }
 
-// restartHint is how to restart the installed service on goos.
-func restartHint(goos string) string {
-	switch goos {
-	case "linux":
-		return "sudo systemctl restart " + service.Name
-	case "darwin":
-		return "sudo launchctl kickstart -k system/" + service.Name + " (служба пользователя: launchctl kickstart -k gui/$(id -u)/" + service.Name + ")"
-	case "windows":
+// restartHint is how to restart the gateway installed here on goos, as
+// far as its service files show (exists; home: the user's home); every
+// known way when none is found. In Docker a restart keeps the container's
+// old environment, and with it the old password: it is created again.
+func restartHint(goos string, exists func(string) bool, home string) string {
+	const docker = "docker compose up -d --force-recreate court-gateway (в Docker перезапуска мало — контейнер пересоздают)"
+	systemd := "sudo systemctl restart " + service.Name
+	daemon := "sudo launchctl kickstart -k system/" + service.Name
+	agent := "launchctl kickstart -k gui/$(id -u)/" + service.Name
+	switch {
+	case exists("/.dockerenv"):
+		return docker
+	case goos == "windows":
 		return "Restart-Service " + service.Name + " (PowerShell от имени администратора)"
+	case goos == "linux" && exists(service.SystemdPath):
+		return systemd
+	case goos == "linux":
+		return systemd + "; в Docker: " + docker
+	case goos == "darwin" && exists(service.PlistPath(service.Spec{System: true})):
+		return daemon
+	case goos == "darwin" && exists(service.PlistPath(service.Spec{Home: home})):
+		return agent
+	case goos == "darwin":
+		return daemon + " (служба пользователя: " + agent + "); в Docker: " + docker
 	}
 	return "перезапустите службу"
 }
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // cmdSetPassword replaces the CRM password in .env after the CRM
 // administrator's password changed; no join code is needed.
@@ -154,16 +171,14 @@ func cmdSetPassword(args []string, stdout, stderr io.Writer, getenv func(string)
 		fmt.Fprintf(stderr, "set-password: %v\n", err)
 		return 1
 	}
-	fmt.Fprintln(stdout, passwordSetHint(runtime.GOOS))
+	home, _ := os.UserHomeDir()
+	fmt.Fprintln(stdout, passwordSetHint(runtime.GOOS, fileExists, home))
 	return 0
 }
 
-// passwordSetHint is what set-password prints after success. In Docker the
-// password reaches the container as its environment (compose env_file),
-// which a restart keeps: the container must be created again.
-func passwordSetHint(goos string) string {
-	return "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: " + restartHint(goos) +
-		". В Docker перезапуска мало — пересоздайте контейнер: docker compose up -d --force-recreate court-gateway"
+// passwordSetHint is what set-password prints after success.
+func passwordSetHint(goos string, exists func(string) bool, home string) string {
+	return "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: " + restartHint(goos, exists, home)
 }
 
 func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
@@ -315,6 +330,8 @@ func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig st
 			return 2
 		}
 	}
+	// macOS without sudo: a per-user LaunchAgent; uninstall under sudo
+	// removes both kinds
 	system := runtime.GOOS != "darwin" || os.Geteuid() == 0
 	spec, err := service.CurrentSpec(*cfgPath, system)
 	if err != nil {
@@ -370,7 +387,7 @@ func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig st
 		fmt.Fprintln(stdout, "Служба удалена.")
 		return 0
 	}
-	fmt.Fprintln(stdout, "Служба установлена и запущена; шлюз будет стартовать сам после перезагрузки.")
+	fmt.Fprintln(stdout, plan.Done)
 	for _, n := range plan.Notes {
 		fmt.Fprintln(stdout, "  "+n)
 	}

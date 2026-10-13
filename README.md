@@ -77,8 +77,14 @@
 ### macOS
 
 Впишите в строку `F=` версию и процессор: Apple Silicon (M1–M4) — `darwin-arm64`, Intel —
-`darwin-amd64`. `install-service` идёт через `sudo`: служба стартует при включении Mac и работает от
-вашего имени.
+`darwin-amd64`. Для клуба `install-service` идёт через `sudo`: это системная служба, она стартует
+при включении Mac (даже если никто не вошёл) и работает от вашего имени. Проверка:
+`sudo launchctl print system/court-gateway | grep state` — `state = running`.
+
+Без `sudo` ставится служба пользователя (LaunchAgent) — только для пробы: она работает, пока вы
+вошли в систему, и запускается при вашем входе, а не при включении. Проверка:
+`launchctl print gui/$(id -u)/court-gateway | grep state`. Системная служба, поставленная потом,
+снимает её сама.
 
 ```sh
 F=court-gateway-<версия>-darwin-arm64
@@ -204,8 +210,8 @@ court-gateway 0.2.0 (release)
 Новый код подключения не нужен. В папке шлюза выполните `court-gateway set-password`
 (Windows: `.\court-gateway.exe set-password` в PowerShell от имени администратора): программа
 спросит новый пароль, проверит вход в Viva и заменит в `.env` только его. Затем перезапустите
-службу — команду программа напишет сама (Linux: `sudo systemctl restart court-gateway`, Windows:
-`Restart-Service court-gateway`).
+службу — команду для вашей установки программа напишет сама (Linux: `sudo systemctl restart
+court-gateway`, Windows: `Restart-Service court-gateway`).
 
 В Docker пароль меняют одноразовым контейнером с папкой настроек, а контейнер шлюза затем
 пересоздают: пароль попадает в контейнер переменной окружения при создании, и
@@ -222,6 +228,12 @@ docker compose up -d --force-recreate court-gateway
 (`hub: { proxy_url: http://прокси:3128, no_proxy: "хост, .домен" }`) или в `.env`
 (`HTTPS_PROXY=…`, `NO_PROXY=…`): через него пойдут хаб, CRM и проверка выпусков. Для `setup`
 задайте те же `HTTPS_PROXY`/`NO_PROXY` в командной строке.
+
+## Удалить службу
+
+`sudo ./court-gateway uninstall-service` (Windows: `.\court-gateway.exe uninstall-service` от имени
+администратора), затем удалите папку. На macOS команда снимает и системную службу, и службу
+пользователя — какая есть.
 
 ## Если компьютер выключили или пропал интернет
 
