@@ -1,6 +1,7 @@
 // Package auth is a self-contained HTTP middleware for partner API keys:
-// bearer-key authentication with constant-time comparison, read/book scopes
-// and a per-key token bucket on write requests. It knows nothing about the
+// bearer-key authentication with constant-time comparison, read/book scopes,
+// a per-key token bucket on write requests and a cap on the requests one
+// key has in flight. It knows nothing about the
 // handler it protects, so it can be placed in front of the same API handler
 // wherever that handler is served.
 package auth
@@ -44,10 +45,17 @@ type Partner struct {
 // refusal so the protected API keeps one error format.
 type ErrorWriter func(w http.ResponseWriter, r *http.Request, status int, code, message string)
 
+// DefaultMaxInFlight is how many requests one key may have in flight at
+// once when Options.MaxInFlight is not set.
+const DefaultMaxInFlight = 16
+
 // Options tune the middleware.
 type Options struct {
 	WriteError ErrorWriter
 	Now        func() time.Time
+	// MaxInFlight caps the requests of one key being served at once, reads
+	// included: one partner cannot take every connection to a club's CRM.
+	MaxInFlight int
 }
 
 type partner struct {
@@ -56,6 +64,7 @@ type partner struct {
 	read   bool
 	book   bool
 	bucket *bucket
+	slots  chan struct{} // one per request in flight
 }
 
 // Authenticator holds the configured keys.
@@ -71,6 +80,9 @@ func New(partners []Partner, opts Options) (*Authenticator, error) {
 		return nil, errors.New("auth: at least one partner is required")
 	}
 	a := &Authenticator{writeErr: opts.WriteError, now: opts.Now}
+	if opts.MaxInFlight <= 0 {
+		opts.MaxInFlight = DefaultMaxInFlight
+	}
 	if a.writeErr == nil {
 		a.writeErr = defaultWriteError
 	}
@@ -92,7 +104,7 @@ func New(partners []Partner, opts Options) (*Authenticator, error) {
 			return nil, fmt.Errorf("auth: partners %q and %q share a key", other, p.Name)
 		}
 		seen[d] = p.Name
-		ip := &partner{name: p.Name, digest: d}
+		ip := &partner{name: p.Name, digest: d, slots: make(chan struct{}, opts.MaxInFlight)}
 		for _, s := range p.Scopes {
 			switch s {
 			case ScopeRead:
@@ -185,6 +197,14 @@ func (a *Authenticator) Wrap(next http.Handler) http.Handler {
 				a.writeErr(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many write requests for this API key")
 				return
 			}
+		}
+		select {
+		case p.slots <- struct{}{}:
+			defer func() { <-p.slots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			a.writeErr(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests in flight for this API key")
+			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithPartnerName(r.Context(), p.name)))
 	})
