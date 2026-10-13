@@ -123,29 +123,13 @@ func LaunchdPlist(s Spec) string {
 	return b.String()
 }
 
-// Well-known SIDs of the Windows accounts that may read the install
-// folder: the local Administrators group and LocalSystem, which runs the
-// service. SIDs, not names: the names are localized.
-const (
-	SIDAdministrators = "S-1-5-32-544"
-	SIDSystem         = "S-1-5-18"
-)
-
-// WindowsRestrictCommand closes dir (and what it holds: .env has the CRM
-// password) to everyone but Administrators and SYSTEM: inherited entries
-// are removed and these two get full control, inherited by the contents.
-func WindowsRestrictCommand(dir string) []string {
-	return []string{"icacls", dir, "/inheritance:r", "/grant:r", "*" + SIDAdministrators + ":(OI)(CI)F", "*" + SIDSystem + ":(OI)(CI)F"}
-}
-
-// WindowsCommands restrict the install folder (WindowsRestrictCommand)
-// and register the service with sc.exe: automatic (delayed) start, and
-// recovery actions that restart it after any exit — which is also how an
-// update takes effect on Windows.
+// WindowsCommands register the service with sc.exe: automatic (delayed)
+// start, and recovery actions that restart it after any exit — which is
+// also how an update takes effect on Windows. The install folder and .env
+// are closed (ProtectSecrets) before these run.
 func WindowsCommands(s Spec) [][]string {
 	bin := `"` + s.Exe + `" service -config "` + s.Config + `"`
 	return [][]string{
-		WindowsRestrictCommand(s.dir()),
 		{"sc.exe", "create", Name, "binPath=", bin, "start=", "delayed-auto", "DisplayName=", Name},
 		{"sc.exe", "description", Name, "Partner API of the club; connects out to the hub, opens no ports."},
 		{"sc.exe", "failure", Name, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000"},
@@ -194,7 +178,7 @@ func MakePlan(goos string, s Spec) (Plan, error) {
 		}
 	case "windows":
 		p.Commands = WindowsCommands(s)
-		p.Notes = []string{"журнал: " + s.LogFile()}
+		p.Notes = []string{"папка " + s.dir() + " и .env закрываются от всех, кроме администраторов и системы", "журнал: " + s.LogFile()}
 	default:
 		return p, fmt.Errorf("установка службы на %s не поддерживается", goos)
 	}

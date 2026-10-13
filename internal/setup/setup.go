@@ -45,10 +45,11 @@ type Deps struct {
 	Version      string
 	// Accounts default to the built-in drivers.
 	Accounts map[string]driver.AccountFactory
-	// RestrictDir, when set, closes the config folder to other users before
-	// the secrets are written (Windows: the folder's ACL). A failure is a
-	// warning: doctor reports the folder until it is fixed.
-	RestrictDir func(dir string) error
+	// ProtectSecrets, when set, closes a path to other users and verifies
+	// it (Windows: service.ProtectSecrets). It runs on the config folder
+	// (and an existing .env) before the join code is redeemed, and on the
+	// new .env after writing; any failure aborts setup.
+	ProtectSecrets func(path string) error
 }
 
 // Warning is something the administrator must look at.
@@ -188,6 +189,23 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if p := validate(d, in.Password, "placeholder-secret"); p != nil {
 		return fail(p)
 	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		return fail(problem("WRITE_FAILED", "%v", err))
+	}
+	notProtected := func(err error) (Result, error) {
+		return fail(problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err))
+	}
+	if deps.ProtectSecrets != nil {
+		// before the join code is spent and before any secret is written
+		for _, p := range []string{filepath.Dir(cfgPath), envPath} {
+			if _, err := os.Stat(p); err != nil && p == envPath {
+				continue // no .env yet: it inherits the folder's entries
+			}
+			if err := deps.ProtectSecrets(p); err != nil {
+				return notProtected(err)
+			}
+		}
+	}
 
 	// 2. the hub
 	rt := deps.HubTransport
@@ -214,17 +232,14 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if p := validate(d, in.Password, reg.Secret); p != nil {
 		return fail(p)
 	}
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-		return fail(problem("WRITE_FAILED", "%v", err))
-	}
-	if deps.RestrictDir != nil {
-		if err := deps.RestrictDir(filepath.Dir(cfgPath)); err != nil {
-			res.Warnings = append(res.Warnings, Warning{Code: "FOLDER_NOT_RESTRICTED",
-				Message: "не удалось закрыть папку " + filepath.Dir(cfgPath) + " от других пользователей (запустите setup от имени администратора): " + err.Error()})
-		}
-	}
 	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(in.Password, reg.Secret, d.CRMType)), 0o600); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", envPath, err))
+	}
+	if deps.ProtectSecrets != nil {
+		if err := deps.ProtectSecrets(envPath); err != nil {
+			_ = os.Remove(envPath)
+			return notProtected(err)
+		}
 	}
 	if err := core.WriteFileAtomic(cfgPath, []byte(d.render(reg.Installation, reg.Name)), 0o644); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", cfgPath, err))

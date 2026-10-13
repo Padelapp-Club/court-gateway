@@ -72,8 +72,8 @@ variables of the `setup` command in step 3 and nowhere else; never repeat them b
 | Windows x64 | `C:\court-gateway` | `court-gateway-<v>-windows-amd64.exe` |
 
 Detect: `uname -s -m` (Linux/macOS) or `$env:PROCESSOR_ARCHITECTURE` (Windows). Create the folder
-and `cd` into it. (On Windows `setup` closes the folder to everyone but Administrators and SYSTEM
-itself.)
+and `cd` into it. (On Windows `setup` closes the folder and `.env` to everyone but Administrators and SYSTEM
+itself, and stops before writing any secret if it cannot.)
 
 **Verify:** `pwd` / `Get-Location`. **Expect:** the folder from the table.
 
@@ -150,6 +150,7 @@ If `"ok": false`, act on `error.code`:
 | `HUB_UNREACHABLE` | check the hub URL and outbound HTTPS; never open inbound ports |
 | `HUB_RATE_LIMITED` | too many wrong codes from this address — wait a minute, then retry once with a code the human re-checks |
 | `CONFIG_EXISTS` | a previous install exists — ask the human before re-running with `--force` |
+| `FOLDER_NOT_RESTRICTED` | Windows: the folder could not be closed to everyone but Administrators and SYSTEM — re-run setup in PowerShell as Administrator; nothing was written and the join code is **not** spent |
 
 ## Step 4 — install the service
 
@@ -185,7 +186,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed |
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
 | `HUB_CONFIG` | `fail`: the clubs configured on the hub do not load with this CRM — report to the operator (the service keeps the previous config); `warn`: the service has not applied the newest config yet |
-| `SECRETS_FILE` | Windows `fail`: the folder holding `.env` is open to other users — run the `hint` command in PowerShell as Administrator; `warn` elsewhere: `chmod 600 .env` |
+| `SECRETS_FILE` | Windows `fail`: the folder holding `.env`, or `.env`, is open to other users — run the `hint` command (`install-service`, which closes both) in PowerShell as Administrator; `warn` elsewhere: `chmod 600 .env` |
 | `VERSION_CURRENT` | `warn` only: self-built binary, or an update is pending (installs itself) |
 
 ## Step 6 — report

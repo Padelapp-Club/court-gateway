@@ -9,7 +9,12 @@ import (
 	"path/filepath"
 
 	"golang.org/x/sys/windows/svc"
+
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 )
+
+// protectSecrets closes the install folder and .env (setup, install-service).
+var protectSecrets = service.ProtectSecrets
 
 // cmdService runs the gateway under the Windows Service Control Manager.
 // A Windows service must answer the SCM's control protocol, which only

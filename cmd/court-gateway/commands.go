@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"golang.org/x/term"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/doctor"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/service"
@@ -86,16 +86,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if !*asJSON {
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
-	deps := setup.Deps{Version: version}
-	if runtime.GOOS == "windows" {
-		deps.RestrictDir = func(dir string) error {
-			c := service.WindowsRestrictCommand(dir)
-			if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
-				return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-			}
-			return nil
-		}
-	}
+	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets}
 	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -297,6 +288,19 @@ func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig st
 			return err
 		}
 		return os.WriteFile(path, []byte(data), 0o644)
+	}
+	if !uninstall && protectSecrets != nil {
+		// the folder and .env are closed and verified before the service
+		// that reads them is registered
+		for _, p := range []string{filepath.Dir(spec.Config), filepath.Join(filepath.Dir(spec.Config), core.EnvFileName)} {
+			if _, err := os.Stat(p); err != nil {
+				continue
+			}
+			if err := protectSecrets(p); err != nil {
+				fmt.Fprintf(stderr, "%s: не удалось закрыть %s от других пользователей (нужны права администратора): %v\n", name, p, err)
+				return 1
+			}
+		}
 	}
 	if err := service.Install(plan, service.ExecRunner, write); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)

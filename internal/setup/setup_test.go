@@ -3,10 +3,12 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,27 +95,60 @@ func (registerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
 }
 
-// On Windows setup closes the config folder before the secrets are written
-// to it; when it cannot, setup still succeeds and says so.
-func TestSetupRestrictsTheFolderFirst(t *testing.T) {
+type countingTransport struct{ calls *int }
+
+func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	*c.calls++
+	return registerTransport{}.RoundTrip(r)
+}
+
+// On Windows setup closes the config folder (and an existing .env) before
+// the join code is redeemed and before any secret is written, and the new
+// .env after writing. A failure to close or verify aborts setup: the join
+// code stays unspent and no secret lands in an open folder.
+func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 	dir := t.TempDir()
+	env := filepath.Join(dir, core.EnvFileName)
 	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
-	var restricted []string
-	deps := Deps{HubTransport: registerTransport{}, RestrictDir: func(d string) error {
-		if _, err := os.Stat(filepath.Join(d, core.EnvFileName)); err == nil {
-			t.Error(".env was written before the folder was restricted")
-		}
-		restricted = append(restricted, d)
+	var events []string
+	hubCalls := 0
+	deps := Deps{HubTransport: countingTransport{&hubCalls}, ProtectSecrets: func(p string) error {
+		_, envErr := os.Stat(env)
+		events = append(events, fmt.Sprintf("%s hub=%d env=%v", filepath.Base(p), hubCalls, envErr == nil))
 		return nil
 	}}
-	res, err := Run(context.Background(), in, deps)
-	if err != nil || len(restricted) != 1 || restricted[0] != dir || len(res.Warnings) != 0 {
-		t.Fatalf("restricted %v, result %+v, %v", restricted, res, err)
+	if _, err := Run(context.Background(), in, deps); err != nil {
+		t.Fatal(err)
 	}
-	in.Force = true
-	deps.RestrictDir = func(string) error { return errors.New("access denied") }
-	res, err = Run(context.Background(), in, deps)
-	if err != nil || len(res.Warnings) != 1 || res.Warnings[0].Code != "FOLDER_NOT_RESTRICTED" {
-		t.Fatalf("failed restriction: %+v, %v", res, err)
+	want := []string{filepath.Base(dir) + " hub=0 env=false", ".env hub=1 env=true"}
+	if !slices.Equal(events, want) {
+		t.Fatalf("protection order %q, want %q", events, want)
+	}
+
+	in.Force, events = true, nil
+	if _, err := Run(context.Background(), in, deps); err != nil || len(events) != 3 || events[1] != ".env hub=1 env=true" {
+		t.Fatalf("existing .env not closed before redeeming: %q %v", events, err)
+	}
+
+	for _, failOn := range []string{"folder", core.EnvFileName} {
+		fresh := t.TempDir()
+		in := Input{ConfigPath: filepath.Join(fresh, "gateway.yaml"), HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo"}
+		hubCalls = 0
+		deps.ProtectSecrets = func(p string) error {
+			if (filepath.Base(p) == core.EnvFileName) == (failOn == core.EnvFileName) {
+				return errors.New("synthetic ACL failure")
+			}
+			return nil
+		}
+		res, err := Run(context.Background(), in, deps)
+		if err == nil || res.OK || res.Error.Code != "FOLDER_NOT_RESTRICTED" {
+			t.Fatalf("failing on %s: setup succeeded: %+v %v", failOn, res, err)
+		}
+		if _, err := os.Stat(filepath.Join(fresh, core.EnvFileName)); err == nil {
+			t.Fatalf("failing on %s: .env left behind", failOn)
+		}
+		if failOn == "folder" && hubCalls != 0 {
+			t.Fatal("join code redeemed although the folder could not be closed")
+		}
 	}
 }

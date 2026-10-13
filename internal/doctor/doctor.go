@@ -17,7 +17,6 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/remote"
-	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 	"github.com/Padelapp-Club/court-gateway/internal/version"
@@ -370,26 +369,8 @@ func secretsFileCheck(cfgPath string) Check {
 	if _, err := os.Stat(p); err != nil {
 		return Check{Code: CodeSecretFile, Status: Skip, Message: "файла .env нет: секреты берутся из окружения"}
 	}
-	st, msg, hint := secretsExposure(p)
+	st, msg, hint := secretsExposure(cfgPath, p)
 	return Check{Code: CodeSecretFile, Status: st, Message: msg, Hint: hint}
-}
-
-// folderACLProblem judges a Windows folder's DACL (the SIDs of its allow
-// entries): it must not inherit from the parent and must allow nobody but
-// Administrators and SYSTEM. A null DACL allows everyone.
-func folderACLProblem(protected, nullDACL bool, allowed []string) string {
-	switch {
-	case nullDACL:
-		return "у папки с .env нет списка доступа: её читает любой пользователь"
-	case !protected:
-		return "папка с .env наследует права родительской папки: пароль CRM могут прочитать другие пользователи"
-	}
-	for _, sid := range allowed {
-		if sid != service.SIDAdministrators && sid != service.SIDSystem {
-			return "папка с .env доступна не только администраторам и системе (" + sid + ")"
-		}
-	}
-	return ""
 }
 
 func shortErr(err error) string {

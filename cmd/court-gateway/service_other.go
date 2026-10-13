@@ -4,6 +4,9 @@ package main
 
 import "io"
 
+// protectSecrets is Windows-only: elsewhere .env is written mode 0600.
+var protectSecrets func(string) error
+
 // cmdService is the entry point the Windows service manager uses; on
 // other systems it is the same as serve.
 func cmdService(args []string, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
