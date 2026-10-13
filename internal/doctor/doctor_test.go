@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 )
@@ -84,5 +85,25 @@ func TestDoctorStepsHaveTheirOwnTimeouts(t *testing.T) {
 		if c.Code == CodeOccupancy && c.Status != OK {
 			t.Errorf("occupancy: %s %s", c.Status, c.Message)
 		}
+	}
+}
+
+// doctor reports the version the service runs, not the installed file's.
+func TestDoctorReportsTheRunningVersion(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(cfg, []byte("hub: { url: https://hub.example.test }\ncrm: { type: demo }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] }
+	if err := core.WriteHealthStatus(core.StateDir(cfg, getenv), core.HealthStatus{Version: "1.3.0"}); err != nil {
+		t.Fatal(err)
+	}
+	rep := Run(context.Background(), Options{
+		ConfigPath: cfg, Getenv: getenv,
+		Factories: map[string]driver.Factory{"demo": demo.New}, Accounts: map[string]driver.AccountFactory{"demo": demo.NewAccount},
+		Version: "1.0.0", HubTransport: slowHub(0), Timeout: time.Second,
+	})
+	if rep.Version != "1.3.0" {
+		t.Fatalf("report version %s, want the running 1.3.0", rep.Version)
 	}
 }

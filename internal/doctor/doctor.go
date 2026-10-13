@@ -112,6 +112,9 @@ func Run(ctx context.Context, o Options) Report {
 		add(Check{Code: CodeConfig, Status: Fail, Message: err.Error(), Hint: "исправьте файл .env рядом с gateway.yaml"})
 		return finish(r)
 	}
+	// the service may run a newer verified version than this binary
+	o.Version = update.RunningVersion(core.StateDir(o.ConfigPath, getenv), o.Version, time.Now())
+	r.Version = o.Version
 	s, err := core.LoadFile(o.ConfigPath, getenv)
 	var acct driver.Account
 	if err == nil {

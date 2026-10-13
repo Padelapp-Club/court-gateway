@@ -23,6 +23,16 @@ func TestVersionAndUnknownCommand(t *testing.T) {
 	if code := run([]string{"frobnicate"}, &out, &errb, noEnv); code != 2 {
 		t.Fatalf("unknown command: %d", code)
 	}
+	// the service runs a newer version than this file: version says so
+	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
+	getenv := func(k string) string { return map[string]string{"GATEWAY_CONFIG": cfg}[k] }
+	if err := core.WriteHealthStatus(core.StateDir(cfg, getenv), core.HealthStatus{Version: "9.9.9"}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := run([]string{"version"}, &out, &errb, getenv); code != 0 || !strings.Contains(out.String(), "служба работает на версии 9.9.9") {
+		t.Fatalf("version with a running update: %d %q", code, out.String())
+	}
 }
 
 func TestServeRefusesBadConfigInRussian(t *testing.T) {

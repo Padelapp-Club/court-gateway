@@ -15,9 +15,12 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"time"
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
+	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...
@@ -99,6 +102,9 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return cmdHub(args[1:], stdout, stderr, getenv)
 	case "version":
 		fmt.Fprintf(stdout, "court-gateway %s (%s, %s)\n", version, build(), platform())
+		if running := update.RunningVersion(core.StateDir(defaultConfig, getenv), version, time.Now()); running != version {
+			fmt.Fprintf(stdout, "служба работает на версии %s (этот файл — установленный запускающий)\n", running)
+		}
 		return 0
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)

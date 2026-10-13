@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
 // release is a fake release server: manifest, signature and one binary.
@@ -495,5 +497,34 @@ func TestBuildManifest(t *testing.T) {
 	m, err := ParseManifest(data)
 	if err != nil || len(m.Assets) != len(Platforms) || !strings.HasSuffix(m.Assets["windows-amd64"].URL, ".exe") {
 		t.Fatalf("%+v %v", m, err)
+	}
+}
+
+// The running version is what the service reported, else the verified
+// version the installed binary hands over to, else the binary's own.
+func TestRunningVersion(t *testing.T) {
+	state, now := t.TempDir(), time.Now()
+	if got := RunningVersion(state, "1.0.0", now); got != "1.0.0" {
+		t.Fatalf("nothing installed: %s", got)
+	}
+	v := &Versions{Dir: state}
+	if err := os.MkdirAll(v.StagingDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dl := filepath.Join(v.StagingDir(), ".court-gateway-download-1")
+	if err := os.WriteFile(dl, []byte("NEW BINARY 1.1.0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Install(dl, "1.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := RunningVersion(state, "1.0.0", now); got != "1.1.0" {
+		t.Fatalf("with a verified update: %s", got)
+	}
+	if err := core.WriteHealthStatus(state, core.HealthStatus{Version: "1.2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := RunningVersion(state, "1.0.0", now); got != "1.2.0" {
+		t.Fatalf("as the service reports it: %s", got)
 	}
 }

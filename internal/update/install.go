@@ -184,6 +184,24 @@ func (v *Versions) Launch(own string, now time.Time) string {
 	return ""
 }
 
+// RunningVersion is the version the service of stateDir runs: the one it
+// last wrote to its health file, else the verified version the installed
+// binary (version own) hands over to at start, else own.
+func RunningVersion(stateDir, own string, now time.Time) string {
+	if st, err := core.ReadHealthStatus(stateDir); err == nil && st.Version != "" {
+		return st.Version
+	}
+	v := &Versions{Dir: stateDir}
+	if path := v.Launch(own, now); path != "" {
+		for _, f := range []string{"current.json", "previous.json"} {
+			if p, err := readPointer(v.file(f)); err == nil && p.Path == path {
+				return p.Version
+			}
+		}
+	}
+	return own
+}
+
 // LaunchedEnv is set on a version started by the installed binary, so it
 // does not hand over again. InstalledEnv carries the installed binary's
 // path into it.
