@@ -154,8 +154,16 @@ func cmdSetPassword(args []string, stdout, stderr io.Writer, getenv func(string)
 		fmt.Fprintf(stderr, "set-password: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: %s (в Docker: docker compose restart).\n", restartHint(runtime.GOOS))
+	fmt.Fprintln(stdout, passwordSetHint(runtime.GOOS))
 	return 0
+}
+
+// passwordSetHint is what set-password prints after success. In Docker the
+// password reaches the container as its environment (compose env_file),
+// which a restart keeps: the container must be created again.
+func passwordSetHint(goos string) string {
+	return "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: " + restartHint(goos) +
+		". В Docker перезапуска мало — пересоздайте контейнер: docker compose up -d --force-recreate court-gateway"
 }
 
 func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {

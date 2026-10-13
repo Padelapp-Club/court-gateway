@@ -196,3 +196,27 @@ func TestLauncherClosesTheLogBeforeEveryStart(t *testing.T) {
 		t.Fatalf("log:\n%s", data)
 	}
 }
+
+// After set-password the Docker container must be created again: a
+// restart keeps its old environment, and with it the old password.
+func TestPasswordHintRecreatesTheDockerContainer(t *testing.T) {
+	h := passwordSetHint("linux")
+	if !strings.Contains(h, "docker compose up -d --force-recreate court-gateway") || strings.Contains(h, "compose restart") ||
+		!strings.Contains(h, "systemctl restart court-gateway") {
+		t.Fatalf("hint: %s", h)
+	}
+}
+
+// setup asks for the CRM login and the join code only: clubs, courts and
+// hours come from the hub.
+func TestUsageOfSetup(t *testing.T) {
+	for _, line := range strings.Split(usage, "\n") {
+		if strings.HasPrefix(line, "  setup ") {
+			if !strings.Contains(line, "код подключения") || strings.Contains(line, "корты") || strings.Contains(line, "часы") {
+				t.Fatalf("usage: %s", line)
+			}
+			return
+		}
+	}
+	t.Fatal("usage has no setup line")
+}
