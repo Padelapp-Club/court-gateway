@@ -214,17 +214,21 @@ func TestCloudInitStopsOnChecksumMismatchAndForgetsSecrets(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w := newInstallWorld(t, "court-gateway-9.9.9-linux-amd64", c.right)
-			root, cloud, opt := filepath.Join(w.dir, "root"), filepath.Join(w.dir, "cloud"), filepath.Join(w.dir, "opt")
-			for _, d := range []string{root, cloud} {
+			root, cloud, run, opt := filepath.Join(w.dir, "root"), filepath.Join(w.dir, "cloud"), filepath.Join(w.dir, "run"), filepath.Join(w.dir, "opt")
+			for _, d := range []string{root, cloud, run} {
 				_ = os.MkdirAll(d, 0o755)
 			}
-			userData := []string{"user-data.txt", "user-data.txt.i", "cloud-config.txt", "obj.pkl"}
+			userData := []string{"user-data.txt", "user-data.txt.i", "cloud-config.txt", "obj.pkl",
+				filepath.Join(run, "combined-cloud-config.json"), filepath.Join(run, "instance-data-sensitive.json")}
 			for _, f := range userData {
-				_ = os.WriteFile(filepath.Join(cloud, f), []byte("user data"), 0o600)
+				if !filepath.IsAbs(f) {
+					f = filepath.Join(cloud, f)
+				}
+				_ = os.WriteFile(f, []byte("user data"), 0o600)
 			}
 			secrets := filepath.Join(root, "court-gateway-setup.env")
 			_ = os.WriteFile(secrets, []byte(c.secrets), 0o600)
-			script := strings.NewReplacer("/opt/court-gateway", opt, "/root/", root+"/", "/var/lib/cloud/instance", cloud).Replace(doc.RunCmd[0][2])
+			script := strings.NewReplacer("/opt/court-gateway", opt, "/root/", root+"/", "/var/lib/cloud/instance", cloud, "/run/cloud-init", run).Replace(doc.RunCmd[0][2])
 			rc, out := w.run(t, "sh", w.dir, script)
 			if rc != c.wantRC || w.ran() != strings.ReplaceAll(c.wantRan, "DIR", opt) {
 				t.Fatalf("exit %d, program ran %q\n%s", rc, w.ran(), out)

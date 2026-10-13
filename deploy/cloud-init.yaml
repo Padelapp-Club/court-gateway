@@ -11,8 +11,9 @@
 #     sudo /opt/court-gateway/court-gateway install-service -config /opt/court-gateway/gateway.yaml --run-as court-gateway
 #
 # Почему не вписывать пароль сюда: облако хранит этот текст в настройках ВМ, и любая программа
-# на ВМ может прочитать его через сервис метаданных облака всё время жизни машины. Файлы на
-# диске скрипт удаляет, но копию в облаке и в сервисе метаданных удалить нельзя.
+# на ВМ может прочитать его через сервис метаданных облака всё время жизни машины. Скрипт удаляет
+# известные ему копии на диске (в /var/lib/cloud/instance и /run/cloud-init), но cloud-init может
+# записать их снова, например при перезагрузке, а копию в облаке удалить нельзя.
 #
 # Итог установки: /root/court-gateway-setup.json и /root/court-gateway-doctor.txt.
 write_files:
@@ -41,6 +42,7 @@ runcmd:
         for f in user-data.txt user-data.txt.i cloud-config.txt obj.pkl; do
           rm -f "/var/lib/cloud/instance/$f"
         done
+        rm -f /run/cloud-init/combined-cloud-config.json /run/cloud-init/instance-data-sensitive.json
       }
       trap forget EXIT
       ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
