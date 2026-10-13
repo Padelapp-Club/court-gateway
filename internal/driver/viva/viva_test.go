@@ -706,8 +706,7 @@ func TestCancelRefusedOnceTheBookingStarted(t *testing.T) {
 }
 
 // A quote across a midnight the clocks skip, end to end through the Viva
-// driver and the API, finishes (it used to loop forever) and charges the
-// one hour that passes.
+// driver and the API, finishes and charges the one hour that passes.
 func TestQuoteAcrossSkippedMidnight(t *testing.T) {
 	loc, err := time.LoadLocation("America/Santiago")
 	if err != nil {

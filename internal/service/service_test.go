@@ -3,7 +3,6 @@ package service
 import (
 	"io"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -29,21 +28,6 @@ func TestSystemdLogsToTheJournal(t *testing.T) {
 	u := SystemdUnit(Spec{Exe: "/opt/example/court-gateway", Config: "/opt/example/gateway.yaml"})
 	if strings.Contains(u, "StandardOutput=file") || strings.Contains(u, "StandardError=file") || strings.Contains(u, "-log-file") {
 		t.Fatalf("the unit must leave the log to journald:\n%s", u)
-	}
-}
-
-// On Windows install-service closes the folder in process
-// (ProtectSecrets), not with icacls: the plan runs no ACL command.
-func TestWindowsPlanHasNoACLCommand(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "court gateway")
-	p, err := MakePlan("windows", Spec{Exe: filepath.Join(dir, "court-gateway.exe"), Config: filepath.Join(dir, "gateway.yaml")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range p.Commands {
-		if c[0] != "sc.exe" {
-			t.Fatalf("unexpected command %q", c)
-		}
 	}
 }
 

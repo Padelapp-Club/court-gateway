@@ -46,14 +46,14 @@ type DiscoveredCourt struct {
 
 // PriceListInfo names a price list of a studio.
 type PriceListInfo struct {
-	ID   string
-	Name string
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // Notice is something the operator must look at in a draft.
 type Notice struct {
-	Code    string
-	Message string
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // Discovery is draft material for one club.

@@ -24,7 +24,6 @@ type Clubs struct {
 	// readyNoClubs answers readiness while no club is configured (the
 	// CRM login of the account); nil means ready.
 	readyNoClubs func(context.Context) error
-	clubTimeout  time.Duration
 	// gatewayAPI serves /gateway/ (the operator's requests).
 	gatewayAPI http.Handler
 }
@@ -56,7 +55,7 @@ func NewClubs(o ClubsOptions) *Clubs {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
-	c := &Clubs{log: o.Logger, readyNoClubs: o.ReadyNoClubs, clubTimeout: ReadyTimeout}
+	c := &Clubs{log: o.Logger, readyNoClubs: o.ReadyNoClubs}
 	c.cur.Store(&clubTable{byID: map[string]clubEntry{}})
 	return c
 }
@@ -107,7 +106,7 @@ func (c *Clubs) Ready(ctx context.Context) error {
 		if c.readyNoClubs == nil {
 			return nil
 		}
-		ctx, cancel := context.WithTimeout(ctx, c.clubTimeout)
+		ctx, cancel := context.WithTimeout(ctx, ReadyTimeout)
 		defer cancel()
 		return c.readyNoClubs(ctx)
 	}
@@ -119,7 +118,7 @@ func (c *Clubs) Ready(ctx context.Context) error {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			ctx, cancel := context.WithTimeout(ctx, c.clubTimeout)
+			ctx, cancel := context.WithTimeout(ctx, ReadyTimeout)
 			defer cancel()
 			srv := t.byID[id].srv
 			errs[i] = srv.drv.Ready(ctx)

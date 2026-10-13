@@ -48,7 +48,6 @@ var weekdays = map[string]int{
 	"MONDAY": 0, "TUESDAY": 1, "WEDNESDAY": 2, "THURSDAY": 3, "FRIDAY": 4, "SATURDAY": 5, "SUNDAY": 6,
 }
 
-// PriceTable implements driver.Driver.
 func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTable, error) {
 	c, ok := d.byCourt[courtID]
 	if !ok || c.priceList == "" {

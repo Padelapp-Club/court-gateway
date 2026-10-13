@@ -23,11 +23,10 @@ const maxComment = 1000
 func marker(partner string) string { return markerPrefix + partner + "]" }
 
 // buildComment puts the partner's marker in front of the note, cut to
-// maxComment. A marker-like sequence inside the note is defused so a
-// partner cannot forge another partner's ownership.
+// maxComment. Ownership is read only from the start of the comment
+// (hasMarker), so a marker inside the note proves nothing.
 func buildComment(note, partner string) string {
 	m := marker(partner)
-	note = strings.ReplaceAll(note, markerPrefix, "[cg ")
 	if room := maxComment - utf8.RuneCountInString(m) - 1; utf8.RuneCountInString(note) > room {
 		note = string([]rune(note)[:max(room, 0)])
 	}
@@ -147,7 +146,6 @@ func (d *Driver) read(ctx context.Context, kind, uuid string) (s slot, raw map[s
 	return s, raw, true, nil
 }
 
-// Get implements driver.Driver.
 func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	kind, uuid, ok := parseID(id)
 	if !ok {

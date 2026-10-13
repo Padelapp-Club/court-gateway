@@ -11,7 +11,6 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
-	"github.com/Padelapp-Club/court-gateway/internal/version"
 )
 
 // Installation states as the monitor sees them.
@@ -163,7 +162,7 @@ func cleanReason(ready bool, r string) string {
 
 func cleanVersion(v string) string {
 	v = strings.TrimSpace(v)
-	if version.Valid(v) || versionRe.MatchString(v) {
+	if versionRe.MatchString(v) {
 		return v
 	}
 	return ""
@@ -391,11 +390,7 @@ func (m *Monitor) Tick() {
 
 	if m.statusDir != "" {
 		o := statusOptions{version: m.version, latest: m.latest, offlineAfter: m.offlineAfter, readyFailures: m.readyFailures}
-		dropped, err := writeStatus(m.statusDir, now, o, views)
-		if len(dropped) > 0 {
-			m.log.Warn("status keys dropped: malformed or repeated", "keys", strings.Join(dropped, ","))
-		}
-		if err != nil {
+		if err := writeStatus(m.statusDir, now, o, views); err != nil {
 			m.log.Error("cannot write the status files", "dir", m.statusDir, "error", err)
 		}
 	}

@@ -105,7 +105,6 @@ func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Ti
 	return out, nil
 }
 
-// Occupancy implements driver.Driver.
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
 	rooms := map[string]string{}
 	for _, cid := range q.Courts {

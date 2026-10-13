@@ -12,6 +12,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
@@ -177,8 +178,8 @@ func TestDiscoveryReturnsDraft(t *testing.T) {
 			Enabled bool   `json:"enabled"`
 			Club    string `json:"club_id"`
 		} `json:"studios"`
-		Draft   *core.ClubSpec `json:"draft"`
-		Notices []core.Notice  `json:"notices"`
+		Draft   *core.ClubSpec  `json:"draft"`
+		Notices []driver.Notice `json:"notices"`
 	}
 	_ = json.Unmarshal(h.MustOperator(t, http.StatusOK, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{}), &resp)
 	if len(resp.Studios) != 2 || resp.Draft != nil || resp.Notices[0].Code != "STUDIO_REQUIRED" {

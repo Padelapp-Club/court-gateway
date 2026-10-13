@@ -413,21 +413,15 @@ type StudioDTO struct {
 	Club string `json:"club_id,omitempty"`
 }
 
-// PriceListDTO names a price list.
-type PriceListDTO struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
 // DiscoverResponse is the gateway's answer: the account's studios and, for
 // the asked studio, a draft club config (not saved anywhere).
 type DiscoverResponse struct {
-	Studios       []StudioDTO    `json:"studios"`
-	StudiosReason string         `json:"studios_reason,omitempty"`
-	Studio        string         `json:"studio,omitempty"`
-	Draft         *core.ClubSpec `json:"draft"`
-	PriceLists    []PriceListDTO `json:"price_lists"`
-	Notices       []core.Notice  `json:"notices"`
+	Studios       []StudioDTO            `json:"studios"`
+	StudiosReason string                 `json:"studios_reason,omitempty"`
+	Studio        string                 `json:"studio,omitempty"`
+	Draft         *core.ClubSpec         `json:"draft"`
+	PriceLists    []driver.PriceListInfo `json:"price_lists"`
+	Notices       []driver.Notice        `json:"notices"`
 }
 
 // DiscoverHandler serves tunnel.PathDiscover with the installation's CRM
@@ -469,22 +463,18 @@ func DiscoverHandler(acct driver.Account, clubs *core.Clubs, log *slog.Logger) h
 				}
 			}
 		}
-		out := DiscoverResponse{Studios: []StudioDTO{}, StudiosReason: d.StudiosReason, Studio: d.Studio, PriceLists: []PriceListDTO{}, Notices: []core.Notice{}}
+		out := DiscoverResponse{Studios: []StudioDTO{}, StudiosReason: d.StudiosReason, Studio: d.Studio,
+			PriceLists: append([]driver.PriceListInfo{}, d.PriceLists...), Notices: []driver.Notice{}}
 		for _, s := range d.Studios {
 			club := served[strings.ToLower(s.ID)]
 			out.Studios = append(out.Studios, StudioDTO{ID: s.ID, Name: s.Name, Enabled: club != "", Club: club})
-		}
-		for _, p := range d.PriceLists {
-			out.PriceLists = append(out.PriceLists, PriceListDTO{ID: p.ID, Name: p.Name})
 		}
 		if d.Studio != "" {
 			spec, notes := core.DraftClub(d, req.Timezone, req.SlotMinutes)
 			out.Draft = &spec
 			out.Notices = append(out.Notices, notes...)
 		} else {
-			for _, n := range d.Notices {
-				out.Notices = append(out.Notices, core.Notice{Code: n.Code, Message: n.Message})
-			}
+			out.Notices = append(out.Notices, d.Notices...)
 		}
 		core.WriteJSON(w, http.StatusOK, out)
 	})

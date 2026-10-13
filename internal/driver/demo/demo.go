@@ -24,7 +24,6 @@ type record struct {
 	end       time.Time
 	partner   string // empty for bookings made "by the club"
 	cancelled bool
-	paid      bool
 }
 
 // Driver is the demo driver.
@@ -154,7 +153,6 @@ func (d *Driver) Create(_ context.Context, req driver.CreateRequest) (driver.Boo
 	return driver.Booking{ID: id, Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
 }
 
-// Get implements driver.Driver.
 func (d *Driver) Get(_ context.Context, id string) (driver.Booking, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -169,7 +167,6 @@ func (d *Driver) Get(_ context.Context, id string) (driver.Booking, error) {
 	return driver.Booking{ID: id, Court: r.court, Start: r.start, End: r.end, Status: st}, nil
 }
 
-// Cancel implements driver.Driver.
 func (d *Driver) Cancel(_ context.Context, id, partner string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -187,7 +184,6 @@ func (d *Driver) Cancel(_ context.Context, id, partner string) error {
 	return nil
 }
 
-// MarkPaid implements driver.Driver.
 func (d *Driver) MarkPaid(_ context.Context, id, partner string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -198,6 +194,5 @@ func (d *Driver) MarkPaid(_ context.Context, id, partner string) error {
 	if r.partner == "" || r.partner != partner {
 		return driver.ErrNotOwned
 	}
-	r.paid = true
-	return nil
+	return nil // the demo CRM keeps no payment state
 }

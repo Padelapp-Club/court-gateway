@@ -21,21 +21,18 @@ import (
 //	status.json  {"ts":"…","ok":true|false,"version":"…","checks":[{"check":"<name>","ok":true|false,"detail":"<text>"}, …]}
 //	metrics      key=number lines
 //
-// A metric key matches [a-z][a-z0-9_]*, a value is a plain decimal number
-// with at most 15 digits, and no key repeats. The checker decides how and
-// where to alert; the hub only reports. Nothing secret is written: details
-// are built from the installation id and name, times, the gateway's version and
-// build and fixed reason codes.
+// A metric key matches [a-z][a-z0-9_]* and no key repeats: keys are built
+// by MetricKey from installation ids, which cannot collide, and values are
+// integers. The checker decides how and where to alert; the hub only
+// reports. Nothing secret is written: details are built from the
+// installation id and name, times, the gateway's version and build and
+// fixed reason codes.
 const (
 	StatusFile  = "status.json"
 	MetricsFile = "metrics"
 )
 
-var (
-	metricKeyRe   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	metricValueRe = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
-	keyBadChars   = regexp.MustCompile(`[^a-z0-9_]`)
-)
+var keyBadChars = regexp.MustCompile(`[^a-z0-9_]`)
 
 // MetricKey turns parts into a metric or check name: lower case, every
 // character outside [a-z0-9_] becomes "_". Installation ids hold only
@@ -61,28 +58,12 @@ type statusDoc struct {
 	Checks  []statusCheck `json:"checks"`
 }
 
-// metricSet collects metrics in order and keeps only well-formed,
-// first-seen keys.
-type metricSet struct {
-	lines   []string
-	seen    map[string]bool
-	dropped []string
-}
+// metricSet collects metric lines in order.
+type metricSet struct{ lines []string }
 
-func (s *metricSet) add(key string, value string) {
-	digits := strings.NewReplacer("-", "", ".", "").Replace(value)
-	if !metricKeyRe.MatchString(key) || !metricValueRe.MatchString(value) || len(digits) > 15 || s.seen[key] {
-		s.dropped = append(s.dropped, key)
-		return
-	}
-	if s.seen == nil {
-		s.seen = map[string]bool{}
-	}
-	s.seen[key] = true
-	s.lines = append(s.lines, key+"="+value)
+func (s *metricSet) addInt(key string, v int64) {
+	s.lines = append(s.lines, key+"="+strconv.FormatInt(v, 10))
 }
-
-func (s *metricSet) addInt(key string, v int64) { s.add(key, strconv.FormatInt(v, 10)) }
 
 func (s *metricSet) addBool(key string, v bool) {
 	if v {
@@ -100,16 +81,10 @@ func (s *metricSet) bytes() []byte {
 }
 
 // buildStatus renders both files' contents.
-func buildStatus(now time.Time, o statusOptions, views []installationView) ([]byte, []byte, []string) {
+func buildStatus(now time.Time, o statusOptions, views []installationView) ([]byte, []byte) {
 	doc := statusDoc{TS: now.UTC().Format(time.RFC3339), OK: true, Version: o.version, Checks: []statusCheck{}}
 	var ms metricSet
-	checkNames := map[string]bool{}
 	check := func(name string, ok bool, detail string) {
-		if checkNames[name] {
-			ms.dropped = append(ms.dropped, name)
-			return
-		}
-		checkNames[name] = true
 		doc.Checks = append(doc.Checks, statusCheck{Check: name, OK: ok, Detail: detail})
 		if !ok {
 			doc.OK = false
@@ -142,7 +117,7 @@ func buildStatus(now time.Time, o statusOptions, views []installationView) ([]by
 	ms.addBool("status_ok", doc.OK)
 	ms.addInt("run_last_utc_epoch", now.Unix())
 	data, _ := json.Marshal(doc)
-	return append(data, '\n'), ms.bytes(), ms.dropped
+	return append(data, '\n'), ms.bytes()
 }
 
 func onlineDetail(v installationView, now time.Time, offlineAfter time.Duration) string {
@@ -206,15 +181,14 @@ type statusOptions struct {
 	readyFailures int
 }
 
-// writeStatus writes both files into dir, each atomically. Malformed or
-// repeated keys are left out of the files and returned for the log.
-func writeStatus(dir string, now time.Time, o statusOptions, views []installationView) ([]string, error) {
-	status, metrics, dropped := buildStatus(now, o, views)
+// writeStatus writes both files into dir, each atomically.
+func writeStatus(dir string, now time.Time, o statusOptions, views []installationView) error {
+	status, metrics := buildStatus(now, o, views)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return dropped, err
+		return err
 	}
 	if err := core.WriteFileAtomic(filepath.Join(dir, MetricsFile), metrics, 0o644); err != nil {
-		return dropped, err
+		return err
 	}
-	return dropped, core.WriteFileAtomic(filepath.Join(dir, StatusFile), status, 0o644)
+	return core.WriteFileAtomic(filepath.Join(dir, StatusFile), status, 0o644)
 }

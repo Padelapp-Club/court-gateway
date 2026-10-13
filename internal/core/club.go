@@ -292,37 +292,28 @@ func ValidateClubSpec(c ClubSpec, crmKeys []string) error {
 
 // ---- drafts ----
 
-// Notice is something the operator must check in a draft.
-type Notice struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
 // DraftClub turns discovered CRM material into a club spec draft. It is a
 // draft: the id is left to the operator, the grid may be a default, and
 // every guess comes with a notice. When the CRM tells the time zone it is
 // the club's: an asked zone with another offset from UTC is replaced, with
 // a notice (the gateway would refuse such a club).
-func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []Notice) {
-	var notes []Notice
-	for _, n := range d.Notices {
-		notes = append(notes, Notice{Code: n.Code, Message: n.Message})
-	}
+func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []driver.Notice) {
+	notes := append([]driver.Notice(nil), d.Notices...)
 	switch {
 	case d.Timezone != "" && timezone != "" && !sameOffsetNow(timezone, d.Timezone):
-		notes = append(notes, Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s не подходит: CRM считает дни студии по %s — он и подставлен", timezone, d.Timezone)})
+		notes = append(notes, driver.Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s не подходит: CRM считает дни студии по %s — он и подставлен", timezone, d.Timezone)})
 		timezone = d.Timezone
 	case timezone != "":
 	case d.Timezone != "":
 		timezone = d.Timezone
-		notes = append(notes, Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s выведен из смещения студии от UTC — при желании замените на зону города с тем же смещением (например Europe/Moscow)", timezone)})
+		notes = append(notes, driver.Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s выведен из смещения студии от UTC — при желании замените на зону города с тем же смещением (например Europe/Moscow)", timezone)})
 	default:
 		timezone = "Europe/Moscow"
-		notes = append(notes, Notice{Code: "TIMEZONE_DEFAULTED", Message: "часовой пояс Europe/Moscow подставлен по умолчанию — проверьте"})
+		notes = append(notes, driver.Notice{Code: "TIMEZONE_DEFAULTED", Message: "часовой пояс Europe/Moscow подставлен по умолчанию — проверьте"})
 	}
 	if slot <= 0 {
 		slot = 30
-		notes = append(notes, Notice{Code: "SLOT_DEFAULTED", Message: "шаг сетки 30 мин подставлен по умолчанию — проверьте"})
+		notes = append(notes, driver.Notice{Code: "SLOT_DEFAULTED", Message: "шаг сетки 30 мин подставлен по умолчанию — проверьте"})
 	}
 	spec := ClubSpec{Name: d.ClubName, Timezone: timezone, SlotMinutes: slot, CRM: map[string]any{}}
 	for k, v := range d.CRM {
@@ -350,9 +341,9 @@ func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []Notic
 		for i := range hours {
 			hours[i] = &[2]int{7 * 60, 23 * 60}
 		}
-		notes = append(notes, Notice{Code: "HOURS_DEFAULTED", Message: "часы работы не удалось вывести: подставлено 07:00–23:00 ежедневно — проверьте"})
+		notes = append(notes, driver.Notice{Code: "HOURS_DEFAULTED", Message: "часы работы не удалось вывести: подставлено 07:00–23:00 ежедневно — проверьте"})
 	} else if roundHours(&hours, slot) {
-		notes = append(notes, Notice{Code: "HOURS_ROUNDED", Message: fmt.Sprintf("часы работы округлены до сетки %d мин — проверьте", slot)})
+		notes = append(notes, driver.Notice{Code: "HOURS_ROUNDED", Message: fmt.Sprintf("часы работы округлены до сетки %d мин — проверьте", slot)})
 	}
 	spec.Hours = HoursMap(hours)
 	return spec, notes

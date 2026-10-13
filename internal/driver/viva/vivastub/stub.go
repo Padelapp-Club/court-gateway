@@ -302,14 +302,6 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDelete(w, parts[0], parts[1])
 	case len(parts) == 1 && parts[0] == "studios" && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, s.studios())
-	case len(parts) == 2 && parts[0] == "studios" && r.Method == http.MethodGet:
-		for _, st := range s.studios() {
-			if st["id"] == parts[1] {
-				writeJSON(w, http.StatusOK, st)
-				return
-			}
-		}
-		notFound(w)
 	case len(parts) == 1 && parts[0] == "pricing" && r.Method == http.MethodGet:
 		s.handlePricingList(w, r)
 	case len(parts) == 2 && parts[0] == "pricing" && r.Method == http.MethodGet:

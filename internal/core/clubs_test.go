@@ -34,7 +34,6 @@ func (d slowDriver) Ready(ctx context.Context) error {
 func clubsOf(t *testing.T, drivers ...driver.Driver) *Clubs {
 	t.Helper()
 	c := NewClubs(ClubsOptions{})
-	c.clubTimeout = 200 * time.Millisecond
 	var servers []*Server
 	for i, d := range drivers {
 		servers = append(servers, NewServer(&Settings{ClubID: string(rune('a' + i))}, d, nil))
@@ -44,20 +43,26 @@ func clubsOf(t *testing.T, drivers ...driver.Driver) *Clubs {
 }
 
 // Readiness checks the clubs in parallel, each club within its own time
-// limit: twenty clubs that each take 100 ms are ready with a 200 ms limit
-// per club, although together they take half a second; a club that is
-// slower than its limit is not. The reported error is the first club's.
+// limit (ReadyTimeout): twenty-four clubs that each take a second are
+// ready, although four at a time they take six; a club that is slower
+// than its limit is not. The reported error is the first club's.
 func TestClubsReadyInParallel(t *testing.T) {
-	var ds []driver.Driver
-	for i := 0; i < 20; i++ {
-		ds = append(ds, slowDriver{delay: 100 * time.Millisecond})
-	}
-	if err := clubsOf(t, ds...).Ready(context.Background()); err != nil {
-		t.Fatalf("twenty clubs, each within its limit, are not ready: %v", err)
-	}
-	if err := clubsOf(t, slowDriver{}, slowDriver{delay: time.Second}).Ready(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a club slower than its limit: %v", err)
-	}
+	t.Run("each within its limit", func(t *testing.T) {
+		t.Parallel()
+		var ds []driver.Driver
+		for i := 0; i < 24; i++ {
+			ds = append(ds, slowDriver{delay: time.Second})
+		}
+		if err := clubsOf(t, ds...).Ready(context.Background()); err != nil {
+			t.Fatalf("clubs, each within its limit, are not ready: %v", err)
+		}
+	})
+	t.Run("one slower", func(t *testing.T) {
+		t.Parallel()
+		if err := clubsOf(t, slowDriver{}, slowDriver{delay: ReadyTimeout + time.Second}).Ready(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a club slower than its limit: %v", err)
+		}
+	})
 	first, second := errors.New("first"), errors.New("second")
 	if err := clubsOf(t, slowDriver{err: first, delay: 20 * time.Millisecond}, slowDriver{err: second}).Ready(context.Background()); err != first {
 		t.Fatalf("err = %v, want the first club's", err)
