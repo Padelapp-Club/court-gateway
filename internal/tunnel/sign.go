@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -122,8 +123,16 @@ func (rq *Request) Sign(key ed25519.PrivateKey, installation, registration strin
 }
 
 // Sign seals rc for a registration of an installation (the hub). The
-// clubs are signed as the bytes that are sent.
+// clubs are signed as the bytes that are sent: first written the way
+// encoding/json sends a raw message (compact, HTML-escaped).
 func (rc *RemoteConfig) Sign(key ed25519.PrivateKey, installation, registration string, now time.Time) {
+	for i, raw := range rc.Clubs {
+		var compact, escaped bytes.Buffer
+		if json.Compact(&compact, raw) == nil {
+			json.HTMLEscape(&escaped, compact.Bytes())
+			rc.Clubs[i] = escaped.Bytes()
+		}
+	}
 	rc.Seal = seal(installation, registration, now)
 	rc.Signature = ed25519.Sign(key, rc.Seal.message("config", rc.fields))
 }
