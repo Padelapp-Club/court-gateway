@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,5 +150,47 @@ func TestHandoverKeepsTheLogFile(t *testing.T) {
 	}
 	if got := strings.Join(serveArgs("gateway.yaml", ""), " "); got != "serve -config gateway.yaml" {
 		t.Fatalf("without a log file: %s", got)
+	}
+}
+
+// openTracker is a log file that knows whether this process holds it open.
+type openTracker struct {
+	*core.RotatingFile
+	open bool
+}
+
+func (f *openTracker) Write(p []byte) (int, error) { f.open = true; return f.RotatingFile.Write(p) }
+
+func (f *openTracker) Close() error { f.open = false; return f.RotatingFile.Close() }
+
+// While the version the installed binary started runs, the installed
+// binary holds no handle on the log file — every start, also after a
+// version exits to be restarted — so the version can rotate it (Windows
+// cannot rename a file another process keeps open). The log is opened
+// again for the lines after.
+func TestLauncherClosesTheLogBeforeEveryStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "court-gateway.log")
+	f := &openTracker{RotatingFile: &core.RotatingFile{Path: path, Max: 1 << 20}}
+	defer f.Close()
+	log := slog.New(slog.NewTextHandler(f, nil))
+	versions := []string{"v2", "v2", ""}
+	var started []string
+	start := func(_ context.Context, p string) (int, error) {
+		if f.open {
+			t.Fatalf("starting %s with the log file open", p)
+		}
+		started = append(started, p)
+		if len(started) == 1 {
+			return exitRestart, nil
+		}
+		return 0, nil
+	}
+	next := func() string { v := versions[0]; versions = versions[1:]; return v }
+	code, ran := launch(context.Background(), next, start, log, func() { _ = f.Close() })
+	if !ran || code != 0 || len(started) != 2 {
+		t.Fatalf("ran=%v code=%d started=%v", ran, code, started)
+	}
+	if data, _ := os.ReadFile(path); strings.Count(string(data), "starting the newest verified version") != 2 {
+		t.Fatalf("log:\n%s", data)
 	}
 }

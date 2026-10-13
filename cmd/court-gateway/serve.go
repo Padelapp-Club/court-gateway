@@ -68,10 +68,11 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		return 2
 	}
 	var out io.Writer = stderr
+	closeLog := func() {}
 	if logFile != "" {
 		rf := &core.RotatingFile{Path: logFile, Max: 10 << 20}
 		defer rf.Close()
-		out = rf
+		out, closeLog = rf, func() { _ = rf.Close() }
 	}
 	log := core.NewLogger(out, slog.LevelInfo, s.Secrets)
 
@@ -81,20 +82,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	installed := update.InstalledPath()
 	vers := &update.Versions{Dir: s.StateDir}
 	if os.Getenv(update.LaunchedEnv) == "" {
-		for range maxHandovers {
-			next := vers.Next(version, time.Now(), log)
-			if next == "" {
-				break
-			}
-			log.Info("starting the newest verified version", "path", next)
-			code, err := update.Handover(ctx, next, serveArgs(cfgPath, logFile), update.LaunchEnv(installed))
-			if err != nil {
-				log.Error("could not start it, running the installed binary", "error", err)
-				break
-			}
-			if code != exitRestart || ctx.Err() != nil {
-				return code
-			}
+		next := func() string { return vers.Next(version, time.Now(), log) }
+		start := func(ctx context.Context, path string) (int, error) {
+			return update.Handover(ctx, path, serveArgs(cfgPath, logFile), update.LaunchEnv(installed))
+		}
+		if code, ran := launch(ctx, next, start, log, closeLog); ran {
+			return code
 		}
 	}
 	canUpdate := vers.Writable()
@@ -258,6 +251,31 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		return exitRestart
 	}
 	return 0
+}
+
+// launch runs the newest verified version (next) with start until it
+// exits other than to be restarted; ran is false when this binary runs
+// itself. The log file is closed before every start: while the version
+// runs, this process holds no handle on it, which on Windows would stop
+// the version from rotating it. A later log line opens it again.
+func launch(ctx context.Context, next func() string, start func(context.Context, string) (int, error), log *slog.Logger, closeLog func()) (code int, ran bool) {
+	for range maxHandovers {
+		path := next()
+		if path == "" {
+			break
+		}
+		log.Info("starting the newest verified version", "path", path)
+		closeLog()
+		code, err := start(ctx, path)
+		if err != nil {
+			log.Error("could not start it, running the installed binary", "error", err)
+			break
+		}
+		if code != exitRestart || ctx.Err() != nil {
+			return code, true
+		}
+	}
+	return 0, false
 }
 
 // serveArgs are the arguments of a version the installed binary hands
