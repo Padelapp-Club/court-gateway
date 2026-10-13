@@ -81,6 +81,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 		return invalid("malformed price list")
 	}
 	var t driver.PriceTable
+	var defaults []driver.PriceRule // NONE: only where no TIME rule applies
 	for _, b := range p.BasePrices {
 		if b.Condition == nil {
 			return invalid("base price without condition")
@@ -91,7 +92,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 		}
 		switch b.Condition.Type {
 		case "NONE":
-			t.Base = append(t.Base, driver.PriceRule{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: v})
+			defaults = append(defaults, driver.PriceRule{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: v})
 		case "TIME":
 			spans, ok := timeSpans(b.Condition)
 			if !ok {
@@ -106,6 +107,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 			return invalid("unsupported base price condition " + strconv.Quote(b.Condition.Type))
 		}
 	}
+	t.Base = append(t.Base, defaults...) // the core takes the first rule that covers a minute
 	if p.PriceImpacts != nil {
 		for _, im := range p.PriceImpacts.Time {
 			if im.ImpactType != "FIXED" {

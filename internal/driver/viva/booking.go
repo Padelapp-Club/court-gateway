@@ -6,29 +6,38 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-// markerPrefix starts the ownership marker appended to the comment of every
-// record the gateway creates: "[cg:<partner>]".
+// markerPrefix starts the ownership marker that begins the comment of
+// every record the gateway creates: "[cg:<partner>] <note>".
 const markerPrefix = "[cg:"
+
+// maxComment caps a comment, marker included, in characters: well within
+// what the CRM keeps, so the marker is never cut off.
+const maxComment = 1000
 
 func marker(partner string) string { return markerPrefix + partner + "]" }
 
-// buildComment appends the partner's marker to the note. A marker-like
-// sequence inside the note is defused so a partner cannot forge another
-// partner's ownership.
+// buildComment puts the partner's marker in front of the note, cut to
+// maxComment. A marker-like sequence inside the note is defused so a
+// partner cannot forge another partner's ownership.
 func buildComment(note, partner string) string {
+	m := marker(partner)
 	note = strings.ReplaceAll(note, markerPrefix, "[cg ")
-	if note == "" {
-		return marker(partner)
+	if room := maxComment - utf8.RuneCountInString(m) - 1; utf8.RuneCountInString(note) > room {
+		note = string([]rune(note)[:max(room, 0)])
 	}
-	return note + " " + marker(partner)
+	if note == "" {
+		return m
+	}
+	return m + " " + note
 }
 
 func hasMarker(text, partner string) bool {
-	return strings.HasSuffix(strings.TrimSpace(text), marker(partner))
+	return strings.HasPrefix(strings.TrimSpace(text), marker(partner))
 }
 
 // parseID splits "e-<uuid>" / "b-<uuid>".
@@ -180,8 +189,9 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 
 // Cancel implements driver.Driver. The record is read first, and the
 // gateway cancels it only when it can see that the record is the
-// caller's: its comment, as read back, must end with the caller's marker
-// ("[cg:<partner>]", written by Create). Anything else is refused
+// caller's: its comment, as read back, must start with the caller's
+// marker ("[cg:<partner>]", written by Create), and only before it starts
+// (ErrStarted). Anything else is refused
 // (NOT_OWNED) — a comment without the marker or with another partner's,
 // a record read without a comment, an exercise with a client booking or
 // clients. The break title is never evidence: it is one text for every
@@ -214,6 +224,11 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	}
 	if err := d.checkOwnership(kind, raw, partner); err != nil {
 		return err
+	}
+	if start, ok := parseTime(s.TimeFrom); !ok {
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no valid timeFrom", nil)
+	} else if !start.After(d.now()) {
+		return driver.ErrStarted
 	}
 	status, _, err := d.c.do(ctx, http.MethodDelete, "/"+kind+"/"+uuid, nil, nil)
 	if err != nil {

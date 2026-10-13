@@ -2,8 +2,10 @@ package viva
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
@@ -65,15 +67,43 @@ func TestBuildCommentAndMarker(t *testing.T) {
 	if got := buildComment("", "booker"); got != "[cg:booker]" {
 		t.Fatalf("empty note: %q", got)
 	}
-	if got := buildComment("Ivan, racket rental", "booker"); got != "Ivan, racket rental [cg:booker]" {
+	if got := buildComment("Ivan, racket rental", "booker"); got != "[cg:booker] Ivan, racket rental" {
 		t.Fatalf("note: %q", got)
 	}
-	forged := buildComment("pay later [cg:other]", "booker")
+	forged := buildComment("[cg:other] pay later", "booker")
 	if hasMarker(forged, "other") || !hasMarker(forged, "booker") {
 		t.Fatalf("forged marker survived: %q", forged)
 	}
-	if hasMarker("[cg:booker] then edited by the club", "booker") {
-		t.Fatal("marker must be the suffix")
+	if hasMarker("edited by the club [cg:booker]", "booker") {
+		t.Fatal("marker must lead the comment")
+	}
+	long := buildComment(strings.Repeat("я", 2*maxComment), "booker")
+	if n := utf8.RuneCountInString(long); n != maxComment || !hasMarker(long, "booker") {
+		t.Fatalf("long note: %d characters, marker kept %v", n, hasMarker(long, "booker"))
+	}
+}
+
+// A TIME base price wins over the NONE (default) one wherever it applies,
+// whichever comes first in the price list.
+func TestTimePriceWinsOverTheDefault(t *testing.T) {
+	timeRule := `{"condition": {"type": "TIME", "days": ` + week + `, "timeStart": "18:00:00", "timeEnd": "22:00:00"}, "valueFrom": 3000}`
+	noneRule := `{"condition": {"type": "NONE"}, "valueFrom": 1500}`
+	for name, rules := range map[string]string{"default first": noneRule + "," + timeRule, "default last": timeRule + "," + noneRule} {
+		tb, err := parsePricing([]byte(`{"basePrices": [` + rules + `]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := func(minute int) int64 { // the first rule that covers it, as the core prices
+			for _, r := range tb.Base {
+				if r.Days.Has(0) && r.From <= minute && minute < r.To {
+					return r.PerHour
+				}
+			}
+			return -1
+		}
+		if at(19*60) != 300000 || at(10*60) != 150000 {
+			t.Fatalf("%s: 19:00 at %d, 10:00 at %d", name, at(19*60), at(10*60))
+		}
 	}
 }
 

@@ -363,7 +363,7 @@ func TestCreatePayloads(t *testing.T) {
 		t.Fatalf("game with a service must be an exercise: %s", id)
 	}
 	rec := f.stub.Exercise(strings.TrimPrefix(id, "e-"))
-	if rec["comment"] != "Ivan [cg:booker]" || rec["maxClientsCount"] != float64(1) || rec["timeFrom"] != start.UTC().Format("2006-01-02T15:04:05.000Z") {
+	if rec["comment"] != "[cg:booker] Ivan" || rec["maxClientsCount"] != float64(1) || rec["timeFrom"] != start.UTC().Format("2006-01-02T15:04:05.000Z") {
 		t.Fatalf("stored exercise: %v", rec)
 	}
 	if typ := rec["type"].(map[string]any)["id"]; typ != float64(3) {
@@ -434,14 +434,14 @@ func TestCancelOwnershipRules(t *testing.T) {
 		omitCmt bool
 		want    error
 	}{
-		{"club booking with client record", "e-" + seedEx(map[string]any{"masterServiceBooking": map[string]any{"client": map[string]any{}}, "comment": "x [cg:booker]"}), false, driver.ErrNotOwned},
+		{"club booking with client record", "e-" + seedEx(map[string]any{"masterServiceBooking": map[string]any{"client": map[string]any{}}, "comment": "[cg:booker] x"}), false, driver.ErrNotOwned},
 		{"exercise with clients", "e-" + seedEx(map[string]any{"clientsCount": 2, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
 		{"comment without marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "club note"}), false, driver.ErrNotOwned},
 		{"null comment", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": nil}), false, driver.ErrNotOwned},
 		{"another partner's marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:other]"}), false, driver.ErrNotOwned},
 		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
-		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), false, nil},
-		{"exercise read without comment: refused", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "note [cg:booker]"}), true, driver.ErrNotOwned},
+		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:booker] note"}), false, nil},
+		{"exercise read without comment: refused", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:booker] note"}), true, driver.ErrNotOwned},
 		{"own break", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:booker]"}), false, nil},
 		{"club break, other comment", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "repairs"}), false, driver.ErrNotOwned},
 		{"another partner's break with the gateway title", "b-" + seedBr(map[string]any{"title": viva.DefaultBreakTitle, "comment": "[cg:other]"}), false, driver.ErrNotOwned},
@@ -659,5 +659,26 @@ func TestConcurrentCreatesOfOneRoom(t *testing.T) {
 	}
 	if posts != 1 || codes[0]+codes[1] != http.StatusCreated+http.StatusConflict {
 		t.Fatalf("creates sent to the CRM: %d, answers %v; want exactly one create, 201 and 409", posts, codes)
+	}
+}
+
+// A booking that has started is not cancelled, with its own code; the
+// record stays in the CRM.
+func TestCancelRefusedOnceTheBookingStarted(t *testing.T) {
+	start := futureDay().Add(9 * time.Hour)
+	clk := &clock{t: start.Add(-24 * time.Hour)}
+	f := newFixture(t, fixtureOpts{now: clk.now})
+	st, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, createBody(start, "game", ""))
+	if st != http.StatusCreated {
+		t.Fatalf("%d %s", st, raw)
+	}
+	id := m["id"].(string)
+	clk.add(24 * time.Hour) // the start itself
+	st, m, raw = call(t, f, http.MethodDelete, "/v1/clubs/test-club/bookings/"+id, contract.BookKey, "")
+	if st != http.StatusConflict || m["code"] != "BOOKING_STARTED" {
+		t.Fatalf("%d %s", st, raw)
+	}
+	if br := f.stub.Break(strings.TrimPrefix(id, "b-")); br == nil || br["canceled"] == true {
+		t.Fatalf("the started booking was cancelled: %v", br)
 	}
 }

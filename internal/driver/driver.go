@@ -26,9 +26,8 @@ var (
 	ErrSlotUnavailable = errors.New("slot is unavailable")
 	// ErrNotFound: no such booking/court/price list.
 	ErrNotFound = errors.New("not found")
-	// ErrUpstream: the CRM failed or answered something unusable. Use
-	// *UpstreamError to say how exactly.
-	ErrUpstream = errors.New("upstream CRM error")
+	// ErrStarted: the booking has already started; it is not cancelled.
+	ErrStarted = errors.New("booking has already started")
 )
 
 // MisconfigError says, in Russian, what in a club's config does not match
@@ -69,9 +68,6 @@ func (e *UpstreamError) Error() string {
 	}
 	return "upstream: " + e.Detail
 }
-
-// Is makes errors.Is(err, ErrUpstream) true for every UpstreamError.
-func (e *UpstreamError) Is(target error) bool { return target == ErrUpstream }
 
 // Unwrap exposes the cause.
 func (e *UpstreamError) Unwrap() error { return e.Err }
@@ -161,8 +157,9 @@ type Driver interface {
 	Create(ctx context.Context, req CreateRequest) (Booking, error)
 	// Get reads one booking by id.
 	Get(ctx context.Context, id string) (Booking, error)
-	// Cancel cancels a booking created through the gateway by partner.
-	// A booking that is already gone is not an error.
+	// Cancel cancels a booking created through the gateway by partner,
+	// before it starts (ErrStarted after). A booking that is already gone
+	// is not an error.
 	Cancel(ctx context.Context, id string, partner string) error
 	// MarkPaid marks a booking as paid (ErrNotSupported if unsupported).
 	MarkPaid(ctx context.Context, id string, partner string) error

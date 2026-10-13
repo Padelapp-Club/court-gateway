@@ -34,6 +34,7 @@ type Driver struct {
 	studio   string
 	records  map[string]*record
 	readyErr error
+	now      func() time.Time
 }
 
 var _ driver.Driver = (*Driver)(nil)
@@ -57,7 +58,10 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	} else if st != "" && studioByID(st) == nil {
 		errs = append(errs, fmt.Sprintf("crm.studio: «%s» — в учебной CRM есть студии %s", st, studioIDs()))
 	}
-	d := &Driver{courts: map[string]bool{}, studio: st, records: map[string]*record{}}
+	d := &Driver{courts: map[string]bool{}, studio: st, records: map[string]*record{}, now: cfg.Now}
+	if d.now == nil {
+		d.now = time.Now
+	}
 	for i, c := range cfg.Courts {
 		if err := c.Params.RejectUnknown(fmt.Sprintf("courts[%d]", i)); err != nil {
 			errs = append(errs, err.Error())
@@ -193,6 +197,9 @@ func (d *Driver) Cancel(_ context.Context, id, partner string) error {
 	}
 	if r.partner == "" || r.partner != partner {
 		return driver.ErrNotOwned
+	}
+	if !r.start.After(d.now()) {
+		return driver.ErrStarted
 	}
 	r.cancelled = true
 	return nil
