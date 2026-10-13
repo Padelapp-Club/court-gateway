@@ -101,7 +101,7 @@ func TestBookingAcrossUTCMidnightIsSeen(t *testing.T) {
 	clock := func() time.Time { return day.Add(10 * time.Minute) }
 	f := newFixture(t, fixtureOpts{now: clock})
 	id := f.seedClubBooking(room1, day.Add(-time.Hour), day.Add(2*time.Hour)) // 02:00-05:00 local
-	from, to := day.Add(90*time.Minute), day.Add(150*time.Minute) // 04:30-05:30 local
+	from, to := day.Add(90*time.Minute), day.Add(150*time.Minute)             // 04:30-05:30 local
 	st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to), contract.ReadKey, "")
 	if st != http.StatusOK || !strings.Contains(raw, "e-"+id) || m["complete"] != true {
 		t.Fatalf("occupancy: %d %s", st, raw)
