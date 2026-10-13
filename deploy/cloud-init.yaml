@@ -9,6 +9,8 @@
 #
 # Через 2–3 минуты после старта ВМ шлюз появится «на связи» у нас в хабе.
 # Итог установки: /root/court-gateway-setup.json и /root/court-gateway-doctor.txt.
+# Если setup не удался (неверный пароль, код подключения), служба не устанавливается:
+# причина — в /root/court-gateway-setup.json; исправьте и выполните setup по SSH.
 #
 # Важно: облако хранит этот текст в настройках ВМ. После установки шлюз забирает пароль
 # в свой файл .env, а этот текст на диске ВМ удаляется. Если не хотите передавать пароль
@@ -50,9 +52,15 @@ runcmd:
       rm -f "$FILE"
       # one-time setup: CRM login check, join code -> gateway.yaml and .env (0600)
       set -a; . /root/court-gateway-setup.env; set +a
-      ./court-gateway setup --non-interactive --json --config "$DIR/gateway.yaml" > /root/court-gateway-setup.json || true
+      rc=0
+      ./court-gateway setup --non-interactive --json --config "$DIR/gateway.yaml" > /root/court-gateway-setup.json || rc=$?
       shred -u /root/court-gateway-setup.env 2>/dev/null || rm -f /root/court-gateway-setup.env
       rm -f /var/lib/cloud/instance/user-data.txt /var/lib/cloud/instance/user-data.txt.i
+      if [ "$rc" -ne 0 ]; then
+        # no service without a working config: the reason is in the JSON
+        echo "court-gateway: setup не удался (код $rc), служба не установлена — см. /root/court-gateway-setup.json" >&2
+        exit 1
+      fi
       chown -R court-gateway:court-gateway "$DIR"
       ./court-gateway install-service -config "$DIR/gateway.yaml" --run-as court-gateway
       sleep 30
