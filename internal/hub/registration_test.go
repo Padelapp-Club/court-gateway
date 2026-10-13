@@ -132,9 +132,20 @@ func TestRetiredBetweenHandoffAndPickup(t *testing.T) {
 	if rq := <-polled; rq != nil {
 		t.Fatalf("a retired registration's poll took %+v", rq)
 	}
-	// a poll of the retired generation arriving late gets nothing either
-	if rq := b.Poll(context.Background(), "inst", 1, hub.ConnMeta{}); rq != nil {
-		t.Fatalf("late poll of a retired generation: %+v", rq)
+	// a poll of the retired generation arriving late ends at once and does
+	// not make the installation look connected
+	late := make(chan *tunnel.Request, 1)
+	go func() { late <- b.Poll(context.Background(), "inst", 1, hub.ConnMeta{}) }()
+	select {
+	case rq := <-late:
+		if rq != nil {
+			t.Fatalf("late poll of a retired generation: %+v", rq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a late poll of a retired generation stays open")
+	}
+	if b.Connected("inst") {
+		t.Fatal("a retired generation shows the installation connected")
 	}
 }
 
