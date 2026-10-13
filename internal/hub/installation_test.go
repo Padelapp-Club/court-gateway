@@ -51,13 +51,14 @@ func TestInstallationServesClubsFromHub(t *testing.T) {
 	h := startOperatorHub(t, hub.Options{})
 	in := demoInstallation(t, h, "net-1", demoClub("club-north", "demo-north", "Корт 1", "Корт 2"), demoClub("club-south", "demo-south", "Корт A"))
 
-	// both clubs, concurrently
+	// both clubs, concurrently (two partners: one partner keeps a poll
+	// of the two-poll test gateway free)
 	var wg sync.WaitGroup
-	for _, club := range []string{"club-north", "club-south"} {
+	for club, key := range map[string]string{"club-north": contract.ReadKey, "club-south": contract.BookKey} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := call(t, h, http.MethodGet, "/v1/clubs/"+club+"/courts", contract.ReadKey, "")
+			r := call(t, h, http.MethodGet, "/v1/clubs/"+club+"/courts", key, "")
 			if r.status != http.StatusOK || !strings.Contains(string(r.body), "court-1") {
 				t.Errorf("%s: %d %s", club, r.status, r.body)
 			}
