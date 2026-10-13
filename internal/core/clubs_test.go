@@ -83,3 +83,26 @@ func TestGetOfABookingOnAnUnknownCourt(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }
+
+// euroDriver prices every hour at 10.00 in euros.
+type euroDriver struct{ slowDriver }
+
+func (euroDriver) Capabilities() driver.Capabilities { return driver.Capabilities{Currency: "EUR"} }
+
+func (euroDriver) PriceTable(context.Context, string) (driver.PriceTable, error) {
+	return driver.PriceTable{Base: []driver.PriceRule{{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: 1000}}}, nil
+}
+
+// The currency of prices and quotes is the driver's, not the core's.
+func TestCurrencyComesFromTheDriver(t *testing.T) {
+	srv := NewServer(&Settings{ClubID: "club-a", Location: time.UTC, SlotMinutes: 60, Courts: []Court{{ID: "court-1", Name: "C1"}}}, euroDriver{}, nil)
+	for _, path := range []string{"/prices?court=court-1&date=2030-01-07", "/quote?court=court-1&start=2030-01-07T10:00:00Z&end=2030-01-07T11:00:00Z"} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-a"+path, nil)
+		r = r.WithContext(auth.WithPartnerName(r.Context(), "reader"))
+		w := httptest.NewRecorder()
+		srv.APIHandler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"currency":"EUR"`) {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+	}
+}

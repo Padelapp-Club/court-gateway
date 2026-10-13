@@ -239,7 +239,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 		s.driverError(w, r, "prices", err)
 		return
 	}
-	out := pricesDTO{Court: court, Date: date.Format("2006-01-02"), Currency: "RUB", Periods: []periodDTO{}}
+	out := pricesDTO{Court: court, Date: date.Format("2006-01-02"), Currency: s.caps.Currency, Periods: []periodDTO{}}
 	for _, p := range dayPeriods(table, isoWeekday(date)) {
 		out.Periods = append(out.Periods, periodDTO{Start: formatClock(p.From), End: formatClock(p.To), PricePerHour: rubles(p.PerHour)})
 	}
@@ -275,7 +275,7 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusUnprocessableEntity, "PRICE_UNAVAILABLE", "no price is defined for part of the interval")
 		return
 	}
-	WriteJSON(w, http.StatusOK, quoteDTO{Court: court, Start: s.ts(start), End: s.ts(end), Currency: "RUB", Total: total})
+	WriteJSON(w, http.StatusOK, quoteDTO{Court: court, Start: s.ts(start), End: s.ts(end), Currency: s.caps.Currency, Total: total})
 }
 
 // cleanNote drops control characters (except newlines and tabs) and trims.

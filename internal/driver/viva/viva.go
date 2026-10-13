@@ -268,5 +268,8 @@ func (d *Driver) CheckConfig(ctx context.Context) error {
 	return nil
 }
 
-// Capabilities: VivaCRM has no payment mark the gateway can set.
-func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: false} }
+// Capabilities: VivaCRM has no payment mark the gateway can set; its
+// prices are in rubles.
+func (d *Driver) Capabilities() driver.Capabilities {
+	return driver.Capabilities{Payments: false, Currency: "RUB"}
+}

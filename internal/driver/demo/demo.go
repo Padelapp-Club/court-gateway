@@ -79,8 +79,10 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 // Studio implements driver.AccountClub.
 func (d *Driver) Studio() string { return d.studio }
 
-// Capabilities: the demo CRM supports payment marks.
-func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: true} }
+// Capabilities: the demo CRM supports payment marks; prices in rubles.
+func (d *Driver) Capabilities() driver.Capabilities {
+	return driver.Capabilities{Payments: true, Currency: "RUB"}
+}
 
 // Ready implements driver.Driver: the demo CRM is always reachable.
 func (d *Driver) Ready(context.Context) error { return nil }

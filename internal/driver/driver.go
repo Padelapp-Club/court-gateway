@@ -75,6 +75,9 @@ func Upstream(kind UpstreamKind, detail string) error {
 type Capabilities struct {
 	// Payments: the driver can mark a booking as paid.
 	Payments bool
+	// Currency is the ISO 4217 code of the CRM's prices (PriceTable
+	// amounts are its hundredths).
+	Currency string
 }
 
 // Kind of a booking requested by a partner.
