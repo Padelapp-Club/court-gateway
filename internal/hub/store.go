@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -276,6 +277,7 @@ var (
 	ErrUnknownClub         = errors.New("no such club")
 	ErrClubTaken           = errors.New("the club id is already served by another installation")
 	ErrStudioTaken         = errors.New("the club's CRM studio is already served by another installation")
+	ErrRoomTaken           = errors.New("a court's CRM room (viva_room) is already served by another club")
 	ErrNotRegistered       = errors.New("no gateway is registered for this installation")
 	// ErrStateUnavailable: the state directory cannot be read right now;
 	// nothing is forgotten because of it.
@@ -628,12 +630,15 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	if other, taken := s.clubs[spec.ID]; taken && other != installation {
 		return false, 0, ErrClubTaken
 	}
-	if studio := clubStudio(spec); studio != "" {
-		for id, other := range s.installs {
-			for _, c := range other.Clubs {
-				if id != installation && clubStudio(c) == studio {
-					return false, 0, ErrStudioTaken
-				}
+	studio, rooms := clubStudio(spec), clubRooms(spec)
+	for id, other := range s.installs {
+		for cid, c := range other.Clubs {
+			switch {
+			case id == installation && cid == spec.ID: // the club it replaces
+			case id != installation && studio != "" && clubStudio(c) == studio:
+				return false, 0, ErrStudioTaken
+			case slices.ContainsFunc(clubRooms(c), func(r string) bool { return slices.Contains(rooms, r) }):
+				return false, 0, ErrRoomTaken
 			}
 		}
 	}
@@ -653,6 +658,17 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 func clubStudio(c core.ClubSpec) string {
 	v, _ := c.CRM["studio"].(string)
 	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// clubRooms are the CRM rooms its courts book (viva_room), normalized.
+func clubRooms(c core.ClubSpec) []string {
+	var rooms []string
+	for _, ct := range c.Courts {
+		if v, _ := ct.Params["viva_room"].(string); strings.TrimSpace(v) != "" {
+			rooms = append(rooms, strings.ToLower(strings.TrimSpace(v)))
+		}
+	}
+	return rooms
 }
 
 // DeleteClub removes a club of an installation and returns the new

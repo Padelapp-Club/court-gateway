@@ -284,6 +284,13 @@ func TestOperatorAPIAuthAndValidation(t *testing.T) {
 	// one CRM studio, two installations: two gateways would serve it
 	bad(409, "STUDIO_TAKEN", http.MethodPut, "/hub/installations/x2/clubs/c2", demoClub("c2", "DEMO-NORTH", "Корт 1"))
 	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/x2/clubs/c2", demoClub("c2", "demo-south", "Корт 1"))
+	// one CRM room, two clubs (of one installation too): both would book it
+	withRoom := func(c core.ClubSpec, room string) core.ClubSpec {
+		c.Courts[0].Params = map[string]any{"viva_room": room}
+		return c
+	}
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/x2/clubs/c2", withRoom(demoClub("c2", "demo-south", "Корт 1"), "ROOM-1"))
+	bad(409, "ROOM_TAKEN", http.MethodPut, "/hub/installations/x2/clubs/c3", withRoom(demoClub("c3", "demo-east", "Корт 1"), "room-1"))
 	bad(404, "NOT_FOUND", http.MethodDelete, "/hub/installations/x1/clubs/c3", nil)
 	// the operator's view
 	dto := installation(t, h, "x1")

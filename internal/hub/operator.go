@@ -99,6 +99,8 @@ func (s *Server) storeError(w http.ResponseWriter, r *http.Request, err error) {
 		core.WriteError(w, r, http.StatusConflict, "CLUB_TAKEN", err.Error())
 	case errors.Is(err, ErrStudioTaken):
 		core.WriteError(w, r, http.StatusConflict, "STUDIO_TAKEN", err.Error())
+	case errors.Is(err, ErrRoomTaken):
+		core.WriteError(w, r, http.StatusConflict, "ROOM_TAKEN", err.Error())
 	default:
 		s.log.Error("operator request failed", "error", err)
 		core.WriteError(w, r, http.StatusInternalServerError, "INTERNAL", "internal error")
