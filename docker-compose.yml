@@ -2,14 +2,14 @@
 #   docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" <image> setup --config /config/gateway.yaml
 # then: docker compose up -d
 #
-# <image> is the published release image (signed binary, updates itself).
-# Until the first release there is none: build court-gateway:local from
-# this repository and use that — a self-build, which never updates itself.
+# <image> is court-gateway:local, built from this repository: a self-build,
+# which never updates itself. Once a release image is published, its digest
+# is in the signed SHA256SUMS: pin <registry>/court-gateway@sha256:<digest>.
 #
 # No ports are published: the gateway connects out to the hub.
 services:
   court-gateway:
-    image: registry.example.test/court-gateway:0.0.0   # the release image and version
+    image: court-gateway:local   # or <registry>/court-gateway@sha256:<digest>
     restart: unless-stopped
     env_file: .env
     volumes:

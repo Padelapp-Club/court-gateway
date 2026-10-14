@@ -128,17 +128,18 @@ sudo -u court-gateway /opt/court-gateway/court-gateway setup --config /opt/court
 
 ### Docker
 
+**Проверяемого образа выпуска пока нет**, поэтому Docker — это самосборка из исходников: такой образ
+**не обновляется сам**, и `setup` нужны адрес хаба и отпечаток его ключа. Когда образ выпуска
+появится, его дайджест будет в подписанном `SHA256SUMS`, и в `docker-compose.yml` вписывается
+`<реестр>/court-gateway@sha256:<дайджест>` оттуда, а не тег.
+
 ```sh
-# образ выпуска (подписанная программа, обновляется сама): впишите его адрес в docker-compose.yml
-docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" <реестр>/court-gateway:<версия> setup --config /config/gateway.yaml
+docker build -t court-gateway:local .
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" court-gateway:local setup --config /config/gateway.yaml \
+  --hub-url <адрес хаба> --hub-key-fingerprint <отпечаток>
 docker compose up -d
 docker ps                                  # через минуту статус контейнера — healthy
 ```
-
-**Пока первый выпуск не опубликован, образа выпуска нет.** До тех пор образ собирается из
-исходников (`docker build -t court-gateway:local .` и `image: court-gateway:local` в
-`docker-compose.yml`); такой образ — самосборка: он **не обновляется сам**, и адрес хаба и
-отпечаток его ключа `setup` нужно передать (`--hub-url`, `--hub-key-fingerprint`).
 
 Контейнер не публикует портов. В образе объявлена проверка здоровья
 (`/court-gateway healthcheck`): `healthy` — шлюз вошёл в CRM, подключился к хабу и его клубы приняты;
@@ -203,7 +204,7 @@ court-gateway 0.2.0 (release)
 `docker compose restart` оставил бы старый.
 
 ```sh
-docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" <реестр>/court-gateway:<версия> set-password --config /config/gateway.yaml
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/config" court-gateway:local set-password --config /config/gateway.yaml
 docker compose up -d --force-recreate court-gateway
 ```
 
