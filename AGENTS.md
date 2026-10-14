@@ -225,8 +225,10 @@ then, in the install folder:
 
 (Windows, PowerShell as Administrator: `.\court-gateway.exe set-password -config "$PWD\gateway.yaml"`.)
 It logs in to Viva with the new password first and replaces only `CRM_PASSWORD` in `.env`.
-**Expect:** `exit=0`; `CRM_AUTH_FAILED` means the password is wrong — ask again. Then restart the
-service with the command it prints, `unset CRM_PASSWORD`, and run step 5.
+**Expect:** `exit=0`; `CRM_AUTH_FAILED` means the password is wrong — ask again. The running
+service picks the new password up within a minute, no restart (in Docker: recreate the container
+as it prints). After a rejected password the service makes no CRM call at all until this is done.
+Then `unset CRM_PASSWORD` and run step 5.
 
 ## Uninstall
 

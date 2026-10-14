@@ -111,34 +111,6 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	return 0
 }
 
-// restartHint is how to restart the gateway installed here on goos, as
-// far as its service files show (exists; home: the user's home); every
-// known way when none is found. In Docker a restart keeps the container's
-// old environment, and with it the old password: it is created again.
-func restartHint(goos string, exists func(string) bool, home string) string {
-	const docker = "docker compose up -d --force-recreate court-gateway (в Docker перезапуска мало — контейнер пересоздают)"
-	systemd := "sudo systemctl restart " + service.Name
-	daemon := "sudo launchctl kickstart -k system/" + service.Name
-	agent := "launchctl kickstart -k gui/$(id -u)/" + service.Name
-	switch {
-	case exists("/.dockerenv"):
-		return docker
-	case goos == "windows":
-		return "Restart-Service " + service.Name + " (PowerShell от имени администратора)"
-	case goos == "linux" && exists(service.SystemdPath):
-		return systemd
-	case goos == "linux":
-		return systemd + "; в Docker: " + docker
-	case goos == "darwin" && exists(service.PlistPath(service.Spec{System: true})):
-		return daemon
-	case goos == "darwin" && exists(service.PlistPath(service.Spec{Home: home})):
-		return agent
-	case goos == "darwin":
-		return daemon + " (служба пользователя: " + agent + "); в Docker: " + docker
-	}
-	return "перезапустите службу"
-}
-
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // cmdSetPassword replaces the CRM password in .env after the CRM
@@ -174,14 +146,19 @@ func cmdSetPassword(args []string, stdout, stderr io.Writer, getenv func(string)
 		fmt.Fprintf(stderr, "set-password: %v\n", err)
 		return 1
 	}
-	home, _ := os.UserHomeDir()
-	fmt.Fprintln(stdout, passwordSetHint(runtime.GOOS, fileExists, home))
+	fmt.Fprintln(stdout, passwordSetHint(fileExists))
 	return 0
 }
 
-// passwordSetHint is what set-password prints after success.
-func passwordSetHint(goos string, exists func(string) bool, home string) string {
-	return "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: " + restartHint(goos, exists, home)
+// passwordSetHint is what set-password prints after success. The service
+// re-reads .env by itself; a container has the password in its
+// environment from its creation, and is created again.
+func passwordSetHint(exists func(string) bool) string {
+	const recreate = "docker compose up -d --force-recreate court-gateway"
+	if exists("/.dockerenv") {
+		return "Пароль CRM проверен и записан в .env. Пересоздайте контейнер шлюза: " + recreate + " (пароль попадает в контейнер при создании, перезапуска мало)"
+	}
+	return "Пароль CRM проверен и записан в .env. Служба шлюза подхватит его сама в течение минуты, перезапуск не нужен (шлюз в Docker: " + recreate + ")"
 }
 
 // embeddedHubKey is the hub key a release embeds, for its own hub only.

@@ -3,7 +3,6 @@ package viva_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -114,42 +113,69 @@ func TestManyClubsShareOneSession(t *testing.T) {
 	}
 }
 
-// A wrong password is tried once and then not again for ten minutes: every
-// call in between fails at once with the same error, so the gateway cannot
-// get the account locked by retrying.
-func TestWrongPasswordIsNotRetriedForTenMinutes(t *testing.T) {
+// A wrong password is tried once and then never again, however long the
+// gateway runs and however often it is asked: every call fails at once
+// with the same error (partners get UPSTREAM_AUTH, readiness
+// CRM_AUTH_FAILED), so the gateway cannot get the account locked. A new
+// password (set-password: the service re-reads .env) logs in again.
+func TestWrongPasswordStopsLoginsUntilItChanges(t *testing.T) {
 	stub := vivastub.New(stubUser, stubPass, studio)
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
 	clk := &clock{t: time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)}
-	a, err := viva.NewAccount(driver.Config{
+	acct, err := viva.NewAccount(driver.Config{
 		CRM:      driver.Params{"username": stubUser, "auth_url": srv.URL + "/token", "api_url": srv.URL + "/api/v1"},
 		Password: "wrong-password-0000", HTTPClient: srv.Client(), Now: clk.now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	perMinute := map[int]int{}
-	for i := 0; i < 60; i++ { // ten minutes, every ten seconds
-		before := stub.LoginAttempts()
-		var ue *driver.UpstreamError
-		if err := a.CheckLogin(context.Background()); !errors.As(err, &ue) || ue.Kind != driver.UpstreamAuth {
+	for i := 0; i < 180; i++ { // thirty minutes, every ten seconds
+		if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" {
 			t.Fatalf("call %d: %v", i, err)
 		}
-		perMinute[i/6] += stub.LoginAttempts() - before
 		clk.add(10 * time.Second)
 	}
-	for m, n := range perMinute {
-		if n > 1 {
-			t.Fatalf("%d login attempts in minute %d", n, m)
-		}
-	}
 	if n := stub.LoginAttempts(); n != 1 {
-		t.Fatalf("%d login attempts in ten minutes, want 1", n)
+		t.Fatalf("%d login attempts in thirty minutes, want 1", n)
 	}
-	_ = a.CheckLogin(context.Background())
-	if n := stub.LoginAttempts(); n != 2 {
-		t.Fatalf("no new attempt after ten minutes: %d", n)
+	acct.(driver.PasswordSetter).SetPassword(stubPass)
+	if err := acct.CheckLogin(context.Background()); err != nil || stub.LoginAttempts() != 2 {
+		t.Fatalf("after set-password: %v, %d attempts", err, stub.LoginAttempts())
+	}
+}
+
+// A login that fails for another reason (the CRM answers 503) is not
+// remembered: calls fail fast for a short wait, doubling with failures in
+// a row but never longer than a minute, and the first call after it logs
+// in to the recovered CRM.
+func TestUnavailableLoginIsTriedAgainWithinAMinute(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+	clk := &clock{t: time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)}
+	acct, err := viva.NewAccount(driver.Config{
+		CRM:      driver.Params{"username": stubUser, "auth_url": srv.URL + "/token", "api_url": srv.URL + "/api/v1"},
+		Password: stubPass, HTTPClient: srv.Client(), Now: clk.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 8 { // a long outage: eight failed logins in a row
+		stub.FailNext("POST", "/token", http.StatusServiceUnavailable, `{}`)
+	}
+	for i := range 8 {
+		before := stub.LoginAttempts()
+		if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_UNREACHABLE" {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+		if err := acct.CheckLogin(context.Background()); err == nil || stub.LoginAttempts() != before+1 {
+			t.Fatalf("failure %d: tried again at once (%v)", i, err)
+		}
+		clk.add(time.Minute)
+	}
+	if err := acct.CheckLogin(context.Background()); err != nil {
+		t.Fatalf("a minute after the last failure, the recovered CRM: %v", err)
 	}
 }
 

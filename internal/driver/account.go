@@ -19,6 +19,13 @@ type Account interface {
 	Discover(ctx context.Context, q DiscoverQuery) (Discovery, error)
 }
 
+// PasswordSetter is implemented by accounts that take a new CRM password
+// while running (the gateway re-reads .env after set-password): it ends a
+// stop after a rejected login.
+type PasswordSetter interface {
+	SetPassword(password string)
+}
+
 // AccountFactory builds an Account. Config carries CRM, Password, Logger,
 // HTTPClient and Now; Courts and Services are empty.
 type AccountFactory func(Config) (Account, error)

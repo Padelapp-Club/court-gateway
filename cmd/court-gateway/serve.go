@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -57,8 +58,8 @@ func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defau
 	return serve(ctx, *cfgPath, *logFile, stderr, getenv)
 }
 
-func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, getenv func(string) string) int {
-	getenv, err := core.EnvWithDotEnv(cfgPath, getenv)
+func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procEnv func(string) string) int {
+	getenv, err := core.EnvWithDotEnv(cfgPath, procEnv)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
 		return 2
@@ -155,7 +156,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		checked := false
 		sentConfig := int64(-1) // the applied config version the hub last heard of
 		lastSeen := time.Now()  // the hub, or the start
+		password := newPasswordWatch(cfgPath, procEnv, s.Driver.Account, log)
 		for {
+			password.check()
 			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate()}
 			if hs.connected {
 				lastSeen = time.Now()
@@ -313,6 +316,41 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
+}
+
+// passwordWatch re-reads the CRM password when .env changes (set-password
+// rewrites it), so a gateway that stopped calling the CRM after a rejected
+// login resumes without a restart.
+type passwordWatch struct {
+	cfgPath string
+	procEnv func(string) string
+	acct    driver.PasswordSetter
+	log     *slog.Logger
+	seen    os.FileInfo
+}
+
+func newPasswordWatch(cfgPath string, procEnv func(string) string, acct driver.Account, log *slog.Logger) *passwordWatch {
+	w := &passwordWatch{cfgPath: cfgPath, procEnv: procEnv, log: log}
+	w.acct, _ = acct.(driver.PasswordSetter)
+	w.seen, _ = os.Stat(filepath.Join(filepath.Dir(cfgPath), core.EnvFileName))
+	return w
+}
+
+func (w *passwordWatch) check() {
+	st, err := os.Stat(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName))
+	if w.acct == nil || err != nil || (w.seen != nil && st.ModTime().Equal(w.seen.ModTime()) && st.Size() == w.seen.Size()) {
+		return
+	}
+	w.seen = st
+	env, err := core.EnvWithDotEnv(w.cfgPath, w.procEnv)
+	if err != nil {
+		w.log.Warn("changed .env not read", "error", err)
+		return
+	}
+	if p := env(core.PasswordEnv); p != "" {
+		w.acct.SetPassword(p)
+		w.log.Info("CRM password re-read from .env: logging in to the CRM again")
+	}
 }
 
 // hubOfflineAfter is how long the hub may be unreachable before the

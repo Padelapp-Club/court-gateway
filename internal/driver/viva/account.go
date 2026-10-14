@@ -18,7 +18,10 @@ type Account struct {
 	c *client
 }
 
-var _ driver.Account = (*Account)(nil)
+var (
+	_ driver.Account        = (*Account)(nil)
+	_ driver.PasswordSetter = (*Account)(nil)
+)
 
 // NewAccount is the driver.AccountFactory for crm.type "viva". It reads
 // the installation-level keys only; crm.studio, when present, is ignored
@@ -35,6 +38,10 @@ func NewAccount(cfg driver.Config) (driver.Account, error) {
 	}
 	return &Account{c: c}, nil
 }
+
+// SetPassword implements driver.PasswordSetter for the account and every
+// club driver sharing its session.
+func (a *Account) SetPassword(p string) { a.c.setPassword(p) }
 
 // CheckLogin implements driver.Account: it logs in if needed and makes
 // one cheap call (GET /studios), so a cached token the CRM no longer

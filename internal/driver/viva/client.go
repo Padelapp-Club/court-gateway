@@ -21,12 +21,14 @@ const (
 	// tokenSafety is subtracted from the token lifetime so a token is
 	// never used in its last seconds.
 	tokenSafety = 30 * time.Second
-	// loginRetry: after a failed login the next attempt waits this long;
-	// until then every call fails fast with the same error.
-	loginRetry = time.Minute
-	// authFailureTTL: a rejected login (wrong password) is not retried for
-	// this long, so a wrong password cannot get the account locked.
-	authFailureTTL = 10 * time.Minute
+	// After a login that failed for another reason than the password (the
+	// CRM unreachable, 5xx, a timeout) the next attempt waits loginRetry,
+	// doubling with every failure in a row up to loginRetryMax; until then
+	// calls fail fast with that error. A rejected login (wrong password)
+	// is not tried again at all until the password changes (setPassword),
+	// so a wrong password cannot get the account locked.
+	loginRetry    = 5 * time.Second
+	loginRetryMax = time.Minute
 )
 
 // maxBody caps how much of an upstream response is read.
@@ -34,7 +36,7 @@ const maxBody = 8 << 20
 
 // client talks HTTP to VivaCRM. One client serves the installation's
 // account and all its clubs. It keeps only the access token (in memory,
-// until shortly before it expires) and the last login failure.
+// until shortly before it expires) and how its last login failed.
 type client struct {
 	authURL  string
 	apiURL   string
@@ -46,8 +48,10 @@ type client struct {
 	mu       sync.Mutex
 	token    string
 	expires  time.Time
-	loginErr error     // the last failed login
-	retryAt  time.Time // no login before this
+	rejected error     // the CRM rejected the password: no login until it changes
+	loginErr error     // the last failed login, another failure
+	failures int       // logins failed in a row, rejections aside
+	retryAt  time.Time // no login before this after loginErr
 }
 
 type tokenResponse struct {
@@ -55,28 +59,42 @@ type tokenResponse struct {
 	ExpiresIn   *float64 `json:"expires_in"`
 }
 
-// accessToken returns a cached token or logs in. A failed login is not
-// repeated before retryAt: the error is returned at once instead.
+// accessToken returns a cached token or logs in. After a rejected login
+// it never logs in again (until setPassword); after another failure not
+// before retryAt. Either way the error is returned at once instead.
 func (c *client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	if c.token != "" && now.Before(c.expires) {
+	switch {
+	case c.token != "" && now.Before(c.expires):
 		return c.token, nil
-	}
-	if now.Before(c.retryAt) {
+	case c.rejected != nil:
+		return "", c.rejected
+	case now.Before(c.retryAt):
 		return "", c.loginErr
 	}
 	tok, err := c.loginLocked(ctx)
-	if err != nil && ctx.Err() == nil {
-		wait := loginRetry
-		var ue *driver.UpstreamError
-		if errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth {
-			wait = authFailureTTL
-		}
-		c.loginErr, c.retryAt = err, now.Add(wait)
+	var ue *driver.UpstreamError
+	switch {
+	case err == nil:
+		c.loginErr, c.failures, c.retryAt = nil, 0, time.Time{}
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth:
+		c.rejected = err
+	case ctx.Err() == nil:
+		c.failures++
+		c.loginErr, c.retryAt = err, now.Add(min(loginRetry<<min(c.failures-1, 10), loginRetryMax))
 	}
 	return tok, err
+}
+
+// setPassword replaces the password, as set-password writes it to .env,
+// and ends the wait after any failed login: the next call logs in.
+func (c *client) setPassword(p string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.password, c.token = p, ""
+	c.rejected, c.loginErr, c.failures, c.retryAt = nil, nil, 0, time.Time{}
 }
 
 // studioList returns the account's studios: read once per evaluation
