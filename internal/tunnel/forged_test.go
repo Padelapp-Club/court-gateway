@@ -298,11 +298,9 @@ func TestForgedConfigIsNotFetched(t *testing.T) {
 		name string
 		key  ed25519.PrivateKey
 		ok   bool
-	}{{"signed by the hub", hubKey, true}, {"signed by another key", otherKey, false}, {"unsigned", nil, false}} {
+	}{{"signed by the hub", hubKey, true}, {"signed by another key", otherKey, false}} { // unsigned: TestVerifierRefusesAnUnsignedConfig
 		serve = tunnel.RemoteConfig{Version: 2, Clubs: []json.RawMessage{club}}
-		if tc.key != nil {
-			serve.Sign(tc.key, "inst", registration, time.Now())
-		}
+		serve.Sign(tc.key, "inst", registration, time.Now())
 		rc, err := c.FetchConfig(context.Background())
 		if tc.ok != (err == nil) || (tc.ok && rc.Version != 2) || (!tc.ok && !errors.Is(err, tunnel.ErrBadSignature)) {
 			t.Errorf("%s: %+v %v", tc.name, rc, err)
