@@ -3,11 +3,13 @@ package viva_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +29,17 @@ func (s slowRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	select {
 	case <-time.After(s.d):
 	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// hangRT holds GET /studios until the request's context ends, while hang.
+type hangRT struct{ hang *atomic.Bool }
+
+func (h hangRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h.hang.Load() && strings.HasSuffix(r.URL.Path, "/studios") {
+		<-r.Context().Done()
 		return nil, r.Context().Err()
 	}
 	return http.DefaultTransport.RoundTrip(r)
@@ -315,5 +328,33 @@ func TestLongRangesAreListedAWeekAtATime(t *testing.T) {
 	}
 	if lists < 5 {
 		t.Fatalf("%d exercise list requests for 32 days", lists)
+	}
+}
+
+// The studio list the clubs of a readiness round share is read within the
+// time limit of the club that reads it (core.ReadyTimeout), not only that
+// of the whole round: a CRM that hangs on it does not hold the round.
+func TestSharedStudioReadIsBounded(t *testing.T) {
+	t.Parallel() // it waits out a ReadyTimeout
+	stub := vivastub.New(stubUser, stubPass, studio)
+	stub.AddRoom(room1, "1")
+	stub.AddRoom(room2, "2")
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+	var hang atomic.Bool
+	in := newInstallation(t, srv.URL, &http.Client{Transport: hangRT{&hang}}, nil)
+	if err := in.apply(t, testClub(fixtureOpts{})); err != nil {
+		t.Fatal(err)
+	}
+	hang.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- in.syncer.Ready(context.Background()) }() // a round with no limit of its own
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ready while the CRM hangs on the studio list: %v", err)
+		}
+	case <-time.After(core.ReadyTimeout + 3*time.Second):
+		t.Fatal("the readiness round waits for a hanging studio list")
 	}
 }

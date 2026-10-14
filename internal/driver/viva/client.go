@@ -116,9 +116,10 @@ func (c *client) rejectedPassword() bool {
 }
 
 // studioList returns the account's studios: read once per evaluation
-// (driver.Evaluation), under its context, so the clubs of one readiness
-// round or one config share it, and never used for another one; outside
-// an evaluation it reads with ctx.
+// (driver.Evaluation), under its context but within the time limit of the
+// club that reads it, so the clubs of one readiness round or one config
+// share it and a hanging read does not hold the round; never used for
+// another evaluation. Outside an evaluation it reads with ctx.
 func (c *client) studioList(ctx context.Context) ([]vivaStudio, error) {
 	ev := driver.Evaluation(ctx)
 	if ev == nil {
@@ -130,7 +131,15 @@ func (c *client) studioList(ctx context.Context) ([]vivaStudio, error) {
 	}
 	r := c.studios
 	c.mu.Unlock()
-	r.once.Do(func() { r.list, r.err = listStudios(ev, c) })
+	r.once.Do(func() {
+		rctx := ev
+		if d, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			rctx, cancel = context.WithDeadline(ev, d)
+			defer cancel()
+		}
+		r.list, r.err = listStudios(rctx, c)
+	})
 	return r.list, r.err
 }
 
