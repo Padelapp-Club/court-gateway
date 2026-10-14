@@ -284,16 +284,16 @@ func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
 	hubKey := testkit.NewSigning("demo-club")
 	c := hubKey.Client(t, b.Clubs.TunnelHandler())
 	for _, p := range []string{"/hub/status", "/v1/../hub/status", "/debug/pprof/", "", "/v1/clubs/%2e%2e"} {
-		r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: p, Partner: "reader", Scopes: []string{"read"}}))
+		r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: p, Partner: "reader", Scopes: []string{"read"}}), testkit.PollNonce)
 		if r.Status != http.StatusNotFound {
 			t.Fatalf("%q: %d", p, r.Status)
 		}
 	}
-	r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts"}))
+	r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts"}), testkit.PollNonce)
 	if r.Status != http.StatusUnauthorized {
 		t.Fatalf("a request without a partner name: %d", r.Status)
 	}
-	r = c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader", Scopes: []string{"read"}}))
+	r = c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader", Scopes: []string{"read"}}), testkit.PollNonce)
 	if r.Status != http.StatusOK {
 		t.Fatalf("partner request: %d %s", r.Status, r.Body)
 	}

@@ -263,12 +263,15 @@ func (s Signing) Client(t *testing.T, handler http.Handler) *tunnel.Client {
 	return c
 }
 
-// Sign signs rq as the hub does, with a fresh id.
+// PollNonce is the nonce of the poll Sign signs a request for.
+const PollNonce = "test-poll"
+
+// Sign signs rq as the hub does, with a fresh id, for the poll PollNonce.
 func (s Signing) Sign(rq tunnel.Request) tunnel.Request {
 	var id [8]byte
 	_, _ = rand.Read(id[:])
 	rq.ID = hex.EncodeToString(id[:])
-	rq.Sign(s.Key, s.Installation, tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret)), time.Now())
+	rq.Sign(s.Key, s.Installation, tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret)), PollNonce, time.Now())
 	return rq
 }
 

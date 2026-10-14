@@ -597,7 +597,7 @@ func TestHubSendsNoAlertsOfItsOwn(t *testing.T) {
 // external checker.
 func TestRefusedRequestsAreReported(t *testing.T) {
 	w := newBeatWorld(t, "", nil, hub.Options{})
-	w.gw.Client.Execute(context.Background(), tunnel.Request{ID: "forged", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"})
+	w.gw.Client.Execute(context.Background(), tunnel.Request{ID: "forged", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"}, testkit.PollNonce)
 	w.beat(t, true, "")
 	var st struct {
 		Gateways []hub.GatewayStatus `json:"gateways"`

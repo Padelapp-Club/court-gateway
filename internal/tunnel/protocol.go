@@ -60,7 +60,7 @@ const (
 	// HeaderNonce is a fresh random value of each poll, and HeaderHubTime
 	// the hub's answer to it: its clock, signed with the nonce and the
 	// HeaderConfigVersion value (SignTime), so an old answer cannot be
-	// passed off as new.
+	// passed off as new. A request the poll takes is signed with it too.
 	HeaderNonce   = "X-Gateway-Nonce"
 	HeaderHubTime = "X-Hub-Time"
 )

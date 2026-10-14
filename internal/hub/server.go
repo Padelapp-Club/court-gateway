@@ -278,10 +278,10 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 	if call == nil {
 		return
 	}
-	// signed now, as the poll takes it: so it is never older than the
-	// gateway process that sent this poll (tunnel.Verifier.Request)
+	// signed for this poll, by its nonce: the gateway runs it only as the
+	// answer to this poll (tunnel.Verifier.Request)
 	rq := *call
-	rq.Sign(s.store.key, g.Installation, g.registration(), s.now())
+	rq.Sign(s.store.key, g.Installation, g.registration(), r.Header.Get(tunnel.HeaderNonce), s.now())
 	if err := json.NewEncoder(w).Encode(rq); err != nil {
 		s.log.Warn("poll answer not delivered", "installation", g.Installation, "request_id", rq.RequestID)
 	}

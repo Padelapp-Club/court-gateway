@@ -204,10 +204,6 @@ func (c *Client) Duplicate() bool { return c.dup.Load() }
 // not sign them for this gateway (heartbeats report it).
 func (c *Client) Refused() int64 { return c.refused.Load() }
 
-// HubKeyMismatch reports whether the hub's last signed time failed the
-// pinned key: the hub signs with another key (a new one, or not the hub).
-func (c *Client) HubKeyMismatch() bool { return c.badKey.Load() }
-
 // ClockOffset is how far the hub's clock was ahead of this computer's
 // when the hub last signed it (0 before it has); beyond MaxClockSkew the
 // gateway refuses what the hub signs and reports CLOCK_SKEW.
@@ -216,6 +212,10 @@ func (c *Client) ClockOffset() time.Duration {
 	defer c.verify.mu.Unlock()
 	return c.verify.offset
 }
+
+// HubKeyMismatch reports whether the hub's last signed time failed the
+// pinned key: the hub signs with another key (a new one, or not the hub).
+func (c *Client) HubKeyMismatch() bool { return c.badKey.Load() }
 
 // Run keeps Polls pollers running until ctx is done.
 func (c *Client) Run(ctx context.Context) {
@@ -271,7 +271,7 @@ func (c *Client) poller(ctx context.Context) {
 		}
 	}()
 	for ctx.Err() == nil {
-		rq, err := c.poll(ctx, func() {
+		rq, nonce, err := c.poll(ctx, func() {
 			failures = 0
 			c.authFail.Store(false)
 			c.dup.Store(false)
@@ -291,7 +291,7 @@ func (c *Client) poller(ctx context.Context) {
 		if rq == nil {
 			continue
 		}
-		resp := c.Execute(ctx, *rq)
+		resp := c.Execute(ctx, *rq, nonce)
 		c.reply(ctx, resp)
 	}
 }
@@ -346,16 +346,21 @@ func (c *Client) newRequest(ctx context.Context, method, p string, body []byte) 
 	return req, nil
 }
 
-// poll returns the next request, nil when the hub had none, or an error.
-// connected is called as soon as the hub accepted the poll (headers
-// received), before the long wait for the body.
-func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
+// poll returns the next request and the poll's nonce, nil when the hub
+// had none, or an error. connected is called as soon as the hub accepted
+// the poll (headers received), before the long wait for the body.
+func (c *Client) poll(ctx context.Context, connected func()) (*Request, string, error) {
 	pctx, cancel := context.WithTimeout(ctx, c.cfg.PollTimeout)
 	defer cancel()
 	req, err := c.newRequest(pctx, http.MethodPost, PathPoll, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	rq, err := c.pollAnswer(req, connected)
+	return rq, req.Header.Get(HeaderNonce), err
+}
+
+func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, error) {
 	resp, err := c.doTimed(req)
 	if err != nil {
 		return nil, cleanError(err)
@@ -556,13 +561,14 @@ func scopeAllows(scopes []string, method string) bool {
 }
 
 // Execute runs one tunnelled request against the local handler, if the
-// hub signed it for this gateway. Exposed for tests.
-func (c *Client) Execute(ctx context.Context, rq Request) Response {
+// hub signed it for this gateway and for the poll that sent nonce.
+// Exposed for tests.
+func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response {
 	fail := func(status int, code, msg string) Response {
 		b, _ := json.Marshal(map[string]string{"code": code, "message": msg, "request_id": rq.RequestID})
 		return Response{ID: rq.ID, Status: status, Header: map[string]string{"Content-Type": "application/json; charset=utf-8"}, Body: b}
 	}
-	err := c.verify.Request(&rq)
+	err := c.verify.Request(&rq, nonce)
 	if errors.Is(err, ErrClockUnknown) {
 		r := fail(http.StatusServiceUnavailable, "CLOCK_UNKNOWN", "the club's gateway does not know the hub's time yet, retry")
 		r.Header["Retry-After"] = "5"

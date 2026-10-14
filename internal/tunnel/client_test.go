@@ -49,7 +49,7 @@ func TestExecuteBoundsTheResponse(t *testing.T) {
 	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(big))
 	}))
-	r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", RequestID: "rq-1"}))
+	r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", RequestID: "rq-1"}), testNonce)
 	if r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "RESPONSE_TOO_LARGE") || len(r.Body) > 1000 {
 		t.Fatalf("%d %.100s", r.Status, r.Body)
 	}
@@ -58,7 +58,7 @@ func TestExecuteBoundsTheResponse(t *testing.T) {
 	c = testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
 	}))
-	c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", Header: map[string]string{"Authorization": "Bearer partner-key"}}))
+	c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", Header: map[string]string{"Authorization": "Bearer partner-key"}}), testNonce)
 	if sawAuth != "" {
 		t.Fatal("a partner key reached the gateway")
 	}
@@ -72,31 +72,31 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 		_, _ = w.Write([]byte("served " + r.URL.Path))
 	}))
 	for _, p := range []string{"/hub/status", "/debug/pprof/", "/", "", "/v1/../etc", "/v1/clubs/%2e%2e", "/healthz", "/health/ready"} {
-		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: p})); r.Status != http.StatusNotFound {
+		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: p}), testNonce); r.Status != http.StatusNotFound {
 			t.Fatalf("%q reached the handler: %d %s", p, r.Status, r.Body)
 		}
 	}
-	if r := c.Execute(context.Background(), signed(Request{Method: "CONNECT", Path: "/v1/clubs"})); r.Status != http.StatusNotFound {
+	if r := c.Execute(context.Background(), signed(Request{Method: "CONNECT", Path: "/v1/clubs"}), testNonce); r.Status != http.StatusNotFound {
 		t.Fatalf("CONNECT reached the handler: %d", r.Status)
 	}
 	// the gateway API for the hub's operator: POST only
-	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: PathDiscover})); r.Status != http.StatusNotFound {
+	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: PathDiscover}), testNonce); r.Status != http.StatusNotFound {
 		t.Fatalf("GET %s reached the handler: %d", PathDiscover, r.Status)
 	}
-	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: PathDiscover})); r.Status != http.StatusOK {
+	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: PathDiscover}), testNonce); r.Status != http.StatusOK {
 		t.Fatalf("POST %s blocked: %d", PathDiscover, r.Status)
 	}
 	// never for a partner, even one the hub signed with every scope
-	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: PathDiscover, Partner: "booker", Scopes: []string{"read", "book"}})); r.Status != http.StatusNotFound {
+	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: PathDiscover, Partner: "booker", Scopes: []string{"read", "book"}}), testNonce); r.Status != http.StatusNotFound {
 		t.Fatalf("a partner reached %s: %d", PathDiscover, r.Status)
 	}
 	for _, p := range []string{"/gateway/other", "/gateway/discover/../../hub/status"} {
-		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: p})); r.Status != http.StatusNotFound {
+		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: p}), testNonce); r.Status != http.StatusNotFound {
 			t.Fatalf("%q reached the handler: %d", p, r.Status)
 		}
 	}
 	for _, p := range []string{"/v1/clubs", "/v1/clubs/a/courts"} {
-		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: p})); r.Status != http.StatusOK {
+		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: p}), testNonce); r.Status != http.StatusOK {
 			t.Fatalf("%q blocked: %d", p, r.Status)
 		}
 	}
@@ -120,7 +120,7 @@ func TestExecuteClampsTheTimeout(t *testing.T) {
 		{1, 900 * time.Millisecond, time.Second},
 		{0, 29 * time.Second, 30 * time.Second},
 	} {
-		c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", TimeoutMS: tc.ms}))
+		c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", TimeoutMS: tc.ms}), testNonce)
 		if left < tc.min || left > tc.max {
 			t.Errorf("timeout_ms %d: the handler got %s", tc.ms, left)
 		}
@@ -172,7 +172,7 @@ func TestHubKeyMismatchIsReported(t *testing.T) {
 		mismatch bool
 	}{{otherTestKey, true}, {testKey, false}} {
 		key = tc.key
-		if _, err := c.poll(t.Context(), func() {}); err != nil {
+		if _, _, err := c.poll(t.Context(), func() {}); err != nil {
 			t.Fatal(err)
 		}
 		if c.HubKeyMismatch() != tc.mismatch {

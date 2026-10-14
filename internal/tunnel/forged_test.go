@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,8 +24,8 @@ import (
 // Whoever stands in for the hub with a certificate the club's computer
 // trusts (a TLS-inspecting proxy) knows the gateway secret, but cannot
 // make the gateway book: only what the hub's pinned key signed for this
-// registration, within its window and once, reaches the CRM. Every forged
-// request here would book a free slot if it were run.
+// registration, within its window and for the poll it answers, reaches
+// the CRM. Every forged request here would book a free slot if it were run.
 func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 	const secret = "fixture-hub-secret"
 	clubs, stub := vivaClub(t, secret)
@@ -33,7 +33,7 @@ func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 	hubPub, hubKey, _ := ed25519.GenerateKey(nil)
 	_, otherKey, _ := ed25519.GenerateKey(nil)
 	registration := tunnel.RegistrationOf(tunnel.SecretSHA256(secret))
-	envelopes := make(chan tunnel.Request)
+	envelopes := make(chan func(nonce string) tunnel.Request) // what to answer a poll with
 	replies := make(chan tunnel.Response)
 	fake := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -42,8 +42,8 @@ func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_ = http.NewResponseController(w).Flush() // as the hub does, before it holds the poll
 			select {
-			case rq := <-envelopes:
-				_ = json.NewEncoder(w).Encode(rq)
+			case answer := <-envelopes:
+				_ = json.NewEncoder(w).Encode(answer(r.Header.Get(tunnel.HeaderNonce)))
 			case <-r.Context().Done():
 			}
 		case tunnel.PathReply:
@@ -76,14 +76,22 @@ func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 		return tunnel.Request{ID: fmt.Sprintf("call-%d", n), RequestID: "rq", Method: http.MethodPost, Path: "/v1/clubs/club-one/bookings",
 			Header: map[string]string{"Content-Type": "application/json"}, Body: body, Partner: "booker", Scopes: []string{"read", "book"}}
 	}
-	signed := func(rq tunnel.Request) tunnel.Request {
-		rq.Sign(hubKey, "inst", registration, time.Now())
-		return rq
+	// the request of answer, signed by the hub for the poll it answers
+	signed := func(rq tunnel.Request) func(string) tunnel.Request {
+		return func(nonce string) tunnel.Request { rq.Sign(hubKey, "inst", registration, nonce, time.Now()); return rq }
 	}
-	run := func(rq tunnel.Request) tunnel.Response {
+	as := func(rq tunnel.Request) func(string) tunnel.Request { return func(string) tunnel.Request { return rq } }
+	var mu sync.Mutex
+	var last tunnel.Request // the last request the gateway got
+	run := func(answer func(string) tunnel.Request) tunnel.Response {
 		t.Helper()
 		select {
-		case envelopes <- rq:
+		case envelopes <- func(nonce string) tunnel.Request {
+			mu.Lock()
+			defer mu.Unlock()
+			last = answer(nonce)
+			return last
+		}:
 		case <-time.After(5 * time.Second):
 			t.Fatal("not polled")
 		}
@@ -108,37 +116,45 @@ func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 	for !c.Connected() { // the hub's time arrives with the first poll answer
 		time.Sleep(time.Millisecond)
 	}
-	genuine := signed(booking())
-	if r := run(genuine); r.Status != http.StatusCreated || writes() != 1 {
+	if r := run(signed(booking())); r.Status != http.StatusCreated || writes() != 1 {
 		t.Fatalf("a signed booking: %d %s, %d CRM writes", r.Status, r.Body, writes())
 	}
-	for name, forge := range map[string]func() tunnel.Request{
-		"unsigned":                 booking,
-		"signed by another key":    func() tunnel.Request { rq := booking(); rq.Sign(otherKey, "inst", registration, time.Now()); return rq },
-		"for another installation": func() tunnel.Request { rq := booking(); rq.Sign(hubKey, "inst-b", registration, time.Now()); return rq },
-		"for an earlier registration": func() tunnel.Request {
-			rq := booking()
-			rq.Sign(hubKey, "inst", tunnel.RegistrationOf("old"), time.Now())
-			return rq
-		},
-		"expired": func() tunnel.Request {
-			rq := booking()
-			rq.Sign(hubKey, "inst", registration, time.Now().Add(-5*time.Minute))
-			return rq
-		},
-		"replayed":        func() tunnel.Request { return genuine },
-		"body swapped":    func() tunnel.Request { rq := signed(booking()); rq.Body = booking().Body; return rq },
-		"path changed":    func() tunnel.Request { rq := signed(booking()); rq.Path = "/v1/clubs/club-one/bookings/"; return rq },
-		"partner changed": func() tunnel.Request { rq := signed(booking()); rq.Partner = "invented-partner"; return rq },
-		"scope added": func() tunnel.Request {
-			rq := booking()
+	mu.Lock()
+	replay := last
+	mu.Unlock()
+	// a forged answer: what the interceptor makes of the hub's genuine one
+	forged := func(change func(nonce string, rq *tunnel.Request)) func(string) tunnel.Request {
+		return func(nonce string) tunnel.Request { rq := booking(); change(nonce, &rq); return rq }
+	}
+	for name, forge := range map[string]func(string) tunnel.Request{
+		"unsigned":              as(booking()),
+		"signed by another key": forged(func(n string, rq *tunnel.Request) { rq.Sign(otherKey, "inst", registration, n, time.Now()) }),
+		"for another installation": forged(func(n string, rq *tunnel.Request) {
+			rq.Sign(hubKey, "inst-b", registration, n, time.Now())
+		}),
+		"for an earlier registration": forged(func(n string, rq *tunnel.Request) {
+			rq.Sign(hubKey, "inst", tunnel.RegistrationOf("old"), n, time.Now())
+		}),
+		"expired": forged(func(n string, rq *tunnel.Request) {
+			rq.Sign(hubKey, "inst", registration, n, time.Now().Add(-5*time.Minute))
+		}),
+		"replayed":     as(replay),
+		"body swapped": forged(func(n string, rq *tunnel.Request) { body := rq.Body; *rq = signed(booking())(n); rq.Body = body }),
+		"path changed": forged(func(n string, rq *tunnel.Request) {
+			rq.Sign(hubKey, "inst", registration, n, time.Now())
+			rq.Path += "/"
+		}),
+		"partner changed": forged(func(n string, rq *tunnel.Request) {
+			rq.Sign(hubKey, "inst", registration, n, time.Now())
+			rq.Partner = "invented"
+		}),
+		"scope added": forged(func(n string, rq *tunnel.Request) {
 			rq.Scopes = []string{"read"}
-			rq = signed(rq)
+			rq.Sign(hubKey, "inst", registration, n, time.Now())
 			rq.Scopes = []string{"read", "book"}
-			return rq
-		},
+		}),
 	} {
-		r := run(forge())
+		r := run(forge)
 		if r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") || writes() != 1 {
 			t.Errorf("%s: %d %s, %d CRM writes (want 502 SIGNATURE_REJECTED, no write)", name, r.Status, r.Body, writes())
 		}
@@ -178,93 +194,30 @@ func vivaClub(t *testing.T, secret string) (*core.Clubs, *vivastub.Stub) {
 	return clubs, stub
 }
 
-// A signed booking replayed to a restarted gateway is refused, however
-// fresh its signature: the gateway forgot the ids it ran, but the request
-// was issued before this process started by the hub's clock. The booking
-// was cancelled in between, so running the replay would book it again.
-func TestReplayAfterRestartIsRefused(t *testing.T) {
+// A request runs only as the answer to the poll the hub signed it for: a
+// booking replayed on a later poll is refused, by the same process or by
+// one started after it with nothing kept (a recreated container), however
+// fresh its signature. The booking was cancelled in between, so running
+// the replay would book it again.
+func TestReplayOnAnotherPollIsRefused(t *testing.T) {
 	sg := testkit.NewSigning("inst")
 	clubs, stub := vivaClub(t, sg.Secret)
-	posts := func() int {
-		n := 0
-		for _, call := range stub.Calls() {
-			if strings.HasPrefix(call, "POST /breaks") {
-				n++
-			}
-		}
-		return n
-	}
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
 	body, _ := json.Marshal(map[string]string{"court": "court-one", "start": start.Format(time.RFC3339), "end": start.Add(time.Hour).Format(time.RFC3339), "kind": "game"})
 	c := sg.Client(t, clubs.TunnelHandler())
 	create := sg.Sign(tunnel.Request{Method: http.MethodPost, Path: "/v1/clubs/club-one/bookings", Body: body, Partner: "booker", Scopes: []string{"read", "book"}})
-	first := c.Execute(t.Context(), create)
+	first := c.Execute(t.Context(), create, testkit.PollNonce)
 	var b struct{ ID string }
 	if json.Unmarshal(first.Body, &b); first.Status != http.StatusCreated {
 		t.Fatalf("create: %d %s", first.Status, first.Body)
 	}
-	if r := c.Execute(t.Context(), sg.Sign(tunnel.Request{Method: http.MethodDelete, Path: create.Path + "/" + b.ID, Partner: "booker", Scopes: []string{"book"}})); r.Status != http.StatusNoContent {
+	if r := c.Execute(t.Context(), sg.Sign(tunnel.Request{Method: http.MethodDelete, Path: create.Path + "/" + b.ID, Partner: "booker", Scopes: []string{"book"}}), testkit.PollNonce); r.Status != http.StatusNoContent {
 		t.Fatalf("cancel: %d %s", r.Status, r.Body)
 	}
-	time.Sleep(10 * time.Millisecond) // a restart takes longer than the seal's millisecond
-	restarted := sg.Client(t, clubs.TunnelHandler())
-	if r := restarted.Execute(t.Context(), create); r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") || posts() != 1 {
-		t.Fatalf("the create replayed after a restart: %d %s, %d CRM writes", r.Status, r.Body, posts())
-	}
-}
-
-// A booking replayed to a restarted gateway is refused also when the
-// hub's first signed time reaches it late (4 s, within MaxTimeRoundTrip):
-// the start by the hub's clock comes out early by that delay, but the
-// watermark the first process kept holds the requests it ran.
-func TestReplayAfterRestartWithALateSignedTimeIsRefused(t *testing.T) {
-	sg := testkit.NewSigning("inst")
-	clubs, stub := vivaClub(t, sg.Secret)
-	pub, reg := sg.Key.Public().(ed25519.PublicKey), tunnel.RegistrationOf(tunnel.SecretSHA256(sg.Secret))
-	watermark := filepath.Join(t.TempDir(), "request-watermark")
-	t0 := time.Now().Truncate(time.Millisecond)
-	local := t0.Add(-10 * time.Second) // this computer's clock, and the hub's
-	// a gateway process started at at, whose first poll answer, signed by
-	// the hub at at, arrives at received
-	process := func(at, received time.Time) *tunnel.Client {
-		local = at
-		v, _ := tunnel.NewVerifier(pub, "inst", sg.Secret, func() time.Time { return local })
-		if err := v.KeepWatermark(watermark); err != nil {
-			t.Fatal(err)
+	for name, gw := range map[string]*tunnel.Client{"the same process": c, "a new process": sg.Client(t, clubs.TunnelHandler())} {
+		if r := gw.Execute(t.Context(), create, "a-later-poll"); r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") {
+			t.Errorf("the create replayed to %s: %d %s", name, r.Status, r.Body)
 		}
-		local = received
-		if err := v.Time("n", tunnel.SignTime(sg.Key, "inst", reg, "n", "0", at), "0", at); err != nil {
-			t.Fatal(err)
-		}
-		c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: sg.Secret, HubKey: pub, Installation: "inst", Verifier: v, Handler: clubs.TunnelHandler()})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return c
-	}
-	sign := func(rq tunnel.Request, at time.Time) tunnel.Request {
-		rq.ID = at.String()
-		rq.Sign(sg.Key, "inst", reg, at)
-		return rq
-	}
-	c := process(local, local)
-	start := t0.UTC().Add(48 * time.Hour).Truncate(time.Hour)
-	body, _ := json.Marshal(map[string]string{"court": "court-one", "start": start.Format(time.RFC3339), "end": start.Add(time.Hour).Format(time.RFC3339), "kind": "game"})
-	local = t0.Add(-2 * time.Second)
-	create := sign(tunnel.Request{Method: http.MethodPost, Path: "/v1/clubs/club-one/bookings", Body: body, Partner: "booker", Scopes: []string{"read", "book"}}, local)
-	first := c.Execute(t.Context(), create)
-	var b struct{ ID string }
-	if json.Unmarshal(first.Body, &b); first.Status != http.StatusCreated {
-		t.Fatalf("create: %d %s", first.Status, first.Body)
-	}
-	local = t0.Add(-time.Second)
-	if r := c.Execute(t.Context(), sign(tunnel.Request{Method: http.MethodDelete, Path: create.Path + "/" + b.ID, Partner: "booker", Scopes: []string{"book"}}, local)); r.Status != http.StatusNoContent {
-		t.Fatalf("cancel: %d %s", r.Status, r.Body)
-	}
-	// restarted at t0; the hub's first signed time, from t0, arrives 4 s later
-	restarted := process(t0, t0.Add(4*time.Second))
-	if r := restarted.Execute(t.Context(), create); r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") {
-		t.Fatalf("the create replayed after a restart: %d %s", r.Status, r.Body)
 	}
 	posts := 0
 	for _, call := range stub.Calls() {
