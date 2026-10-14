@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -277,7 +278,7 @@ var (
 	ErrUnknownClub         = errors.New("no such club")
 	ErrClubTaken           = errors.New("the club id is already served by another installation")
 	ErrStudioTaken         = errors.New("the club's CRM studio is already served by another installation")
-	ErrRoomTaken           = errors.New("a court's CRM room (viva_room) is already served by another club")
+	ErrRoomTaken           = errors.New("a court's CRM room is already served by another club")
 	ErrNotRegistered       = errors.New("no gateway is registered for this installation")
 	// ErrStateUnavailable: the state directory cannot be read right now;
 	// nothing is forgotten because of it.
@@ -630,14 +631,18 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	if other, taken := s.clubs[spec.ID]; taken && other != installation {
 		return false, 0, ErrClubTaken
 	}
-	studio, rooms := clubStudio(spec), clubRooms(spec)
+	studios, rooms := clubResources(spec)
+	overlap := func(a, b []string) bool {
+		return slices.ContainsFunc(a, func(v string) bool { return slices.Contains(b, v) })
+	}
 	for id, other := range s.installs {
 		for cid, c := range other.Clubs {
+			cs, cr := clubResources(c)
 			switch {
 			case id == installation && cid == spec.ID: // the club it replaces
-			case id != installation && studio != "" && clubStudio(c) == studio:
+			case id != installation && overlap(cs, studios):
 				return false, 0, ErrStudioTaken
-			case slices.ContainsFunc(clubRooms(c), func(r string) bool { return slices.Contains(rooms, r) }):
+			case overlap(cr, rooms):
 				return false, 0, ErrRoomTaken
 			}
 		}
@@ -654,21 +659,23 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	return !existed, in.Version, nil
 }
 
-// clubStudio is the CRM studio a club reads (crm.studio), normalized.
-func clubStudio(c core.ClubSpec) string {
-	v, _ := c.CRM["studio"].(string)
-	return strings.ToLower(strings.TrimSpace(v))
-}
-
-// clubRooms are the CRM rooms its courts book (viva_room), normalized.
-func clubRooms(c core.ClubSpec) []string {
-	var rooms []string
-	for _, ct := range c.Courts {
-		if v, _ := ct.Params["viva_room"].(string); strings.TrimSpace(v) != "" {
-			rooms = append(rooms, strings.ToLower(strings.TrimSpace(v)))
+// clubResources are the CRM studios a club reads and the rooms its
+// courts book, normalized, by the keys the drivers declare
+// (drivers.ResourceKeys).
+func clubResources(c core.ClubSpec) (studios, rooms []string) {
+	studioKeys, roomKeys := drivers.ResourceKeys()
+	add := func(out *[]string, params map[string]any, keys []string) {
+		for _, k := range keys {
+			if v, _ := params[k].(string); strings.TrimSpace(v) != "" {
+				*out = append(*out, strings.ToLower(strings.TrimSpace(v)))
+			}
 		}
 	}
-	return rooms
+	add(&studios, c.CRM, studioKeys)
+	for _, ct := range c.Courts {
+		add(&rooms, ct.Params, roomKeys)
+	}
+	return studios, rooms
 }
 
 // DeleteClub removes a club of an installation and returns the new

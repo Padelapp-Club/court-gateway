@@ -36,6 +36,10 @@ const (
 // the endpoints stay in the installation's gateway.yaml).
 var ClubCRMKeys = []string{"studio", "overnight_minutes", "break_lookback_days"}
 
+// StudioKey (of the crm section) and RoomKey (of a court) hold the CRM
+// resources a club takes: two clubs never share one (drivers.ResourceKeys).
+const StudioKey, RoomKey = "studio", "viva_room"
+
 // Defaults of the club-level occupancy keys (see Occupancy).
 const (
 	DefaultOvernightMinutes  = 240

@@ -2,6 +2,8 @@
 package drivers
 
 import (
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -24,6 +26,19 @@ var clubCRMKeys = map[string][]string{"viva": viva.ClubCRMKeys, "demo": demo.Clu
 // ClubCRMKeys returns the club-level crm keys of a CRM type (none for an
 // unknown type).
 func ClubCRMKeys(crmType string) []string { return clubCRMKeys[crmType] }
+
+// studioKeys (crm keys) and roomKeys (court params) hold, by crm.type,
+// the CRM resources a club takes: a whole studio, one room.
+var (
+	studioKeys = map[string]string{"viva": viva.StudioKey, "demo": demo.StudioKey}
+	roomKeys   = map[string]string{"viva": viva.RoomKey}
+)
+
+// ResourceKeys returns the studio and room keys of every driver: what the
+// hub keeps for one club, not knowing the installation's CRM type.
+func ResourceKeys() (studio, room []string) {
+	return slices.Compact(slices.Sorted(maps.Values(studioKeys))), slices.Compact(slices.Sorted(maps.Values(roomKeys)))
+}
 
 // AllClubCRMKeys returns the club-level crm keys of every driver: what the
 // hub accepts in a club, not knowing the installation's CRM type.
