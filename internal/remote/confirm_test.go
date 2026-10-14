@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -360,6 +361,100 @@ func TestRetainedConfigWhenTheNewerOneDoesNotBuild(t *testing.T) {
 				t.Errorf("%s booked in room %v", tc.kept, room["id"])
 			}
 		})
+	}
+}
+
+// Through the hub, a club that readiness found not to match its CRM (court
+// 1's room moved to studio B, where a client's exercise holds it) stays
+// blocked when a newer config that does not build (a malformed price list
+// on court 2) drops court 2 from the previous config it keeps: nothing
+// checked court 1 again, so occupancy and booking answer 503 and nothing
+// is written to the CRM. A readiness check that finds the CRM matching
+// again serves the club.
+func TestRetainedConfigKeepsAKnownCRMMismatch(t *testing.T) {
+	a := vivastub.New("review@example.test", "fixture-password", vStudio)
+	b := vivastub.New("review@example.test", "fixture-password", vOtherStudio)
+	a.AddRoom(vRoom, "Court 1")
+	a.AddRoom(vRoom2, "Court 2")
+	b.AddRoom(vRoom, "Court 1 moved")
+	// a and b are one CRM account: requests routed to b carry b's token
+	login := httptest.NewRequest("POST", "/token", strings.NewReader("grant_type=password&client_id=React-auth-dev&username=review%40example.test&password=fixture-password"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	logged := httptest.NewRecorder()
+	b.ServeHTTP(logged, login)
+	var token struct {
+		Access string `json:"access_token"`
+	}
+	if err := json.Unmarshal(logged.Body.Bytes(), &token); err != nil || token.Access == "" {
+		t.Fatal("login to studio B's stub failed")
+	}
+	var moved atomic.Bool
+	// once the room moved, studio B's reads and every write go to b
+	crm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if moved.Load() && (r.URL.Query().Get("studioId") == vOtherStudio || (r.Method != http.MethodGet && r.URL.Path != vivastub.TokenPath)) {
+			r = r.Clone(r.Context())
+			r.Header.Set("Authorization", "Bearer "+token.Access)
+			b.ServeHTTP(w, r)
+			return
+		}
+		a.ServeHTTP(w, r)
+	}))
+	t.Cleanup(crm.Close)
+	club := vivaClub(vStudio, vRoom, vRoom2)
+	h := testkit.StartHub(t, "poll_wait: 1s\n"+testkit.OperatorYAML+testkit.HubPartnersYAML, testkit.HubEnv(), hub.Options{})
+	in := testkit.StartInstallation(t, h, "test-net", testkit.InstallationOptions{
+		CRMYAML: fmt.Sprintf("crm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n", crm.URL, crm.URL),
+		Env:     map[string]string{"CRM_PASSWORD": "fixture-password"}, CRMType: "viva", Factory: viva.New, Account: viva.NewAccount,
+		Clubs: []core.ClubSpec{club},
+	})
+	start := time.Now().UTC().Truncate(time.Hour).Add(48 * time.Hour)
+	end := start.Add(time.Hour)
+	existing := b.SeedExercise(map[string]any{"room": map[string]any{"id": vRoom}, "studio": map[string]any{"id": vOtherStudio},
+		"timeFrom": start.Format(time.RFC3339), "timeTo": end.Format(time.RFC3339), "masterServiceBooking": map[string]any{"client": map[string]any{"name": "fixture-client"}}})
+	a.RemoveRoom(vRoom)
+	a.AddStudio(vOtherStudio, "Studio B", map[string]string{vRoom: "Court 1 moved"})
+	moved.Store(true)
+	if err := in.Syncer.Ready(context.Background()); core.ReadyReason(err) != "CONFIG_MISMATCH" {
+		t.Fatalf("ready: %v", err)
+	}
+	occupancy := func() (*http.Response, []byte) {
+		return h.Do(t, 10*time.Second, "GET", "/v1/clubs/club-a/occupancy?from="+start.Format(time.RFC3339)+"&to="+end.Format(time.RFC3339), contract.ReadKey, nil)
+	}
+	if resp, data := occupancy(); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("occupancy before the change: %d %s", resp.StatusCode, data)
+	}
+	club.Courts[1].Params["price_list"] = "not-a-uuid" // court 1 left as it was
+	h.MustOperator(t, http.StatusOK, "PUT", "/hub/installations/test-net/clubs/club-a", club)
+	testkit.WaitFor(t, "the change refused", 10*time.Second, func() bool {
+		st := in.Syncer.State()
+		return st.ConfigVersion == 2 && strings.Contains(st.ConfigError, "price_list")
+	})
+	if srv, ok := in.Clubs.Server("club-a"); !ok || len(srv.Settings().Courts) != 1 || srv.Settings().Courts[0].ID != "court-1" {
+		t.Fatalf("the previous config, less court-2, is not kept: %v", ok)
+	}
+	calls := [2]int{len(a.Calls()), len(b.Calls())}
+	if resp, data := occupancy(); !strings.Contains(string(data), "CLUB_UNAVAILABLE") {
+		t.Errorf("occupancy after the change: %d %s", resp.StatusCode, data)
+	}
+	body := fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`, start.Format(time.RFC3339), end.Format(time.RFC3339))
+	if resp, data := h.Do(t, 10*time.Second, "POST", "/v1/clubs/club-a/bookings", contract.BookKey, strings.NewReader(body)); !strings.Contains(string(data), "CLUB_UNAVAILABLE") {
+		t.Errorf("booking after the change: %d %s", resp.StatusCode, data)
+	}
+	for _, call := range append(a.Calls()[calls[0]:], b.Calls()[calls[1]:]...) {
+		if !strings.HasPrefix(call, "GET ") {
+			t.Errorf("CRM write for a blocked club: %s", call)
+		}
+	}
+	if b.Exercise(existing) == nil {
+		t.Fatal("the client's exercise is gone")
+	}
+	moved.Store(false)
+	a.AddRoom(vRoom, "Court 1")
+	if err := in.Syncer.Ready(context.Background()); err != nil {
+		t.Fatalf("ready once the room is back: %v", err)
+	}
+	if resp, data := occupancy(); resp.StatusCode != http.StatusOK {
+		t.Errorf("occupancy once the room is back: %d %s", resp.StatusCode, data)
 	}
 }
 

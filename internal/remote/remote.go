@@ -426,8 +426,9 @@ func (s *Syncer) gone(id string, old *core.Server) func(court string) bool {
 
 // without is the previous config old less the courts gone (old itself
 // when none are). Its driver is built for the courts left, so it neither
-// books, reads nor cancels on the others; an error when it cannot be
-// built (no court left).
+// books, reads nor cancels on the others, and it stays blocked while old
+// is (core.Server.Narrowed); an error when it cannot be built (no court
+// left).
 func (s *Syncer) without(old *core.Server, gone func(court string) bool) (*core.Server, error) {
 	st := *old.Settings()
 	st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool { return gone(c.ID) })
@@ -439,7 +440,7 @@ func (s *Syncer) without(old *core.Server, gone func(court string) bool) (*core.
 	if err != nil {
 		return nil, err
 	}
-	return core.NewServer(&st, d, st.Driver.Logger), nil
+	return old.Narrowed(&st, d), nil
 }
 
 // resource is the CRM resource court of srv books ("" when the driver

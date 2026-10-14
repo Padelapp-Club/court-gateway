@@ -59,6 +59,14 @@ func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger) *Server {
 	return &Server{cfg: cfg, drv: drv, log: log, clock: cfg.Driver.DecisionClock(), caps: drv.Capabilities()}
 }
 
+// Narrowed is the server of cfg and drv, a narrower config of s's club: it
+// stays blocked if s is, until its own readiness check passes.
+func (s *Server) Narrowed(cfg *Settings, drv driver.Driver) *Server {
+	n := NewServer(cfg, drv, cfg.Driver.Logger)
+	n.mismatch.Store(s.mismatch.Load())
+	return n
+}
+
 func (s *Server) Settings() *Settings { return s.cfg }
 
 func (s *Server) Driver() driver.Driver { return s.drv }
