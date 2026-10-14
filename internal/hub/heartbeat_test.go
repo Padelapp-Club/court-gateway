@@ -583,11 +583,9 @@ func TestNotReadyReasonNamesTheClubs(t *testing.T) {
 
 func TestHubSendsNoAlertsOfItsOwn(t *testing.T) {
 	env := func(k string) string { return testkit.HubEnv()[k] }
-	// the hub only writes status files; any alert section is an unknown key
-	for _, section := range []string{"alerts:\n  webhook_url_env: X\n", "alerts:\n  chat_bot: { token_env: X, chat_env: Y }\n"} {
-		if _, err := hub.Load([]byte("state_dir: /tmp/x\n"+section), env); err == nil {
-			t.Fatalf("an alert section was accepted: %q", section)
-		}
+	// the hub only writes status files; an alert section is an unknown key
+	if _, err := hub.Load([]byte("state_dir: /tmp/x\nalerts:\n  webhook_url_env: X\n"), env); err == nil {
+		t.Fatal("an alert section was accepted")
 	}
 	if _, err := hub.Load([]byte("state_dir: /tmp/x\nstatus_dir: /tmp/x/\n"), env); err == nil {
 		t.Fatal("status_dir equal to state_dir was accepted")

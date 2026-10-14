@@ -17,14 +17,7 @@ import (
 	"time"
 )
 
-// The hub signs every request it hands a gateway, and every club
-// configuration it sends, with its own ed25519 key. The gateway pins the
-// hub's public key when it registers, after checking it out of band
-// (setup: the key a release embeds, or the operator's fingerprint), and
-// acts on nothing that key did not sign for it. So whoever stands between
-// the two — a TLS-inspecting proxy the club's computer trusts — can read
-// the traffic and the gateway secret, but cannot make the gateway write to
-// its CRM, enrollment included.
+// The hub's signatures; the trust model is in the package comment.
 
 // SignedFor is how long a signature is valid after the hub made it.
 const SignedFor = 60 * time.Second

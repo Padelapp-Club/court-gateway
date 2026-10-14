@@ -66,7 +66,6 @@ var (
 type Asset struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size,omitempty"`
 }
 
 // Manifest describes one release.

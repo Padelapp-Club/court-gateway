@@ -24,20 +24,19 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-// Layout of the state directory. Every record is its own small JSON file
-// written atomically; nothing in it is a plaintext secret:
+// Layout of the state directory. Every record is its own small file
+// written atomically; codes and gateway secrets are kept only as hashes,
+// the signing key is the one secret in it:
 //
 //	codes/<sha256 of the code>.json      pending join codes
 //	gateways/<installation>.json         registered gateways (secret hash)
 //	installations/<installation>.json    installations and their clubs' config
 //	hub-signing.key                      the hub's ed25519 signing key (seed, hex)
 //
-// One installation of the gateway is one CRM account, which may serve
-// several clubs. Join codes bind to an installation. They are created by
-// the `hub join-code create` command (possibly while the hub runs) or by
-// the operator API, so codes are read from disk at redemption time.
-// Gateways and installations are written only by the running hub (the
-// `hub gateway revoke` command only removes a gateway file).
+// Codes are created by `hub join-code create` (possibly while the hub
+// runs) or the operator API, so they are read from disk at redemption.
+// Gateways and installations are written only by the running hub (`hub
+// gateway revoke` only removes a gateway file).
 const (
 	codesDir         = "codes"
 	gatewaysDir      = "gateways"

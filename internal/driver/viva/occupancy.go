@@ -51,25 +51,13 @@ const clockSkew = 5 * time.Minute
 // asked a week at a time.
 const listDays = 7
 
-// window computes the dates to list for [from, to) and whether the answer
-// can be complete; loc is the studio's zone (Driver.zone), whatever the
-// club's. Observed on a live account: the list endpoints select
-// records by the START date in the studio's local day (dateFrom..dateTo,
-// both included); the exercise list leaves out every exercise of a day
-// that is already past for the CRM (it keeps today and later), the break
-// list leaves out nothing. So:
-//
-//   - exercises are listed from the day before the range (one that starts
-//     the evening before may still run into it). One that started on a
-//     past day is not returned: a range that starts before the CRM's
-//     today plus overnight_minutes may overlap such an exercise and is
-//     reported incomplete (and cannot be booked). The CRM's today is taken
-//     clockSkew ahead of ours, so a CRM clock slightly ahead cannot make an
-//     incomplete answer look complete;
-//   - breaks are listed from break_lookback_days before the range, so a
-//     multi-day break (a renovation) that started earlier is seen. A break
-//     that started even earlier is not: the look-back bounds what is
-//     assumed (the partner API documents the limit).
+// window computes the dates to list for [from, to) in the studio's zone
+// loc and whether the answer can be complete. Viva selects list records by
+// their start date in the studio's day and leaves out exercises of past
+// days (docs/hub.md, completeness bounds). So exercises are listed from
+// the day before the range; a range before the CRM's today (clockSkew
+// ahead of ours) plus overnight_minutes is incomplete; breaks are listed
+// break_lookback_days back.
 func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
 	dateTo = day(to, loc) // a record that starts after to's day cannot overlap
 	if kind == "breaks" {

@@ -9,8 +9,11 @@
 // Trust: the gateway reaches the hub over TLS (system roots, or only the
 // CA of hub.ca_file) and follows no redirect; the hub authenticates the
 // gateway by its secret (Bearer). What the gateway acts on — requests and
-// club configurations — is signed by the hub's own key, pinned at
-// registration once checked out of band (sign.go).
+// club configurations — is signed by the hub's own ed25519 key, which the
+// gateway pins at registration after checking it out of band (the key a
+// release embeds, or the operator's fingerprint). So a TLS-inspecting
+// proxy the club's computer trusts can read the traffic and the gateway
+// secret, but cannot make the gateway write to its CRM (sign.go).
 package tunnel
 
 import (
