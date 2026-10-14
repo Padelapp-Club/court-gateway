@@ -183,8 +183,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("gateway registered", "installation", g.Installation, "version", req.Version)
-	core.WriteJSON(w, http.StatusOK, tunnel.RegisterResponse{Installation: g.Installation, Name: g.Name, Secret: secret,
-		HubKey: core.EncodeHubKey(s.store.HubKey())})
+	out := tunnel.RegisterResponse{Installation: g.Installation, Name: g.Name, Secret: secret, HubKey: core.EncodeHubKey(s.store.HubKey())}
+	out.Sign(s.store.key, req.Code)
+	core.WriteJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) gateway(next func(http.ResponseWriter, *http.Request, GatewayRecord)) http.HandlerFunc {

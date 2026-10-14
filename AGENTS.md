@@ -165,7 +165,7 @@ If `"ok": false`, act on `error.code`:
 | `JOIN_CODE_REJECTED` | code wrong, used or expired — ask the human for a new code |
 | `HUB_UNREACHABLE` | check the hub URL and outbound HTTPS; never open inbound ports |
 | `HUB_REDIRECTED` | the hub URL redirects elsewhere and setup follows no redirect — ask the human for the hub's exact URL |
-| `HUB_KEY_MISMATCH` | the hub answered with another key than the release's or the fingerprint the human gave — **stop**: the connection may be intercepted; report it, have the human re-check the fingerprint with the operator; the join code **is** spent, a new one is needed |
+| `HUB_KEY_MISMATCH` | the hub answered with another key than the release's or the fingerprint the human gave, or with an answer that key did not sign — **stop**: the connection may be intercepted; report it, have the human re-check the fingerprint with the operator; the join code **is** spent, a new one is needed |
 | `HUB_RATE_LIMITED` | too many wrong codes from this address — wait a minute, then retry once with a code the human re-checks |
 | `CONFIG_EXISTS` | a previous install exists — ask the human before re-running with `--force` |
 | `FOLDER_NOT_RESTRICTED` | Windows: the folder could not be closed to everyone but Administrators and SYSTEM — re-run setup in PowerShell as Administrator; nothing was written and the join code is **not** spent |

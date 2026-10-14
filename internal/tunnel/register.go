@@ -20,7 +20,9 @@ var ErrJoinCodeRejected = errors.New("join code rejected")
 // while after too many failed ones.
 var ErrRateLimited = errors.New("too many failed registrations from this address")
 
-// Register exchanges a join code for the gateway secret.
+// Register exchanges a join code for the gateway secret. Nothing of the
+// answer may be used before RegisterResponse.Verify with a key checked
+// out of band: an interceptor of the TLS could have written any field.
 func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version string) (RegisterResponse, error) {
 	var out RegisterResponse
 	body, _ := json.Marshal(RegisterRequest{Code: strings.TrimSpace(code), Version: version})
@@ -39,7 +41,7 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 		return out, ErrRateLimited
 	case status != http.StatusOK:
 		return out, answerError(status, "registration")
-	case err != nil || out.Secret == "" || out.Installation == "":
+	case err != nil || out.Secret == "" || !core.ValidID(out.Installation):
 		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
 	case !validKey(out.HubKey):
 		return RegisterResponse{}, errors.New("hub sent no signing key: it is older than this gateway")

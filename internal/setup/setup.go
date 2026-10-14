@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -198,7 +199,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		return fail(p)
 	}
 	d.HubKey = placeholderKey
-	if p := validate(d, in.Password, "placeholder-secret"); p != nil {
+	if _, p := validate(d, crm, "pending", "", in.Password, "placeholder-secret"); p != nil {
 		return fail(p)
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
@@ -244,15 +245,22 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 
 	// 3. the hub's key, checked out of band: the embedded key or the
 	// operator's fingerprint (an interceptor of the TLS above could have
-	// put in its own); then write, pinning it here and again at every new
-	// join code
+	// put in its own); then the whole answer, which that key must have
+	// signed for this join code, before any other field of it is used;
+	// then write, pinning the key here and again at every new join code.
+	// The CRM settings written are this computer's inputs, never the hub's
+	// (validate): the hub must not decide where the CRM password goes.
 	got, _ := core.ParseHubKey(reg.HubKey) // Register refuses an invalid one
 	if (wantKey != nil && !got.Equal(wantKey)) || (wantPrint != "" && core.NormalizeFingerprint(core.HubKeyFingerprint(got)) != wantPrint) {
 		return fail(problem("HUB_KEY_MISMATCH", "хаб ответил ключом %s, а ожидался другой (встроенный в выпуск или отпечаток от оператора): соединение с хабом перехвачено или отпечаток неверный — ничего не записано; код подключения израсходован, попросите у оператора новый и сверьте отпечаток",
 			core.HubKeyFingerprint(got)))
 	}
+	if reg.Verify(got, strings.TrimSpace(in.JoinCode)) != nil {
+		return fail(problem("HUB_KEY_MISMATCH", "ответ хаба на код подключения не подписан его ключом: соединение с хабом перехвачено — ничего не записано; код подключения израсходован, попросите у оператора новый"))
+	}
 	d.HubKey = reg.HubKey
-	if p := validate(d, in.Password, reg.Secret); p != nil {
+	text, p := validate(d, crm, reg.Installation, reg.Name, in.Password, reg.Secret)
+	if p != nil {
 		return fail(p)
 	}
 	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(in.Password, reg.Secret, d.CRMType)), 0o600); err != nil {
@@ -264,7 +272,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			return notProtected(err)
 		}
 	}
-	if err := core.WriteFileAtomic(cfgPath, []byte(d.render(reg.Installation, reg.Name)), 0o644); err != nil {
+	if err := core.WriteFileAtomic(cfgPath, []byte(text), 0o644); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", cfgPath, err))
 	}
 	res.OK = true
@@ -307,13 +315,19 @@ func envFor(password, secret string) func(string) string {
 // placeholderKey stands for the hub's key until the hub has answered.
 var placeholderKey = core.EncodeHubKey(make([]byte, 32))
 
-// validate checks that the config about to be written loads.
-func validate(d *draft, password, secret string) *Problem {
+// validate renders the config about to be written and checks that it
+// loads with exactly the CRM settings of this computer's inputs (crm).
+func validate(d *draft, crm driver.Params, installation, name, password, secret string) (string, *Problem) {
 	if password == "" {
 		password = "placeholder"
 	}
-	if _, err := core.Load([]byte(d.render("pending", "")), envFor(password, secret)); err != nil {
-		return problem("INTERNAL", "собранная конфигурация не прошла проверку: %v", err)
+	text := d.render(installation, name)
+	s, err := core.Load([]byte(text), envFor(password, secret))
+	if err != nil {
+		return "", problem("INTERNAL", "собранная конфигурация не прошла проверку: %v", err)
 	}
-	return nil
+	if s.CRMType != d.CRMType || !reflect.DeepEqual(map[string]any(s.Driver.CRM), map[string]any(crm)) {
+		return "", problem("INTERNAL", "в собранную конфигурацию попали настройки CRM не из установки — ничего не записано")
+	}
+	return text, nil
 }

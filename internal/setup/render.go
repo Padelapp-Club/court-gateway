@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
@@ -23,6 +24,13 @@ func q(s string) string { return strconv.Quote(s) }
 // render writes gateway.yaml of a hub installation: the hub and the CRM
 // login. No club: the clubs come from the hub.
 func (d *draft) render(installation, name string) string {
+	// the name goes into a comment: no line break may end it
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name)
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	w("# Конфигурация court-gateway, записана командой setup %s.", d.Now.UTC().Format("2006-01-02"))

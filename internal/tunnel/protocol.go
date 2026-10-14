@@ -124,12 +124,15 @@ type RegisterRequest struct {
 }
 
 // RegisterResponse carries the long-lived secret. It is shown once.
-// HubKey is the hub's public signing key (base64), which the gateway pins.
+// HubKey is the hub's public signing key (base64), which the gateway pins;
+// Signature is that key's signature of the whole answer for the join code
+// it answers (Sign, Verify).
 type RegisterResponse struct {
 	Installation string `json:"installation_id"`
 	Name         string `json:"name"`
 	Secret       string `json:"secret"`
 	HubKey       string `json:"hub_key"`
+	Signature    []byte `json:"signature,omitempty"`
 }
 
 // Whoami is the hub's view of the calling gateway.

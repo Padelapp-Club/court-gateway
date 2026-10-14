@@ -146,6 +146,33 @@ func (rc *RemoteConfig) Sign(key ed25519.PrivateKey, installation, registration 
 	rc.Signature = ed25519.Sign(key, rc.Seal.message("config", rc.fields))
 }
 
+// message is what the hub signs of a registration answer: every field,
+// bound to the join code it answers.
+func (rr *RegisterResponse) message(code string) []byte {
+	var c canon
+	c.str("court-gateway hub signature v1")
+	c.str("registration")
+	c.str(SecretSHA256(code))
+	c.str(rr.Installation)
+	c.str(rr.Name)
+	c.str(SecretSHA256(rr.Secret))
+	c.str(rr.HubKey)
+	return c.Bytes()
+}
+
+// Sign signs the answer to join code code (the hub).
+func (rr *RegisterResponse) Sign(key ed25519.PrivateKey, code string) {
+	rr.Signature = ed25519.Sign(key, rr.message(code))
+}
+
+// Verify checks that key signed this answer to code, every field of it.
+func (rr *RegisterResponse) Verify(key ed25519.PublicKey, code string) error {
+	if len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, rr.message(code), rr.Signature) {
+		return fmt.Errorf("%w: the registration answer", ErrBadSignature)
+	}
+	return nil
+}
+
 // timeMessage is what the hub signs of its clock on a poll answer: the
 // time, the poll's nonce and the config version it announces.
 func timeMessage(installation, registration, nonce, version string, ms int64) []byte {

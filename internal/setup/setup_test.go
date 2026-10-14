@@ -3,19 +3,26 @@ package setup
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
 func TestEnvValueRoundTrip(t *testing.T) {
@@ -41,10 +48,10 @@ func TestEnvValueQuotesDollar(t *testing.T) {
 // The written config is an installation: hub and CRM login, no club.
 func TestRenderedConfigHasNoClub(t *testing.T) {
 	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", Username: "admin@example.test"}
-	if p := validate(d, "pw", "secret"); p != nil {
+	text, p := validate(d, driver.Params{"username": "admin@example.test"}, "inst-1", "Сеть", "pw", "secret")
+	if p != nil {
 		t.Fatalf("%v\n%s", p, d.render("inst-1", "Сеть"))
 	}
-	text := d.render("inst-1", "Сеть")
 	s, err := core.Load([]byte(text), envFor("pw", "secret"))
 	if err != nil {
 		t.Fatal(err)
@@ -91,21 +98,39 @@ func TestSetupRateLimitedByTheHub(t *testing.T) {
 	}
 }
 
-// testHubKey is the hub key registerTransport answers with.
-const testHubKey = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+// Fixture hub keys: testHub is the hub registerTransport plays (its public
+// key testHubKey), otherHub another one, e.g. an interceptor's own.
+var (
+	testHub    = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	otherHub   = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
+	testHubKey = publicOf(testHub)
+)
 
-type registerTransport struct{}
+func publicOf(k ed25519.PrivateKey) string { return core.EncodeHubKey(k.Public().(ed25519.PublicKey)) }
 
-func (registerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	body := `{"installation_id":"inst-1","name":"Сеть","secret":"cgs_0123456789abcdef0123456789abcdef","hub_key":"` + testHubKey + `"}`
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
+// keyTransport answers a registration as a hub with key would, signed
+// for the join code asked; nil answers without a key (an old hub).
+type keyTransport struct{ key ed25519.PrivateKey }
+
+func (k keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	var rq tunnel.RegisterRequest
+	_ = json.NewDecoder(r.Body).Decode(&rq)
+	rr := tunnel.RegisterResponse{Installation: "inst-1", Name: "Сеть", Secret: "cgs_0123456789abcdef0123456789abcdef"}
+	if k.key != nil {
+		rr.HubKey = publicOf(k.key)
+		rr.Sign(k.key, rq.Code)
+	}
+	body, _ := json.Marshal(rr)
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}, Request: r}, nil
 }
+
+var registerTransport = keyTransport{testHub}
 
 type countingTransport struct{ calls *int }
 
 func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	*c.calls++
-	return registerTransport{}.RoundTrip(r)
+	return registerTransport.RoundTrip(r)
 }
 
 // On Windows setup closes the config folder (and an existing .env) before
@@ -159,23 +184,15 @@ func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 	}
 }
 
-// keyTransport answers a registration with the hub key key ("" omits it).
-type keyTransport string
-
-func (k keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	body := `{"installation_id":"inst-1","name":"Сеть","secret":"cgs_0123456789abcdef0123456789abcdef","hub_key":"` + string(k) + `"}`
-	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
-}
-
 // setup pins the hub's signing key from the registration answer, and
 // every new join code pins it again; a hub that sends no key is refused.
 func TestSetupPinsTheHubKey(t *testing.T) {
 	dir := t.TempDir()
 	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
-	other := core.EncodeHubKey(make([]byte, 32))
-	for _, key := range []string{testHubKey, other} {
+	for _, hub := range []ed25519.PrivateKey{testHub, otherHub} {
+		key := publicOf(hub)
 		in.HubKeyFingerprint = printOf(key)
-		if _, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(key)}); err != nil {
+		if _, err := Run(context.Background(), in, Deps{HubTransport: keyTransport{hub}}); err != nil {
 			t.Fatal(err)
 		}
 		s, err := core.LoadFile(in.ConfigPath, envFor("", "cgs_x"))
@@ -185,7 +202,7 @@ func TestSetupPinsTheHubKey(t *testing.T) {
 		in.Force = true
 	}
 	fresh := filepath.Join(t.TempDir(), "gateway.yaml")
-	res, err := Run(context.Background(), Input{ConfigPath: fresh, HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo", HubKeyFingerprint: in.HubKeyFingerprint}, Deps{HubTransport: keyTransport("")})
+	res, err := Run(context.Background(), Input{ConfigPath: fresh, HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo", HubKeyFingerprint: in.HubKeyFingerprint}, Deps{HubTransport: keyTransport{}})
 	if err == nil || res.Error.Code != "HUB_UNREACHABLE" {
 		t.Fatalf("a hub without a key: %+v %v", res.Error, err)
 	}
@@ -232,7 +249,7 @@ func printOf(b64 string) string {
 // and nothing is written; a malformed fingerprint is refused before the
 // join code is spent.
 func TestSetupAuthenticatesTheHubKey(t *testing.T) {
-	forged := core.EncodeHubKey(make([]byte, 32)) // what an interceptor would put in
+	forged := keyTransport{otherHub} // an interceptor answers with its own key
 	for name, in := range map[string]Input{
 		"embedded":    {HubKey: testHubKey},
 		"fingerprint": {HubKeyFingerprint: strings.ToLower(printOf(testHubKey))}, // as typed: case and dashes do not matter
@@ -240,18 +257,18 @@ func TestSetupAuthenticatesTheHubKey(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			in.ConfigPath, in.HubURL, in.JoinCode, in.CRMType = filepath.Join(dir, "gateway.yaml"), "https://hub.example.test", "AAAA-AAAA-AAAA-AAAA", "demo"
-			res, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(forged)})
+			res, err := Run(context.Background(), in, Deps{HubTransport: forged})
 			if err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
 				t.Fatalf("a substituted key: %+v %v", res.Error, err)
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 				t.Fatalf("files written: %v", entries)
 			}
-			if _, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(testHubKey)}); err != nil {
+			if _, err := Run(context.Background(), in, Deps{HubTransport: registerTransport}); err != nil {
 				t.Fatalf("the hub's own key: %v", err)
 			}
 			in.Force = true // re-enrollment checks again
-			if res, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(forged)}); err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
+			if res, err := Run(context.Background(), in, Deps{HubTransport: forged}); err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
 				t.Fatalf("a substituted key at --force: %+v %v", res.Error, err)
 			}
 			if s, err := core.LoadFile(in.ConfigPath, envFor("", "cgs_x")); err != nil || core.EncodeHubKey(s.Hub.Key) != testHubKey {
@@ -287,5 +304,81 @@ func TestAgentsTableNamesEverySetupCode(t *testing.T) {
 		if !row.Match(agents) {
 			t.Errorf("AGENTS.md has no row for %s", m[1])
 		}
+	}
+}
+
+// tamperTransport answers as testHub would and then changes the answer
+// on its way, as an interceptor of the TLS can.
+type tamperTransport func(*tunnel.RegisterResponse)
+
+func (f tamperTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, _ := registerTransport.RoundTrip(r)
+	var rr tunnel.RegisterResponse
+	_ = json.NewDecoder(resp.Body).Decode(&rr)
+	f(&rr)
+	body, _ := json.Marshal(rr)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
+}
+
+// The registration answer is used only when the pinned hub key signed all
+// of it for this join code: an interceptor that changes any field, or
+// passes off the answer to another code, gets nothing written. And the
+// CRM settings written are only this computer's: even a signed name
+// cannot add a CRM endpoint, so no CRM login ever goes to a host the hub
+// named.
+func TestSetupTakesNothingUnsignedFromTheHub(t *testing.T) {
+	const password = "fixture-crm-password"
+	stub := vivastub.New("admin@example.test", password, "00000000-0000-4000-8000-000000000001")
+	crm := httptest.NewServer(stub)
+	defer crm.Close()
+	var evilCalls atomic.Int32
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		evilCalls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer evil.Close()
+	inject := fmt.Sprintf("\ncrm: {type: viva, username: admin@example.test, auth_url: %s/token, api_url: %s/api/v1}\n---\n#", evil.URL, evil.URL)
+	input := func(dir string) Input {
+		return Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA",
+			HubKey: testHubKey, Username: "admin@example.test", Password: password, AuthURL: crm.URL + "/token", APIURL: crm.URL + "/api/v1"}
+	}
+	for name, tamper := range map[string]func(*tunnel.RegisterResponse){
+		"installation":   func(rr *tunnel.RegisterResponse) { rr.Installation = "inst-2" },
+		"name":           func(rr *tunnel.RegisterResponse) { rr.Name = inject },
+		"secret":         func(rr *tunnel.RegisterResponse) { rr.Secret = "cgs_interceptor-chosen-secret" },
+		"signature":      func(rr *tunnel.RegisterResponse) { rr.Signature[0] ^= 1 },
+		"unsigned":       func(rr *tunnel.RegisterResponse) { rr.Signature = nil },
+		"another code's": func(rr *tunnel.RegisterResponse) { rr.Sign(testHub, "BBBB-BBBB-BBBB-BBBB") },
+	} {
+		dir := t.TempDir()
+		res, err := Run(context.Background(), input(dir), Deps{HubTransport: tamperTransport(tamper), CRMClient: crm.Client()})
+		if err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
+			t.Fatalf("%s changed: %+v %v", name, res.Error, err)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("%s changed: files written: %v", name, entries)
+		}
+	}
+	// the hub itself signs such a name: it stays a comment
+	dir := t.TempDir()
+	signed := tamperTransport(func(rr *tunnel.RegisterResponse) { rr.Name = inject; rr.Sign(testHub, "AAAA-AAAA-AAAA-AAAA") })
+	if _, err := Run(context.Background(), input(dir), Deps{HubTransport: signed, CRMClient: crm.Client()}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := core.EnvWithDotEnv(filepath.Join(dir, "gateway.yaml"), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := core.LoadFile(filepath.Join(dir, "gateway.yaml"), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acct, err := viva.NewAccount(s.Driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := acct.CheckLogin(context.Background()); err != nil || evilCalls.Load() != 0 || s.Driver.CRM["auth_url"] != crm.URL+"/token" {
+		t.Fatalf("CRM login after a hostile name: %v, %d calls to the hub's host, auth_url %v", err, evilCalls.Load(), s.Driver.CRM["auth_url"])
 	}
 }
