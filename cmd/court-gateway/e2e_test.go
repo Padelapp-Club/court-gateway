@@ -56,6 +56,11 @@ type stack struct {
 
 func newStack(t *testing.T, hubYAML ...string) *stack {
 	t.Helper()
+	return newStackWith(t, hub.Options{}, hubYAML...)
+}
+
+func newStackWith(t *testing.T, opts hub.Options, hubYAML ...string) *stack {
+	t.Helper()
 	stub := vivastub.New(crmUser, crmPass, studio)
 	stub.AddRoom(roomA, "Корт 10")
 	stub.AddRoom(roomB, "Корт 2")
@@ -76,7 +81,7 @@ func newStack(t *testing.T, hubYAML ...string) *stack {
 		e := contract.KeyEnv()
 		e["HUB_OPERATOR_KEY"] = "test-operator-key-0123456789abcdef"
 		return e
-	}(), hub.Options{})
+	}(), opts)
 	return &stack{hub: h, stub: stub, crm: crm, dir: t.TempDir()}
 }
 
@@ -630,4 +635,31 @@ func TestAppliedConfigIsReportedAtOnce(t *testing.T) {
 		h := mon.Health("club-one")
 		return h.ConfigVersion == 1 && strings.Join(h.Clubs, ",") == "club-one"
 	})
+}
+
+// The running service decides "now" on the hub's signed time, not on this
+// computer's clock: with the hub 50 minutes ahead, a booking that starts
+// in half an hour by this computer has started by the hub, and is refused.
+func TestServeDecidesOnTheHubsClock(t *testing.T) {
+	const ahead = 50 * time.Minute
+	s := newStackWith(t, hub.Options{Now: func() time.Time { return time.Now().Add(ahead) }})
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	s.hub.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/club-one/clubs/club-one", core.ClubSpec{
+		ID: "club-one", Name: "Клуб Один", Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "00:00-24:00"},
+		CRM: map[string]any{"studio": studio}, Courts: []core.CourtSpec{{ID: "court-1", Name: "Корт 10", Params: map[string]any{"viva_room": roomA}}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, filepath.Join(s.dir, "gateway.yaml"), "", &contract.LogBuffer{}, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	mon := s.hub.Server().Monitor()
+	testkit.WaitFor(t, "the club config applied", 15*time.Second, func() bool { return mon.Health("club-one").ConfigVersion == 1 })
+	start := time.Now().Add(10 * time.Minute).Truncate(30 * time.Minute).Add(30 * time.Minute) // in 20-40 min
+	body := fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`, start.Format(time.RFC3339), start.Add(time.Hour).Format(time.RFC3339))
+	resp, b := s.hub.Do(t, 10*time.Second, http.MethodPost, "/v1/clubs/club-one/bookings", contract.BookKey, strings.NewReader(body))
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "start must be in the future") {
+		t.Fatalf("a booking that started %s ago by the hub: %d %s", time.Now().Add(ahead).Sub(start).Round(time.Minute), resp.StatusCode, b)
+	}
 }
