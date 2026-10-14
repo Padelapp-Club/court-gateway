@@ -76,16 +76,6 @@ func listStudios(ctx context.Context, c *client) ([]vivaStudio, error) {
 	return out, nil
 }
 
-// studioClock parses "HH:MM" or "HH:MM+03:00" (the offset is the studio's own,
-// so the clock part is already local time).
-func studioClock(s string) (int, bool) {
-	s = strings.TrimSpace(s)
-	if len(s) < 5 || s[2] != ':' {
-		return 0, false
-	}
-	return core.ParseClock(s[:5])
-}
-
 // studioHours turns workTime into hours per ISO weekday. from == to means
 // open around the clock; a day missing from workTime is closed. Hours past
 // midnight (Monday 20:00–02:00) belong to the next day: Tuesday opens at
@@ -103,8 +93,8 @@ func studioHours(wt *vivaWorkTime) ([7]*[2]int, []driver.Notice, bool) {
 		if d == nil {
 			continue
 		}
-		from, ok1 := studioClock(d.From)
-		to, ok2 := studioClock(d.To)
+		from, ok1 := core.ParseClock(d.From)
+		to, ok2 := core.ParseClock(d.To)
 		if !ok1 || !ok2 {
 			continue
 		}

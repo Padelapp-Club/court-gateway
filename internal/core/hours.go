@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var dayKeys = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
@@ -45,11 +46,25 @@ func parseDays(key string) ([]int, error) {
 	return out, nil
 }
 
-// ParseClock reads "HH:MM" as minutes since midnight; "24:00" (1440) is
-// an end of day. The one clock parser of the gateway: drivers use it for
-// the CRM's clock times.
+// ParseClock reads "HH:MM" as minutes since midnight; seconds (dropped)
+// and a UTC offset may follow, "HH:MM:SS+03:00" (the clock is already
+// local). "24:00" (1440) is an end of day. The one clock parser of the
+// gateway: drivers use it for the CRM's clock times.
 func ParseClock(s string) (int, bool) {
-	h, m, ok := strings.Cut(strings.TrimSpace(s), ":")
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "+-"); i >= 0 {
+		if _, err := time.Parse("-07:00", s[i:]); err != nil {
+			return 0, false
+		}
+		s = s[:i]
+	}
+	if len(s) == 8 && s[5] == ':' {
+		if sec, err := strconv.Atoi(s[6:]); err != nil || sec < 0 || sec > 59 {
+			return 0, false
+		}
+		s = s[:5]
+	}
+	h, m, ok := strings.Cut(s, ":")
 	if !ok || len(h) == 0 || len(h) > 2 || len(m) != 2 {
 		return 0, false
 	}

@@ -163,3 +163,16 @@ func TestURLsWithCredentialsAreRefusedUnechoed(t *testing.T) {
 		}
 	}
 }
+
+func TestParseClock(t *testing.T) {
+	for s, want := range map[string]int{"07:30": 450, " 7:30 ": 450, "24:00": 1440, "07:30:59": 450, "07:30+03:00": 450, "07:30:00-04:00": 450} {
+		if got, ok := ParseClock(s); !ok || got != want {
+			t.Errorf("ParseClock(%q) = %d, %v; want %d", s, got, ok, want)
+		}
+	}
+	for _, s := range []string{"", "7", "07:3", "07:60", "24:30", "25:00", "07:30:60", "07:30+3", "07:30 +03:00x", "-07:30"} {
+		if _, ok := ParseClock(s); ok {
+			t.Errorf("ParseClock(%q) accepted", s)
+		}
+	}
+}

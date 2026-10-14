@@ -156,9 +156,9 @@ func timeSpans(c *condition) ([]span, bool) {
 		}
 		days[i] = true
 	}
-	from, ok1 := clock(c.TimeStart)
-	to, ok2 := clock(c.TimeEnd)
-	if !ok1 || !ok2 {
+	from, ok1 := core.ParseClock(c.TimeStart)
+	to, ok2 := core.ParseClock(c.TimeEnd)
+	if !ok1 || !ok2 || from == 1440 || to == 1440 {
 		return nil, false
 	}
 	if to == 0 {
@@ -174,20 +174,6 @@ func timeSpans(c *condition) ([]span, bool) {
 		}
 	}
 	return []span{{days: days, from: from, to: 1440}, {days: next, from: 0, to: to}}, true
-}
-
-// clock parses "HH:MM" or "HH:MM:SS" (the seconds are dropped) into
-// minutes before 24:00.
-func clock(s string) (int, bool) {
-	parts := strings.Split(strings.TrimSpace(s), ":")
-	if len(parts) == 3 {
-		if _, err := strconv.Atoi(parts[2]); err != nil {
-			return 0, false
-		}
-		parts = parts[:2]
-	}
-	m, ok := core.ParseClock(strings.Join(parts, ":"))
-	return m, ok && m < 1440
 }
 
 // kopecks reads a JSON number or numeric string as an amount in kopecks.
