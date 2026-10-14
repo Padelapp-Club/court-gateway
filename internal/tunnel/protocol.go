@@ -108,6 +108,9 @@ type Request struct {
 	Scopes    []string `json:"scopes,omitempty"`
 	TimeoutMS int      `json:"timeout_ms"`
 	Seal
+	// run is the hub run (config epoch) the signed time of the poll answer
+	// that carried the request names; it is not sent.
+	run string
 }
 
 // Response is what a gateway posts back.

@@ -399,7 +399,7 @@ func TestRequestWaitsUntilTheHubRunIsConfirmed(t *testing.T) {
 	if err := c.verify.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1 run-b", time.Now()), "1 run-b", time.Now(), earlier); err != nil {
 		t.Fatal(err)
 	}
-	rq := signed(Request{Method: http.MethodGet, Path: "/v1/clubs"})
+	rq := signed(Request{Method: http.MethodGet, Path: "/v1/clubs", run: "run-b"})
 	if r := c.Execute(t.Context(), rq, testNonce); r.Status != http.StatusServiceUnavailable || !strings.Contains(string(r.Body), "CONFIG_PENDING") || ran != 0 {
 		t.Fatalf("before the run is confirmed: %d %s, ran %d", r.Status, r.Body, ran)
 	}

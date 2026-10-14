@@ -397,7 +397,7 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 		}
 		servers = append(servers, old)
 	}
-	s.clubs.Set(servers, unavailable...)
+	s.clubs.Set(s.epoch, servers, unavailable...)
 	slices.Sort(problems)
 	return problems
 }

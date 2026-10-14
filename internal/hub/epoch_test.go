@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -418,4 +419,160 @@ func TestRestartDuringTheFirstPolls(t *testing.T) {
 		srv, ok := clubs.Server("club-a")
 		return ok && srv.Settings().ClubName == "After restart" && syncer.Behind() == 0
 	})
+}
+
+// vivaGateway is a gateway of installation test-net on h, reaching it
+// through wrap(the hub's transport), serving vivaClub(roomA) on a Viva
+// stub. No syncer runs: pull takes the config the hub announces now, as
+// a syncer does.
+func vivaGateway(t *testing.T, h *testkit.Hub, wrap func(http.RoundTripper) http.RoundTripper) (*vivastub.Stub, *tunnel.Verifier, *testkit.Gateway, func() tunnel.RemoteConfig) {
+	t.Helper()
+	stub := vivastub.New("review@example.test", "fixture-password", vivaStudio)
+	stub.AddRoom(roomA, "Room A")
+	stub.AddRoom(roomB, "Room B")
+	crm := httptest.NewServer(stub)
+	t.Cleanup(crm.Close)
+	h.MustOperator(t, http.StatusCreated, http.MethodPost, "/hub/installations", map[string]string{"installation_id": "test-net"})
+	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/test-net/clubs/club-a", vivaClub(roomA))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	rr, err := tunnel.Register(ctx, h.Transport(), h.URL(), h.JoinCode("test-net", "Сеть"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"CRM_PASSWORD": "fixture-password", core.DefaultHubSecretEnv: rr.Secret}
+	yaml := fmt.Sprintf("hub: {url: %s, installation: test-net, key: %s}\ncrm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n", h.URL(), rr.HubKey, crm.URL, crm.URL)
+	base, err := core.Load([]byte(yaml), func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := tunnel.NewVerifier(h.Server().Store().HubKey(), "test-net", rr.Secret, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.Driver.Clock = v.Now
+	if base.Driver.Account, err = viva.NewAccount(base.Driver); err != nil {
+		t.Fatal(err)
+	}
+	clubs := core.NewClubs(core.ClubsOptions{})
+	syncer := remote.New(remote.Options{Base: base, Clubs: clubs, Factories: map[string]driver.Factory{"viva": viva.New}})
+	cfg := h.ClientConfig("test-net", rr.Secret, clubs.TunnelHandler(), nil)
+	cfg.Verifier, cfg.OnConfigVersion, cfg.PollTimeout = v, syncer.Notify, 30*time.Second
+	if wrap != nil {
+		cfg.Transport = wrap(cfg.Transport)
+	}
+	g := testkit.StartGateway(t, cfg)
+	t.Cleanup(g.Stop)
+	return stub, v, g, func() tunnel.RemoteConfig {
+		t.Helper()
+		if _, err := g.Client.Whoami(ctx); err != nil {
+			t.Fatal(err)
+		}
+		rc, err := g.Client.FetchConfig(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syncer.Apply(ctx, rc); err != nil {
+			t.Fatal(err)
+		}
+		return rc
+	}
+}
+
+// holdBody delays the body of the first poll answer that carries a
+// request until released; it never makes or changes a message.
+type holdBody struct {
+	base          http.RoundTripper
+	once          sync.Once
+	held, release chan struct{}
+}
+
+func (x *holdBody) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := x.base.RoundTrip(r)
+	if err != nil || r.URL.Path != tunnel.PathPoll || resp.StatusCode != http.StatusOK {
+		return resp, err
+	}
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) > 0 {
+		x.once.Do(func() {
+			close(x.held)
+			_ = wait(r.Context(), x.release)
+		})
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(data))
+	return resp, nil
+}
+
+// A booking the first hub run signed, its poll answer delivered only after
+// the restarted run's config (court-1 moved to room B) is applied, is not
+// run: it is refused, and nothing reaches the CRM.
+func TestRequestOfAReplacedHubRunIsNotRun(t *testing.T) {
+	h := startOperatorHub(t, hub.Options{})
+	x := &holdBody{held: make(chan struct{}), release: make(chan struct{})}
+	stub, _, g, pull := vivaGateway(t, h, func(rt http.RoundTripper) http.RoundTripper { x.base = rt; return x })
+	before := pull()
+	testkit.WaitFor(t, "connected", 5*time.Second, g.Client.Connected)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		start := time.Now().UTC().Truncate(time.Hour).Add(48 * time.Hour)
+		body := fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`, start.Format(time.RFC3339), start.Add(time.Hour).Format(time.RFC3339))
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.URL()+"/v1/clubs/club-a/bookings", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+contract.BookKey)
+		if resp, err := (&http.Client{Transport: h.Transport()}).Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-x.held // signed by the first run, not yet delivered
+	cancel()
+	<-done
+	h.Restart()
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/test-net/clubs/club-a", vivaClub(roomB))
+	if after := pull(); after.Epoch == before.Epoch {
+		t.Fatal("the hub's run did not change")
+	}
+	close(x.release)
+	written := func() bool {
+		return slices.ContainsFunc(stub.Calls(), func(call string) bool { return !strings.HasPrefix(call, "GET ") })
+	}
+	testkit.WaitFor(t, "the first run's booking answered", 5*time.Second, func() bool { return g.Client.Refused() > 0 || written() })
+	if written() || g.Client.Refused() == 0 {
+		t.Fatalf("the first run's booking run: CRM calls %q, refused %d", stub.Calls(), g.Client.Refused())
+	}
+}
+
+// A booking of the restarted hub run, which moved court-1 to room B, is
+// not served by the clubs of the first run's config: it gets 503
+// CONFIG_PENDING until its run's config is applied, then court-1 is booked
+// in room B.
+func TestRequestWaitsForItsHubRunsConfig(t *testing.T) {
+	h := startOperatorHub(t, hub.Options{})
+	stub, v, _, pull := vivaGateway(t, h, nil)
+	before := pull()
+	h.Restart()
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/test-net/clubs/club-a", vivaClub(roomB))
+	testkit.WaitFor(t, "the restarted run confirmed", 5*time.Second, func() bool {
+		_, run := v.Announced()
+		return run != before.Epoch && v.Confirmed()
+	})
+	start := time.Now().UTC().Truncate(time.Hour).Add(48 * time.Hour)
+	body := fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`, start.Format(time.RFC3339), start.Add(time.Hour).Format(time.RFC3339))
+	resp, data := h.Do(t, 10*time.Second, http.MethodPost, "/v1/clubs/club-a/bookings", contract.BookKey, strings.NewReader(body))
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(data), "CONFIG_PENDING") {
+		t.Errorf("before the run's config is applied: %d %s", resp.StatusCode, data)
+	}
+	for _, call := range stub.Calls() {
+		if !strings.HasPrefix(call, "GET ") {
+			t.Errorf("CRM write: %s", call)
+		}
+	}
+	pull()
+	if status, room := book(t, h, stub, 0); status != http.StatusCreated || room != roomB {
+		t.Fatalf("court-1 booked: %d, in room %q", status, room)
+	}
 }

@@ -39,7 +39,7 @@ func clubsOf(t *testing.T, drivers ...driver.Driver) *Clubs {
 	for i, d := range drivers {
 		servers = append(servers, NewServer(&Settings{ClubID: string(rune('a' + i))}, d, nil))
 	}
-	c.Set(servers)
+	c.Set("", servers)
 	return c
 }
 

@@ -367,13 +367,19 @@ func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 // and for the poll that carried it (nonce, fresh on every poll), so a
 // request runs once with nothing kept to remember it. Until the hub's
 // time is known it accepts nothing (ErrClockUnknown), nor while its run
-// is not confirmed (ErrUnconfirmedRun).
+// is not confirmed (ErrUnconfirmedRun), nor a request of a run other than
+// the current one.
 func (v *Verifier) Request(rq *Request, nonce string) error {
 	if err := v.check(rq.Seal, rq.message(nonce), true); err != nil {
 		return err
 	}
-	if !v.Confirmed() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	switch {
+	case v.unsure:
 		return ErrUnconfirmedRun
+	case rq.run != v.epoch:
+		return fmt.Errorf("%w: signed in another hub run than the current one", ErrBadSignature)
 	}
 	return nil
 }

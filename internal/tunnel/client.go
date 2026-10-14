@@ -373,7 +373,7 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, string, 
 }
 
 func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, error) {
-	resp, err := c.doTimed(req)
+	resp, run, err := c.timed(req)
 	if err != nil {
 		return nil, cleanError(err)
 	}
@@ -408,6 +408,7 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 	if rq.ID == "" {
 		return nil, errors.New("hub sent a request without id")
 	}
+	rq.run = run
 	return &rq, nil
 }
 
@@ -415,13 +416,20 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 // config version from the answer (Verifier.Time), then announces the
 // version taken (OnConfigVersion).
 func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
+	resp, _, err := c.timed(req)
+	return resp, err
+}
+
+// timed is doTimed, also returning the hub run (config epoch) the answer's
+// signed time names, "" when none verified: no hub run is "".
+func (c *Client) timed(req *http.Request) (*http.Response, string, error) {
 	var nonce [16]byte
 	_, _ = crand.Read(nonce[:])
 	req.Header.Set(HeaderNonce, hex.EncodeToString(nonce[:]))
 	sent, ticket := c.verify.now(), c.verify.Ticket()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if h := resp.Header.Get(HeaderHubTime); h != "" {
 		version, epoch := resp.Header.Get(HeaderConfigVersion), resp.Header.Get(HeaderConfigEpoch)
@@ -436,12 +444,16 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 		case err != nil:
 			c.log.Debug("the hub's time not taken", "error", err)
 		}
+		if err != nil && !errors.Is(err, ErrSlowTime) {
+			return resp, "", nil
+		}
 		n, perr := strconv.ParseInt(version, 10, 64)
-		if (err == nil || errors.Is(err, ErrSlowTime)) && perr == nil && n >= 0 && c.cfg.OnConfigVersion != nil {
+		if perr == nil && n >= 0 && c.cfg.OnConfigVersion != nil {
 			c.cfg.OnConfigVersion(c.verify.Announced())
 		}
+		return resp, epoch, nil
 	}
-	return resp, nil
+	return resp, "", nil
 }
 
 // confirm makes an exchange now when another hub run answered, so that its
@@ -597,6 +609,7 @@ func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response
 	}
 	rctx, cancel := context.WithTimeout(ctx, ExecTimeout(rq.TimeoutMS))
 	defer cancel()
+	rctx = core.WithHubRun(rctx, rq.run)
 	if rq.Partner != "" {
 		rctx = auth.WithPartnerName(rctx, rq.Partner)
 	}

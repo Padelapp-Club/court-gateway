@@ -43,6 +43,8 @@ type clubTable struct {
 	byID   map[string]clubEntry
 	// unavailable are configured clubs whose config does not load.
 	unavailable map[string]bool
+	// run is the hub run (config epoch) of the config they come from.
+	run string
 }
 
 // ClubsOptions configure NewClubs.
@@ -66,11 +68,13 @@ func NewClubs(o ClubsOptions) *Clubs {
 // e.g. CRM discovery); it must be called before TunnelHandler.
 func (c *Clubs) SetGatewayAPI(h http.Handler) { c.gatewayAPI = h }
 
-// Set replaces the served clubs. unavailable are clubs of the config that
-// are not served because their config does not load: partners get 503
-// for them rather than 404.
-func (c *Clubs) Set(servers []*Server, unavailable ...string) {
-	t := &clubTable{loaded: true, byID: make(map[string]clubEntry, len(servers)), unavailable: map[string]bool{}}
+// Set replaces the served clubs with those of a config of hub run run (its
+// epoch; "" for clubs not from the hub): a request the hub signed in
+// another run (WithHubRun) gets 503 CONFIG_PENDING. unavailable are clubs of the
+// config that are not served because their config does not load: partners
+// get 503 for them rather than 404.
+func (c *Clubs) Set(run string, servers []*Server, unavailable ...string) {
+	t := &clubTable{loaded: true, byID: make(map[string]clubEntry, len(servers)), unavailable: map[string]bool{}, run: run}
 	for _, id := range unavailable {
 		t.unavailable[id] = true
 	}
@@ -83,6 +87,14 @@ func (c *Clubs) Set(servers []*Server, unavailable ...string) {
 	}
 	sort.Strings(t.ids)
 	c.cur.Store(t)
+}
+
+type hubRunKey struct{}
+
+// WithHubRun returns a context of a request the hub signed in run (its
+// config epoch): only clubs of a config of that run serve it (Set).
+func WithHubRun(ctx context.Context, run string) context.Context {
+	return context.WithValue(ctx, hubRunKey{}, run)
 }
 
 // SetPending says whether the hub announced a config not applied yet: a
@@ -169,9 +181,11 @@ func (c *Clubs) APIHandler() http.Handler {
 		}
 		club, _, _ := strings.Cut(rest, "/")
 		e, ok := t.byID[club]
+		run, tunnelled := r.Context().Value(hubRunKey{}).(string)
+		other := tunnelled && t.run != "" && run != t.run // its run's config is not applied yet
 		switch {
-		case ok:
-		case !t.loaded || c.pending.Load() && !t.unavailable[club]:
+		case ok && !other:
+		case !t.loaded || other || c.pending.Load() && !t.unavailable[club]:
 			w.Header().Set("Retry-After", "10")
 			WriteError(w, r, http.StatusServiceUnavailable, "CONFIG_PENDING", "the gateway has not received its club configuration yet")
 			return

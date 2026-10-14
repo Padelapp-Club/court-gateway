@@ -190,7 +190,7 @@ func vivaClub(t *testing.T, secret string) (*core.Clubs, *vivastub.Stub) {
 		t.Fatal(err)
 	}
 	clubs := core.NewClubs(core.ClubsOptions{})
-	clubs.Set([]*core.Server{core.NewServer(s, d, nil)})
+	clubs.Set("", []*core.Server{core.NewServer(s, d, nil)})
 	return clubs, stub
 }
 
