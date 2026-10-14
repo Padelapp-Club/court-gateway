@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/doctor"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
+	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -129,5 +132,38 @@ func TestDoctorSaysLoopbackHasNoTLS(t *testing.T) {
 		if c.Code == doctor.CodeHubReach && (c.Status != doctor.OK || c.Message != "хаб отвечает (loopback без TLS)") {
 			t.Fatalf("%s: %s %s", c.Code, c.Status, c.Message)
 		}
+	}
+}
+
+// With the hub reachable and its club config received, an installation
+// the operator has not given a club yet is told so on the occupancy line,
+// not that the hub is unreachable.
+func TestDoctorOccupancyWithNoClubOnTheHub(t *testing.T) {
+	h := testkit.StartHub(t, testkit.OperatorYAML, testkit.HubEnv(), hub.Options{})
+	h.MustOperator(t, http.StatusCreated, http.MethodPost, "/hub/installations", map[string]string{"installation_id": "test-net"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rr, err := tunnel.Register(ctx, h.Transport(), h.URL(), h.JoinCode("test-net", "Сеть"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(p, []byte("hub: {url: "+h.URL()+", installation: test-net, key: "+rr.HubKey+"}\n"+testkit.DemoCRM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"GATEWAY_HUB_SECRET": rr.Secret}
+	rep := doctor.Run(context.Background(), doctor.Options{ConfigPath: p, Getenv: func(k string) string { return env[k] },
+		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", HubTransport: h.Transport(), Timeout: 10 * time.Second})
+	if c := hubConfig(rep); c.Status != doctor.OK {
+		t.Fatalf("HUB_CONFIG %s (%s)", c.Status, c.Message)
+	}
+	var occupancy doctor.Check
+	for _, c := range rep.Checks {
+		if c.Code == doctor.CodeOccupancy {
+			occupancy = c
+		}
+	}
+	if occupancy.Status != doctor.Skip || !strings.Contains(occupancy.Message, "клубов пока нет") {
+		t.Errorf("occupancy: %s %s", occupancy.Status, occupancy.Message)
 	}
 }
