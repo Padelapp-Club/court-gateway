@@ -246,6 +246,28 @@ func (s *Server) driverError(w http.ResponseWriter, r *http.Request, op string, 
 	WriteError(w, r, status, code, msg)
 }
 
+// crmFailure is what a CRM failure is to a partner (status, code,
+// message) and to readiness (ready), by its kind.
+type crmFailure struct {
+	status           int
+	code, msg, ready string
+}
+
+var crmFailures = map[driver.UpstreamKind]crmFailure{
+	driver.UpstreamUnavailable: {http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "the club's CRM is unavailable", "CRM_UNREACHABLE"},
+	driver.UpstreamAuth:        {http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM", "CRM_AUTH_FAILED"},
+	driver.UpstreamLogin:       {http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM", "CRM_AUTH_ERROR"},
+	driver.UpstreamInvalid:     {http.StatusBadGateway, "UPSTREAM_INVALID", "the club's CRM returned a response the gateway cannot interpret", "CRM_INVALID_RESPONSE"},
+	driver.UpstreamRejected:    {http.StatusBadGateway, "UPSTREAM_REJECTED", "the club's CRM rejected the request", "CRM_REJECTED"},
+}
+
+func failureOf(ue *driver.UpstreamError) crmFailure {
+	if f, ok := crmFailures[ue.Kind]; ok {
+		return f
+	}
+	return crmFailures[driver.UpstreamUnavailable]
+}
+
 func classify(err error) (int, string, string) {
 	var ue *driver.UpstreamError
 	switch {
@@ -266,16 +288,8 @@ func classify(err error) (int, string, string) {
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "the club's CRM did not answer in time"
 	case errors.As(err, &ue):
-		switch ue.Kind {
-		case driver.UpstreamInvalid:
-			return http.StatusBadGateway, "UPSTREAM_INVALID", "the club's CRM returned a response the gateway cannot interpret"
-		case driver.UpstreamAuth, driver.UpstreamLogin:
-			return http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM"
-		case driver.UpstreamRejected:
-			return http.StatusBadGateway, "UPSTREAM_REJECTED", "the club's CRM rejected the request"
-		default:
-			return http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "the club's CRM is unavailable"
-		}
+		f := failureOf(ue)
+		return f.status, f.code, f.msg
 	default:
 		return http.StatusInternalServerError, "INTERNAL", "internal error"
 	}
@@ -318,18 +332,7 @@ func ReadyReason(err error) string {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "CRM_TIMEOUT"
 	case errors.As(err, &ue):
-		switch ue.Kind {
-		case driver.UpstreamAuth:
-			return "CRM_AUTH_FAILED"
-		case driver.UpstreamLogin:
-			return "CRM_AUTH_ERROR"
-		case driver.UpstreamInvalid:
-			return "CRM_INVALID_RESPONSE"
-		case driver.UpstreamRejected:
-			return "CRM_REJECTED"
-		default:
-			return "CRM_UNREACHABLE"
-		}
+		return failureOf(ue).ready
 	default:
 		return "CRM_ERROR"
 	}
