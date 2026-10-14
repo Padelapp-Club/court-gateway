@@ -337,9 +337,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayR
 			out.Clubs = append(out.Clubs, raw)
 		}
 	}
-	if s.store.next != nil {
-		out.NextKey = core.EncodeHubKey(s.store.next)
-	}
 	out.Sign(s.store.key, g.Installation, g.registration(), s.now())
 	core.WriteJSON(w, http.StatusOK, out)
 }

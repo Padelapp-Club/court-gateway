@@ -44,9 +44,6 @@ const (
 	// signingKeyFile is made on the hub's first start and never leaves it:
 	// gateways pin its public half when they register (tunnel/sign.go).
 	signingKeyFile = "hub-signing.key"
-	// nextKeyFile is the successor key (`hub key -next`): announced to the
-	// gateways, under the current key's signature, until it replaces it.
-	nextKeyFile = "hub-signing.next.key"
 )
 
 // DefaultJoinCodeTTL is how long a join code stays valid.
@@ -108,10 +105,9 @@ func (in Installation) ClubList() []core.ClubSpec {
 
 // Store is the hub's state.
 type Store struct {
-	dir  string
-	now  func() time.Time
-	key  ed25519.PrivateKey
-	next ed25519.PublicKey // the successor key, when there is one
+	dir string
+	now func() time.Time
+	key ed25519.PrivateKey
 
 	mu       sync.Mutex
 	gateways map[string]*GatewayRecord
@@ -140,18 +136,11 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 	if err := ensureDirs(dir); err != nil {
 		return nil, fmt.Errorf("state_dir: %w", err)
 	}
-	key, err := loadSigningKey(dir, signingKeyFile, true)
-	if err != nil {
-		return nil, err
-	}
-	next, err := loadSigningKey(dir, nextKeyFile, false)
+	key, err := loadSigningKey(dir)
 	if err != nil {
 		return nil, err
 	}
 	s := &Store{dir: dir, now: now, key: key, gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
-	if next != nil {
-		s.next = next.Public().(ed25519.PublicKey)
-	}
 	if err := s.loadInstallations(); err != nil {
 		return nil, err
 	}
@@ -178,14 +167,10 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 	return s, nil
 }
 
-// loadSigningKey reads a signing key of the hub (file in dir), making it
-// when it is missing and create is set (nil otherwise).
-func loadSigningKey(dir, file string, create bool) (ed25519.PrivateKey, error) {
-	p := filepath.Join(dir, file)
+// loadSigningKey reads the hub's signing key, making it on the first start.
+func loadSigningKey(dir string) (ed25519.PrivateKey, error) {
+	p := filepath.Join(dir, signingKeyFile)
 	data, err := os.ReadFile(p)
-	if errors.Is(err, fs.ErrNotExist) && !create {
-		return nil, nil
-	}
 	if errors.Is(err, fs.ErrNotExist) {
 		seed := make([]byte, ed25519.SeedSize)
 		if _, err := rand.Read(seed); err != nil {
@@ -220,18 +205,13 @@ func loadSigningKey(dir, file string, create bool) (ed25519.PrivateKey, error) {
 // HubKey is the public half of the hub's signing key.
 func (s *Store) HubKey() ed25519.PublicKey { return s.key.Public().(ed25519.PublicKey) }
 
-// PublicKey reads the public half of the signing key kept in dir, or of
-// its successor (next), making the key when it is missing (for the
-// command line).
-func PublicKey(dir string, next bool) (ed25519.PublicKey, error) {
+// PublicKey reads the public half of the signing key kept in dir, making
+// the key as the hub's first start would (for the command line).
+func PublicKey(dir string) (ed25519.PublicKey, error) {
 	if err := ensureDirs(dir); err != nil {
 		return nil, err
 	}
-	file := signingKeyFile
-	if next {
-		file = nextKeyFile
-	}
-	k, err := loadSigningKey(dir, file, true)
+	k, err := loadSigningKey(dir)
 	if err != nil {
 		return nil, err
 	}

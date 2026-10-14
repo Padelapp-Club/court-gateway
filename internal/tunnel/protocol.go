@@ -156,9 +156,6 @@ type Whoami struct {
 type RemoteConfig struct {
 	Version int64             `json:"version"`
 	Clubs   []json.RawMessage `json:"clubs"`
-	// NextKey is the hub's successor signing key (base64), announced under
-	// the current key's signature before the hub switches to it.
-	NextKey string `json:"next_key,omitempty"`
 	Seal
 }
 

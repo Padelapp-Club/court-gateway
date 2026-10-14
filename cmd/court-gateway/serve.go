@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -110,13 +109,6 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		return 2
 	}
 	s.Driver.Clock = verifier.Now
-	verifier.Rollover(s.Hub.NextKey, func(key, next ed25519.PublicKey) {
-		if err := core.SetHubKeys(cfgPath, key, next); err != nil {
-			log.Error("the hub's key rollover not written to gateway.yaml: run setup with a new join code before the hub switches keys", "error", err)
-			return
-		}
-		log.Info("the hub's key rollover written to gateway.yaml", "pinned", core.HubKeyFingerprint(key), "successor", next != nil)
-	})
 	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
@@ -178,7 +170,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		checked := false
 		sentConfig := int64(-1) // the applied config version the hub last heard of
 		lastSeen := time.Now()  // the hub, or the start
-		files := newConfigWatch(cfgPath, procEnv, s.Driver.Account, verifier.Pinned, log, askRestart)
+		files := newConfigWatch(cfgPath, procEnv, s.Driver.Account, log, askRestart)
 		clockSkewed := false
 		for {
 			files.check()
@@ -362,13 +354,11 @@ func passwordRejected(acct driver.Account) func() bool {
 // itself (the redactor learns it first): that ends a stop after a
 // rejected login. A changed hub connection (setup --force: a new secret,
 // key, installation or address) restarts the service, which then runs
-// with it; a hub key it does not pin (it writes the hub's key rollover
-// there itself) too.
+// with it.
 type configWatch struct {
 	cfgPath string
 	procEnv func(string) string
 	acct    driver.PasswordSetter
-	pinned  func(ed25519.PublicKey) bool
 	log     *slog.Logger
 	restart func()
 	seen    [2]os.FileInfo
@@ -376,11 +366,11 @@ type configWatch struct {
 	password, hub string
 }
 
-func newConfigWatch(cfgPath string, procEnv func(string) string, acct driver.Account, pinned func(ed25519.PublicKey) bool, log *slog.Logger, restart func()) *configWatch {
-	w := &configWatch{cfgPath: cfgPath, procEnv: procEnv, pinned: pinned, log: log, restart: restart}
+func newConfigWatch(cfgPath string, procEnv func(string) string, acct driver.Account, log *slog.Logger, restart func()) *configWatch {
+	w := &configWatch{cfgPath: cfgPath, procEnv: procEnv, log: log, restart: restart}
 	w.acct, _ = acct.(driver.PasswordSetter)
 	w.seen = w.stat()
-	w.password, w.hub, _, _ = w.read()
+	w.password, w.hub, _ = w.read()
 	return w
 }
 
@@ -390,23 +380,23 @@ func (w *configWatch) stat() (out [2]os.FileInfo) {
 	return out
 }
 
-// read returns the CRM password in .env, and the hub connection and key
-// the files configure ("" and nil when they do not load), .env taking
-// precedence over the process environment.
-func (w *configWatch) read() (password, hub string, key ed25519.PublicKey, err error) {
+// read returns the CRM password in .env and the hub connection the files
+// configure ("" when they do not load), .env taking precedence over the
+// process environment.
+func (w *configWatch) read() (password, hub string, err error) {
 	vals := map[string]string{}
 	if data, err := os.ReadFile(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName)); err == nil {
 		if vals, err = core.ParseDotEnv(data); err != nil {
-			return "", "", nil, err
+			return "", "", err
 		}
 	}
 	password = vals[core.PasswordEnv]
 	s, err := core.LoadFile(w.cfgPath, func(k string) string { return cmp.Or(vals[k], w.procEnv(k)) })
 	if err != nil {
-		return password, "", nil, err
+		return password, "", err
 	}
 	h := s.Hub
-	return password, strings.Join([]string{h.URL, h.Installation, tunnel.SecretSHA256(h.Secret), h.CAFile, strconv.Itoa(h.Polls)}, "\n"), h.Key, nil
+	return password, strings.Join([]string{h.URL, h.Installation, core.EncodeHubKey(h.Key), tunnel.SecretSHA256(h.Secret), h.CAFile, strconv.Itoa(h.Polls)}, "\n"), nil
 }
 
 func (w *configWatch) check() {
@@ -415,11 +405,11 @@ func (w *configWatch) check() {
 		return
 	}
 	w.seen = st
-	password, hub, key, err := w.read()
+	password, hub, err := w.read()
 	switch {
 	case err != nil:
 		w.log.Warn("changed gateway.yaml or .env not read in full", "error", err)
-	case hub != w.hub || !w.pinned(key):
+	case hub != w.hub:
 		w.log.Info("the hub connection changed in gateway.yaml or .env (setup --force): restarting")
 		w.hub = hub
 		w.restart()
