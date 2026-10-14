@@ -300,7 +300,7 @@ func TestVerifierRefusesAnOlderConfig(t *testing.T) {
 	if err := v.Config(config(5)); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Config(config(4)); !errors.Is(err, ErrBadSignature) {
+	if err := v.Config(config(4)); !errors.Is(err, ErrStaleConfig) {
 		t.Fatalf("an older config than applied: %v", err)
 	}
 	if err := v.Config(config(5)); err != nil {
@@ -309,7 +309,7 @@ func TestVerifierRefusesAnOlderConfig(t *testing.T) {
 	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "7", time.Now()), "7", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Config(config(6)); !errors.Is(err, ErrBadSignature) {
+	if err := v.Config(config(6)); !errors.Is(err, ErrStaleConfig) {
 		t.Fatalf("an older config than announced: %v", err)
 	}
 	if err := v.Config(config(7)); err != nil {

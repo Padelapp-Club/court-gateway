@@ -158,41 +158,48 @@ func (s *Syncer) wanted(v int64) bool {
 // maxRetry bounds the wait between failed pulls.
 const maxRetry = time.Minute
 
-// Run pulls and applies configs until ctx is done. After a failed pull it
-// waits Retry, doubling with failures in a row up to maxRetry, whatever
-// the hub announces meanwhile (every poll does), then pulls the newest
-// version announced; the first failure of a row is a warning, the rest
-// debug.
+// Run pulls and applies configs until ctx is done. A pull that crossed a
+// newer version (tunnel.ErrStaleConfig) is repeated at once. After a
+// failed pull it waits Retry, doubling with failures in a row up to
+// maxRetry, whatever the hub announces meanwhile (every poll does), then
+// pulls the newest version announced; the first failure of a row is a
+// warning, the rest debug.
 func (s *Syncer) Run(ctx context.Context) {
 	failures := 0
+	again := false // pull again at once
 	var v int64
 	for {
-		if failures == 0 {
+		switch {
+		case again:
+		case failures == 0:
 			select {
 			case <-ctx.Done():
 				return
 			case v = <-s.notify:
 			}
-		} else {
+		default:
 			select {
 			case v = <-s.notify: // announced during the wait
 			default:
 			}
 		}
 		if !s.wanted(v) {
-			failures = 0
+			failures, again = 0, false
 			continue
 		}
 		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		rc, err := s.fetch(fctx)
 		cancel()
 		if err == nil {
-			failures = 0
+			failures, again = 0, false
 			_ = s.Apply(ctx, rc)
 			continue
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if again = !again && errors.Is(err, tunnel.ErrStaleConfig); again {
+			continue
 		}
 		failures++
 		wait := min(s.retry<<min(failures-1, 16), maxRetry)

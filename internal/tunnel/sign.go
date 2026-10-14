@@ -200,6 +200,11 @@ var ErrBadSignature = errors.New("not signed by the hub for this gateway")
 // on the time now is decided (a request is refused, not executed).
 var ErrClockUnknown = errors.New("the hub's time is not known")
 
+// ErrStaleConfig: a config older than the version the hub announced, or
+// than the one applied since — a pull that crossed a newer version, not a
+// forgery: it is pulled again.
+var ErrStaleConfig = errors.New("the config is older than the one announced or applied")
+
 // ErrSlowTime: the hub's time arrived too late to be taken
 // (MaxTimeRoundTrip).
 var ErrSlowTime = errors.New("the hub's time arrived too late to be taken")
@@ -320,8 +325,9 @@ func (v *Verifier) Request(rq *Request, nonce string) error {
 }
 
 // Config accepts a club configuration signed for this gateway, valid
-// now, and not older than the one announced (Time) or applied since.
-// Replaying it within its validity gives the same configuration.
+// now, and not older than the one announced (Time) or applied since
+// (ErrStaleConfig). Replaying it within its validity gives the same
+// configuration.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err
@@ -329,7 +335,7 @@ func (v *Verifier) Config(rc *RemoteConfig) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if rc.Version < v.config {
-		return fmt.Errorf("%w: config version %d is older than %d, announced or applied", ErrBadSignature, rc.Version, v.config)
+		return fmt.Errorf("%w: version %d, %d announced or applied", ErrStaleConfig, rc.Version, v.config)
 	}
 	v.config = rc.Version
 	return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -266,6 +267,29 @@ func TestConfigPullBacksOff(t *testing.T) {
 	for deadline := time.Now().Add(5 * time.Second); s.State().ConfigVersion != 3; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the config was not applied once the hub answered")
+		}
+	}
+}
+
+// A pull that crossed a newer version (the hub announced it while the
+// config was on its way) is pulled again at once, not waited out as a
+// failure.
+func TestStaleConfigIsPulledAgainAtOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var pulls atomic.Int32
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Retry: time.Hour,
+		Fetch: func(context.Context) (tunnel.RemoteConfig, error) {
+			if pulls.Add(1) == 1 {
+				return tunnel.RemoteConfig{}, fmt.Errorf("%w: version 7, 8 announced or applied", tunnel.ErrStaleConfig)
+			}
+			return tunnel.RemoteConfig{Version: 8}, nil
+		}})
+	go s.Run(ctx)
+	s.Notify(8)
+	for deadline := time.Now().Add(5 * time.Second); s.State().ConfigVersion != 8; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("version 8 not applied after a stale pull (%d pulls)", pulls.Load())
 		}
 	}
 }

@@ -231,7 +231,7 @@ func TestReplayOnAnotherPollIsRefused(t *testing.T) {
 }
 
 // A club config is applied only when the pinned hub key signed it for
-// this gateway: FetchConfig refuses anything else.
+// this gateway: FetchConfig refuses anything else, and counts it.
 func TestForgedConfigIsNotFetched(t *testing.T) {
 	hubPub, hubKey, _ := ed25519.GenerateKey(nil)
 	_, otherKey, _ := ed25519.GenerateKey(nil)
@@ -247,6 +247,7 @@ func TestForgedConfigIsNotFetched(t *testing.T) {
 	}
 	registration := tunnel.RegistrationOf(tunnel.SecretSHA256("s"))
 	club := json.RawMessage(`{"id":"club-one","name":"Club <&>"}`)
+
 	for _, tc := range []struct {
 		name string
 		key  ed25519.PrivateKey
@@ -258,5 +259,11 @@ func TestForgedConfigIsNotFetched(t *testing.T) {
 		if tc.ok != (err == nil) || (tc.ok && rc.Version != 2) || (!tc.ok && !errors.Is(err, tunnel.ErrBadSignature)) {
 			t.Errorf("%s: %+v %v", tc.name, rc, err)
 		}
+	}
+	// an older config than the one applied is a stale pull, not a forgery
+	serve = tunnel.RemoteConfig{Version: 1, Clubs: []json.RawMessage{club}}
+	serve.Sign(hubKey, "inst", registration, time.Now())
+	if _, err := c.FetchConfig(context.Background()); !errors.Is(err, tunnel.ErrStaleConfig) || c.Refused() != 1 {
+		t.Errorf("an older config: %v, refused %d (want only the forged one)", err, c.Refused())
 	}
 }

@@ -466,8 +466,10 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 		return RemoteConfig{}, errors.New("hub sent a malformed config")
 	}
 	if err := c.verify.Config(&out); err != nil {
-		c.refused.Add(1)
-		c.log.Error("club config refused: not signed by the hub for this gateway", "error", err)
+		if !errors.Is(err, ErrStaleConfig) {
+			c.refused.Add(1)
+			c.log.Error("club config refused: not signed by the hub for this gateway", "error", err)
+		}
 		return RemoteConfig{}, err
 	}
 	return out, nil
