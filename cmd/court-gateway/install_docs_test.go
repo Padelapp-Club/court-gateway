@@ -148,11 +148,12 @@ func (w *installWorld) ran() string {
 }
 
 func TestReadmeInstallStopsOnChecksumMismatch(t *testing.T) {
-	for _, c := range []struct{ name, section, release string }{
-		{"macOS", "### macOS", "court-gateway-9.9.9-darwin-arm64"},
-		{"Linux", "### Linux (ПК или мини-ПК)", "court-gateway-9.9.9-linux-amd64"},
+	block := fencedBlock(t, "README.md", "### macOS и Linux", "sh")
+	for _, c := range []struct{ name, release string }{
+		{"macOS", "court-gateway-9.9.9-darwin-arm64"},
+		{"Linux", "court-gateway-9.9.9-linux-amd64"},
 	} {
-		script := strings.ReplaceAll(fencedBlock(t, "README.md", c.section, "sh"), "<версия>", "9.9.9")
+		script := "F=" + c.release + "\n" + block[strings.Index(block, "\n")+1:]
 		for _, shell := range []string{"sh", "bash", "zsh"} {
 			if _, err := exec.LookPath(shell); err != nil {
 				continue
@@ -174,11 +175,11 @@ func TestReadmeInstallStopsOnChecksumMismatch(t *testing.T) {
 }
 
 func TestAgentsVerifyStepStopsOnChecksumMismatch(t *testing.T) {
+	block := fencedBlock(t, "AGENTS.md", "\nLinux and macOS:\n", "sh")
 	for _, c := range []struct{ os, release string }{
-		{"Linux:", "court-gateway-9.9.9-linux-amd64"},
-		{"macOS:", "court-gateway-9.9.9-darwin-arm64"},
+		{"Linux", "court-gateway-9.9.9-linux-amd64"},
+		{"macOS", "court-gateway-9.9.9-darwin-arm64"},
 	} {
-		block := fencedBlock(t, "AGENTS.md", "\n"+c.os+"\n", "sh")
 		script := "F=" + c.release + "\n" + block[strings.Index(block, "\n")+1:]
 		for _, right := range []bool{false, true} {
 			w := newInstallWorld(t, c.release, right) // the block downloads both files itself

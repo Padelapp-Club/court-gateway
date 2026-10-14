@@ -76,53 +76,29 @@
 
    Журнал службы: `C:\court-gateway\court-gateway.log`.
 
-### macOS
+### macOS и Linux
 
-Впишите в строку `F=` версию и процессор: Apple Silicon (M1–M4) — `darwin-arm64`, Intel —
-`darwin-amd64`. Для клуба `install-service` идёт через `sudo`: это системная служба, она стартует
-при включении Mac (даже если никто не вошёл) и работает от вашего имени. Проверка:
-`sudo launchctl print system/court-gateway | grep state` — `state = running`.
-
-Без `sudo` ставится служба пользователя (LaunchAgent) — только для пробы: она работает, пока вы
-вошли в систему, и запускается при вашем входе, а не при включении. Проверка:
-`launchctl print gui/$(id -u)/court-gateway | grep state`. Системная служба, поставленная потом,
-снимает её сама.
-
-```sh
-F=court-gateway-<версия>-darwin-arm64
-B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
-mkdir -p ~/court-gateway && cd ~/court-gateway &&
-  curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
-  grep " $F\$" SHA256SUMS | shasum -a 256 -c - &&
-  mv "$F" court-gateway && chmod +x court-gateway &&
-  ./court-gateway setup &&
-  sudo ./court-gateway install-service &&
-  ./court-gateway doctor
-```
-
-Если файл скачан браузером и macOS не даёт его запустить: `xattr -d com.apple.quarantine court-gateway`.
-В «Системных настройках → Аккумулятор/Энергосбережение» запретите сон, иначе шлюз будет пропадать.
-Журнал службы: `~/court-gateway/court-gateway.log` (сообщения до запуска журнала —
-`court-gateway.stderr.log` рядом).
-
-### Linux (ПК или мини-ПК)
-
-Впишите в строку `F=` версию и процессор: x86-64 — `linux-amd64`, ARM (Raspberry Pi 4/5 и т. п.) —
-`linux-arm64`. Служба (systemd) работает от вашего пользователя.
+Впишите в строку `F=` версию и платформу: Linux x86-64 — `linux-amd64`, Linux ARM (Raspberry Pi 4/5
+и т. п.) — `linux-arm64`, Mac на Apple Silicon (M1–M4) — `darwin-arm64`, Mac на Intel —
+`darwin-amd64`. `install-service` через `sudo` ставит системную службу: она стартует при включении
+компьютера (на Mac — даже если никто не вошёл) и работает от вашего имени.
 
 ```sh
 F=court-gateway-<версия>-linux-amd64
 B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
 mkdir -p ~/court-gateway && cd ~/court-gateway &&
   curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
-  grep " $F\$" SHA256SUMS | sha256sum -c - &&
+  grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi &&
   mv "$F" court-gateway && chmod +x court-gateway &&
   ./court-gateway setup &&
   sudo ./court-gateway install-service &&
   ./court-gateway doctor
 ```
 
-Журнал: `journalctl -u court-gateway -f`.
+Журнал: Linux — `journalctl -u court-gateway -f`, Mac — `~/court-gateway/court-gateway.log`
+(до его открытия — `court-gateway.stderr.log`). На Mac запретите сон в настройках энергосбережения;
+файл, скачанный браузером, разблокирует `xattr -d com.apple.quarantine court-gateway`; без `sudo`
+`install-service` ставит службу пользователя — только для пробы, она работает, пока вы вошли.
 
 ### Облачная машина
 

@@ -91,22 +91,14 @@ Set `F` to the release file name for the platform and run the one command for th
 `SHA256SUMS` and the file, and renames the file (so it can be run) **only** if the download worked
 and its checksum matches — each step runs only if the previous one succeeded.
 
-Linux:
+Linux and macOS:
 
 ```sh
 F=court-gateway-<v>-linux-amd64
 B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
 curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
-  grep " $F\$" SHA256SUMS | sha256sum -c - && mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
-```
-
-macOS:
-
-```sh
-F=court-gateway-<v>-darwin-arm64
-B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
-curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
-  grep " $F\$" SHA256SUMS | shasum -a 256 -c - && mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
+  grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi &&
+  mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
 ```
 
 On Windows ARM64 put `windows-arm64.exe` in `$f`.
