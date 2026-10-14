@@ -26,10 +26,11 @@ const (
 // Monitor watches the heartbeats gateways send after each of their own
 // self-checks. It never calls a gateway: a gateway is offline when its
 // heartbeats stop for longer than offlineAfter, and not ready after
-// readyFailures heartbeats in a row that report ready=false. Every Tick it
-// re-evaluates every registered gateway, writes the status files for the
-// external checker (which decides whether and how to alert) and logs
-// state changes. The hub sends no alerts of its own.
+// readyFailures self-checks in a row that report ready=false (a heartbeat
+// that repeats the last one's CheckedAt, sent for a new config, is not
+// another one). Every Tick it re-evaluates every registered gateway,
+// writes the status files for the external checker (which decides whether
+// and how to alert) and logs state changes. The hub sends no alerts of its own.
 type Monitor struct {
 	store         *Store
 	broker        *Broker
@@ -191,7 +192,9 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 		h.clubs = h.clubs[:min(len(h.clubs), 20)]
 	}
 	h.version, h.build = cleanVersion(hb.Version), cleanBuild(hb.Build)
+	fresh := true // a new self-check, not the last one sent again with a new config
 	if !hb.CheckedAt.IsZero() && hb.CheckedAt.Year() > 2000 && hb.CheckedAt.Year() < 3000 {
+		fresh = !hb.CheckedAt.UTC().Equal(h.checkedAt)
 		h.checkedAt = hb.CheckedAt.UTC()
 	}
 	if hb.RefusedRequests > h.refused {
@@ -199,9 +202,10 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 			"installation", installation, "refused", hb.RefusedRequests)
 	}
 	h.refused = max(hb.RefusedRequests, 0)
-	if hb.Ready {
+	switch {
+	case hb.Ready:
 		h.notReady = 0
-	} else {
+	case fresh:
 		h.notReady++
 	}
 	h.applied = tunnel.AppliedConfig{ConfigVersion: hb.ConfigVersion, ConfigError: cleanConfigError(hb.ConfigError, 2000), Clubs: cleanClubs(hb.Clubs)}

@@ -211,6 +211,15 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	if st := w.state(t); st != hub.StateOnline {
 		t.Fatalf("an interrupted streak counted as not ready: %s", st)
 	}
+	// heartbeats sent for a new config repeat the last self-check: one
+	w.clock.Advance(time.Minute)
+	for range 3 {
+		w.beat(t, false, "CRM_UNREACHABLE")
+	}
+	mon.Tick()
+	if st := w.state(t); st != hub.StateOnline {
+		t.Fatalf("one self-check sent three times counted as three: %s", st)
+	}
 
 	// nothing secret in the hub log
 	all := w.hub.Logs.String()
