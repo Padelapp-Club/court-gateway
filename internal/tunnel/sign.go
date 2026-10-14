@@ -219,7 +219,7 @@ type Verifier struct {
 	synced bool                 // the hub has signed its time for this process
 	offset time.Duration        // the hub's clock minus now, as last signed
 	start  int64                // this process's start on the hub's clock, unix ms
-	config int64                // the highest config version applied or announced
+	config int64                // the config version announced, or applied since
 	seen   map[string]time.Time // request id -> until when (hub time) it is remembered
 	// the watermark (KeepWatermark): the newest issue time of a request
 	// accepted, kept in file; floor is what the file held at the start
@@ -244,8 +244,9 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 // sent (header, the HeaderHubTime value, signed with the request's nonce
 // and the announced config version): from then on signatures are checked
 // against the hub's clock, so this computer's may be off, and a config
-// older than version is refused. An answer slower than MaxTimeRoundTrip
-// is not taken (ErrSlowTime).
+// older than version is refused (the announced version stands, also when
+// it went down: the hub was restored). An answer slower than
+// MaxTimeRoundTrip is not taken (ErrSlowTime).
 func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
@@ -268,7 +269,7 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	}
 	v.synced, v.offset = true, time.UnixMilli(ms).Sub(received)
 	if n, err := strconv.ParseInt(version, 10, 64); err == nil {
-		v.config = max(v.config, n)
+		v.config = n
 	}
 	return nil
 }
@@ -382,7 +383,7 @@ func (v *Verifier) Request(rq *Request) error {
 }
 
 // Config accepts a club configuration signed for this gateway, valid
-// now, and not older than one already applied or announced (Time).
+// now, and not older than the one announced (Time) or applied since.
 // Replaying it within its validity gives the same configuration.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
@@ -391,7 +392,7 @@ func (v *Verifier) Config(rc *RemoteConfig) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if rc.Version < v.config {
-		return fmt.Errorf("%w: config version %d is older than %d, applied or announced", ErrBadSignature, rc.Version, v.config)
+		return fmt.Errorf("%w: config version %d is older than %d, announced or applied", ErrBadSignature, rc.Version, v.config)
 	}
 	v.config = rc.Version
 	return nil

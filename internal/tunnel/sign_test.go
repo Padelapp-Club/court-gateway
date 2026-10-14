@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -348,5 +349,26 @@ func TestClockStepBackDoesNotMoveTheStart(t *testing.T) {
 	rq.Sign(testKey, "inst", testRegistration, hubNow.Add(3*time.Second))
 	if err := v.Request(&rq); err != nil {
 		t.Fatalf("a request issued after the start, past a clock step: %v", err)
+	}
+}
+
+// The config version the hub announces in its signed time stands, also
+// when it went down (the hub was restored from a backup): that config is
+// accepted, an older one still refused.
+func TestAnnouncedConfigVersionStandsWhenItGoesDown(t *testing.T) {
+	v, _ := NewVerifier(testPub, "inst", "s", nil)
+	for _, step := range []struct {
+		announced, version int64
+		ok                 bool
+	}{{5, 5, true}, {4, 4, true}, {4, 3, false}} {
+		n := strconv.FormatInt(step.announced, 10)
+		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", n, time.Now()), n, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		rc := &RemoteConfig{Version: step.version, Clubs: []json.RawMessage{}}
+		rc.Sign(testKey, "inst", testRegistration, time.Now())
+		if err := v.Config(rc); (err == nil) != step.ok {
+			t.Fatalf("config %d with %d announced: %v", step.version, step.announced, err)
+		}
 	}
 }
