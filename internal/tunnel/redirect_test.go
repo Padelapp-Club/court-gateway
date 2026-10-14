@@ -127,7 +127,13 @@ func TestRegisterAndWhoamiDoNotFollowRedirects(t *testing.T) {
 	if _, err := tunnel.Register(context.Background(), rt, secure.URL, "ABCD-EFGH", "1.0.0"); !errors.Is(err, tunnel.ErrRedirected) {
 		t.Fatalf("register: %v, want ErrRedirected", err)
 	}
-	if _, err := tunnel.FetchWhoami(context.Background(), rt, secure.URL, "fixture-gateway-secret"); !errors.Is(err, tunnel.ErrRedirected) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: secure.URL, Secret: "fixture-gateway-secret", HubKey: pub, Installation: "inst",
+		Handler: http.NotFoundHandler(), Transport: rt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Whoami(context.Background()); !errors.Is(err, tunnel.ErrRedirected) {
 		t.Fatalf("whoami: %v, want ErrRedirected", err)
 	}
 	if n := plainHits.Load(); n != 0 {

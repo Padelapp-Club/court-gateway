@@ -174,7 +174,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	if err := hub.RevokeGateway(w.hub.StateDir, "demo-club"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tunnel.FetchWhoami(context.Background(), w.hub.Transport(), w.hub.URL(), secret); !errors.Is(err, tunnel.ErrUnauthorized) {
+	if _, err := testkit.FetchWhoami(context.Background(), w.hub.Transport(), w.hub.URL(), secret); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("revoked secret: %v", err)
 	}
 }
@@ -230,10 +230,10 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 	// re-registration revokes the previous secret
 	secret1 := w.hub.Register("demo-club", "Демо-клуб")
 	secret2 := w.hub.Register("demo-club", "Демо-клуб")
-	if _, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret1); !errors.Is(err, tunnel.ErrUnauthorized) {
+	if _, err := testkit.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret1); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("old secret still works: %v", err)
 	}
-	if who, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret2); err != nil || who.Installation != "demo-club" {
+	if who, err := testkit.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret2); err != nil || who.Installation != "demo-club" {
 		t.Fatalf("new secret: %+v %v", who, err)
 	}
 	// nothing secret is stored in plain text

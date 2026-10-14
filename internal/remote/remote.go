@@ -60,9 +60,7 @@ type Options struct {
 	Base      *core.Settings
 	Factories map[string]driver.Factory
 	Clubs     *core.Clubs
-	// Fetch pulls the config (tunnel.Client.FetchConfig).
-	Fetch  func(context.Context) (tunnel.RemoteConfig, error)
-	Logger *slog.Logger
+	Logger    *slog.Logger
 	// DriverHook adjusts each club's driver config before the driver is
 	// built (tests: an HTTP client for a CRM stub).
 	DriverHook func(*driver.Config)
@@ -84,11 +82,12 @@ func New(o Options) *Syncer {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, fetch: o.Fetch, now: o.Now,
+	return &Syncer{base: o.Base, factories: o.Factories, clubs: o.Clubs, now: o.Now,
 		log: o.Logger, hook: o.DriverHook, retry: o.Retry, notify: make(chan int64, 1), applied: -1, refused: map[string]string{}, ignored: map[string]bool{}}
 }
 
-// SetFetch sets how the config is pulled (before Run).
+// SetFetch sets how the config is pulled (tunnel.Client.FetchConfig),
+// before Run.
 func (s *Syncer) SetFetch(f func(context.Context) (tunnel.RemoteConfig, error)) { s.fetch = f }
 
 // Notify hands over the hub's current version and epoch (latest wins).

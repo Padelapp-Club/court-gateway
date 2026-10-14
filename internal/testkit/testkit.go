@@ -11,7 +11,9 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +21,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -376,4 +379,27 @@ func (p *Proxy) Heal() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.broken = false
+}
+
+// FetchWhoami asks the hub how it sees the gateway with secret, without
+// checking the hub's signatures.
+func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret string) (tunnel.Whoami, error) {
+	var out tunnel.Whoami
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hubURL, "/")+tunnel.PathWhoami, nil)
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := (&http.Client{Transport: rt}).Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return out, json.NewDecoder(resp.Body).Decode(&out)
+	case http.StatusUnauthorized:
+		return out, tunnel.ErrUnauthorized
+	}
+	return out, fmt.Errorf("whoami: HTTP %d", resp.StatusCode)
 }

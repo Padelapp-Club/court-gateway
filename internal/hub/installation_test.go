@@ -350,10 +350,10 @@ func TestOperatorJoinCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tunnel.FetchWhoami(ctx, h.Transport(), h.URL(), rr.Secret); !errors.Is(err, tunnel.ErrUnauthorized) {
+	if _, err := testkit.FetchWhoami(ctx, h.Transport(), h.URL(), rr.Secret); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("old secret still works: %v", err)
 	}
-	who, err := tunnel.FetchWhoami(ctx, h.Transport(), h.URL(), rr2.Secret)
+	who, err := testkit.FetchWhoami(ctx, h.Transport(), h.URL(), rr2.Secret)
 	if err != nil || who.Installation != "inst-1" {
 		t.Fatalf("new secret: %+v %v", who, err)
 	}
@@ -362,7 +362,7 @@ func TestOperatorJoinCodes(t *testing.T) {
 	// delete: the gateway loses access, pending codes die, GET is 404
 	pending := newCode("")
 	h.MustOperator(t, http.StatusNoContent, http.MethodDelete, "/hub/installations/inst-1", nil)
-	if _, err := tunnel.FetchWhoami(ctx, h.Transport(), h.URL(), rr2.Secret); !errors.Is(err, tunnel.ErrUnauthorized) {
+	if _, err := testkit.FetchWhoami(ctx, h.Transport(), h.URL(), rr2.Secret); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("deleted installation's secret: %v", err)
 	}
 	if _, err := tunnel.Register(ctx, h.Transport(), h.URL(), pending.Code, ""); !errors.Is(err, tunnel.ErrJoinCodeRejected) {

@@ -170,7 +170,7 @@ func TestHubBehindPathPrefix(t *testing.T) {
 	testkit.WaitFor(t, "gateway connected through the prefix", 10*time.Second, func() bool {
 		return gw.Client.Connected() && srv.Broker().Connected("demo-club")
 	})
-	who, err := tunnel.FetchWhoami(rctx, rt, hubURL, reg.Secret)
+	who, err := testkit.FetchWhoami(rctx, rt, hubURL, reg.Secret)
 	if err != nil || who.Installation != "demo-club" || !who.Connected {
 		t.Fatalf("whoami through the prefix: %+v %v", who, err)
 	}

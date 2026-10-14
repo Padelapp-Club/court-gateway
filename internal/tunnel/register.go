@@ -73,29 +73,16 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 	return out, nil
 }
 
-// FetchWhoami asks the hub how it sees this gateway.
-func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret string) (Whoami, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hubURL, "/")+PathWhoami, nil)
-	if err != nil {
-		return Whoami{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+secret)
-	return whoami(hubClient(rt).Do, req)
-}
-
-// Whoami is FetchWhoami that also takes the hub's signed time from the
-// answer, so what the hub signs is checked against its clock (doctor).
+// Whoami asks the hub how it sees this gateway and takes the hub's signed
+// time from the answer, so what the hub signs is checked against its
+// clock (doctor).
 func (c *Client) Whoami(ctx context.Context) (Whoami, error) {
+	var out Whoami
 	req, err := c.newRequest(ctx, http.MethodGet, PathWhoami, nil)
 	if err != nil {
-		return Whoami{}, err
+		return out, err
 	}
-	return whoami(c.doTimed, req)
-}
-
-func whoami(do func(*http.Request) (*http.Response, error), req *http.Request) (Whoami, error) {
-	var out Whoami
-	status, err := exchange(do, req, 64<<10, &out)
+	status, err := exchange(c.doTimed, req, 64<<10, &out)
 	switch {
 	case status == 0:
 		return out, err

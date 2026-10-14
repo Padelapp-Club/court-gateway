@@ -182,7 +182,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 	go func() { defer close(done); syncer.Run(sctx) }()
 	t.Cleanup(func() { scancel(); <-done })
 	WaitFor(t, "installation connected", 10*time.Second, func() bool {
-		who, err := tunnel.FetchWhoami(context.Background(), h.Transport(), h.URL(), rr.Secret)
+		who, err := FetchWhoami(context.Background(), h.Transport(), h.URL(), rr.Secret)
 		return in.Gateway.Client.Connected() && err == nil && who.Connected
 	})
 	in.WaitServing(t, core.SortedClubIDs(o.Clubs)...)

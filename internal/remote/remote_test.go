@@ -235,16 +235,16 @@ func TestConfigPullBacksOff(t *testing.T) {
 	var mu sync.Mutex
 	pulls, failing := 0, true
 	const retry = 50 * time.Millisecond
-	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Retry: retry,
-		Fetch: func(context.Context) (tunnel.RemoteConfig, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			pulls++
-			if failing {
-				return tunnel.RemoteConfig{}, errors.New("hub unreachable")
-			}
-			return tunnel.RemoteConfig{Version: 3}, nil
-		}})
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Retry: retry})
+	s.SetFetch(func(context.Context) (tunnel.RemoteConfig, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		pulls++
+		if failing {
+			return tunnel.RemoteConfig{}, errors.New("hub unreachable")
+		}
+		return tunnel.RemoteConfig{Version: 3}, nil
+	})
 	start := time.Now()
 	go s.Run(ctx)
 	for range 100 { // polls announcing version 3
@@ -278,13 +278,13 @@ func TestStaleConfigIsPulledAgainAtOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var pulls atomic.Int32
-	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Retry: time.Hour,
-		Fetch: func(context.Context) (tunnel.RemoteConfig, error) {
-			if pulls.Add(1) == 1 {
-				return tunnel.RemoteConfig{}, fmt.Errorf("%w: version 7, 8 announced or applied", tunnel.ErrStaleConfig)
-			}
-			return tunnel.RemoteConfig{Version: 8}, nil
-		}})
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Retry: time.Hour})
+	s.SetFetch(func(context.Context) (tunnel.RemoteConfig, error) {
+		if pulls.Add(1) == 1 {
+			return tunnel.RemoteConfig{}, fmt.Errorf("%w: version 7, 8 announced or applied", tunnel.ErrStaleConfig)
+		}
+		return tunnel.RemoteConfig{Version: 8}, nil
+	})
 	go s.Run(ctx)
 	s.Notify(8, "")
 	for deadline := time.Now().Add(5 * time.Second); s.State().ConfigVersion != 8; time.Sleep(10 * time.Millisecond) {

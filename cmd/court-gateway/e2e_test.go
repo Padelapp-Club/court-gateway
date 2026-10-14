@@ -23,7 +23,6 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
-	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
@@ -628,7 +627,7 @@ func TestRestartedServiceIsServedAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	connected := func() bool { // as the hub sees the gateway
-		who, err := tunnel.FetchWhoami(context.Background(), s.hub.Transport(), s.hub.URL(), getenv(core.DefaultHubSecretEnv))
+		who, err := testkit.FetchWhoami(context.Background(), s.hub.Transport(), s.hub.URL(), getenv(core.DefaultHubSecretEnv))
 		return err == nil && who.Connected
 	}
 	for i := range 2 {
@@ -781,7 +780,7 @@ func TestServiceRestartsWhenSetupRewritesTheHubConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	testkit.WaitFor(t, "the service connected", 15*time.Second, func() bool {
-		who, err := tunnel.FetchWhoami(context.Background(), s.hub.Transport(), s.hub.URL(), getenv(core.DefaultHubSecretEnv))
+		who, err := testkit.FetchWhoami(context.Background(), s.hub.Transport(), s.hub.URL(), getenv(core.DefaultHubSecretEnv))
 		return err == nil && who.Connected
 	})
 	out.Reset()
