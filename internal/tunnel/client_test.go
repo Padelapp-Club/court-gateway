@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,31 +182,37 @@ func TestHubKeyMismatchIsReported(t *testing.T) {
 	}
 }
 
-// Only a config version the hub signed with its time announces a new
-// config: an unsigned one, or one signed with another key, is ignored.
+// Only a config version and epoch the hub signed with its time announce a
+// new config: an unsigned one, one signed with another key or with another
+// epoch is ignored.
 func TestOnlyASignedConfigVersionIsAnnounced(t *testing.T) {
 	var key ed25519.PrivateKey
+	epoch := ""
 	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HeaderConfigVersion, "7")
+		w.Header().Set(HeaderConfigEpoch, epoch)
 		if key != nil {
-			w.Header().Set(HeaderHubTime, SignTime(key, "inst", testRegistration, r.Header.Get(HeaderNonce), "7", time.Now()))
+			w.Header().Set(HeaderHubTime, SignTime(key, "inst", testRegistration, r.Header.Get(HeaderNonce), "7 e1", time.Now()))
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer hub.Close()
-	var announced []int64
+	var announced []string
 	c, err := NewClient(ClientConfig{HubURL: hub.URL, Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.NotFoundHandler(),
-		Transport: hub.Client().Transport, OnConfigVersion: func(v int64) { announced = append(announced, v) }})
+		Transport: hub.Client().Transport, OnConfigVersion: func(v int64, e string) { announced = append(announced, fmt.Sprint(v, e)) }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []ed25519.PrivateKey{nil, otherTestKey, testKey} {
-		key = k
+	for _, step := range []struct {
+		key   ed25519.PrivateKey
+		epoch string
+	}{{nil, "e1"}, {otherTestKey, "e1"}, {testKey, "e2"}, {testKey, "e1"}} {
+		key, epoch = step.key, step.epoch
 		if _, _, err := c.poll(t.Context(), func() {}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(announced) != 1 || announced[0] != 7 {
-		t.Fatalf("announced %v, want only the signed [7]", announced)
+	if fmt.Sprint(announced) != "[7e1]" {
+		t.Fatalf("announced %v, want only the signed [7e1]", announced)
 	}
 }

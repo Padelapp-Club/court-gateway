@@ -292,8 +292,9 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 func (s *Server) signTime(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
 	version := strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10)
 	w.Header().Set(tunnel.HeaderConfigVersion, version)
+	w.Header().Set(tunnel.HeaderConfigEpoch, s.store.epoch)
 	if nonce := r.Header.Get(tunnel.HeaderNonce); nonce != "" && len(nonce) <= 64 {
-		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version, s.now()))
+		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version+" "+s.store.epoch, s.now()))
 	}
 }
 
@@ -335,7 +336,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 
 // handleConfig gives a gateway its installation's club configuration.
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayRecord) {
-	out := tunnel.RemoteConfig{Clubs: []json.RawMessage{}}
+	out := tunnel.RemoteConfig{Epoch: s.store.epoch, Clubs: []json.RawMessage{}}
 	if in, ok := s.store.Installation(g.Installation); ok {
 		out.Version = in.Version
 		for _, c := range in.ClubList() {

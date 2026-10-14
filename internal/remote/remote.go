@@ -46,6 +46,8 @@ type Syncer struct {
 	mu         sync.Mutex
 	applied    int64
 	hub        int64                   // the hub's version, as last announced
+	epoch      string                  // of the applied version
+	hubEpoch   string                  // of the hub's
 	behind     time.Time               // since when applied differs from hub
 	configured map[string]bool         // clubs of the applied config
 	waiting    map[string]*core.Server // built, not yet confirmed by the CRM
@@ -89,11 +91,11 @@ func New(o Options) *Syncer {
 // SetFetch sets how the config is pulled (before Run).
 func (s *Syncer) SetFetch(f func(context.Context) (tunnel.RemoteConfig, error)) { s.fetch = f }
 
-// Notify hands over the hub's current version (latest wins). It never
-// blocks: it is called from the tunnel's poll loop.
-func (s *Syncer) Notify(v int64) {
+// Notify hands over the hub's current version and epoch (latest wins).
+// It never blocks: it is called from the tunnel's poll loop.
+func (s *Syncer) Notify(v int64, epoch string) {
 	s.mu.Lock()
-	s.hub = v
+	s.hub, s.hubEpoch = v, epoch
 	s.track()
 	s.mu.Unlock()
 	for {
@@ -132,7 +134,7 @@ func (s *Syncer) State() tunnel.AppliedConfig {
 // s.mu must be held.
 func (s *Syncer) track() {
 	switch {
-	case s.applied == s.hub:
+	case s.applied == s.hub && s.epoch == s.hubEpoch:
 		s.behind = time.Time{}
 	case s.behind.IsZero():
 		s.behind = s.now()
@@ -153,7 +155,7 @@ func (s *Syncer) Behind() time.Duration {
 func (s *Syncer) wanted(v int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return v != s.applied
+	return v != s.applied || s.epoch != s.hubEpoch
 }
 
 // maxRetry bounds the wait between failed pulls.
@@ -244,7 +246,7 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	if len(fresh) > 0 {
 		s.log.Warn("club config from the hub has fields this version does not know; they are ignored", "fields", strings.Join(fresh, ","))
 	}
-	s.applied = rc.Version
+	s.applied, s.epoch = rc.Version, rc.Epoch
 	s.track()
 	s.configured, s.waiting, s.refused = map[string]bool{}, map[string]*core.Server{}, map[string]string{}
 	var problems []string

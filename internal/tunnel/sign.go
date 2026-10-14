@@ -116,6 +116,7 @@ func (rq *Request) fields(c *canon) {
 
 func (rc *RemoteConfig) fields(c *canon) {
 	c.num(rc.Version)
+	c.str(rc.Epoch)
 	clubs := make([]string, len(rc.Clubs))
 	for i, raw := range rc.Clubs {
 		clubs[i] = string(raw)
@@ -262,7 +263,8 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	}
 	hub := time.UnixMilli(ms)
 	v.synced, v.hubAt, v.at, v.offset = true, hub, time.Now(), hub.Sub(received)
-	if n, err := strconv.ParseInt(version, 10, 64); err == nil {
+	number, _, _ := strings.Cut(version, " ") // and the epoch
+	if n, err := strconv.ParseInt(number, 10, 64); err == nil {
 		v.config = n
 	}
 	return nil

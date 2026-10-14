@@ -156,9 +156,9 @@ func TestBehindMeasuresAnUnappliedVersion(t *testing.T) {
 	if d := s.Behind(); d != 0 {
 		t.Fatalf("before any announcement: %v", d)
 	}
-	s.Notify(1)
+	s.Notify(1, "")
 	now = now.Add(time.Minute)
-	s.Notify(1) // announced again: still counted from the first time
+	s.Notify(1, "") // announced again: still counted from the first time
 	now = now.Add(3 * time.Minute)
 	if d := s.Behind(); d != 4*time.Minute {
 		t.Fatalf("version 1 never applied: %v", d)
@@ -169,7 +169,7 @@ func TestBehindMeasuresAnUnappliedVersion(t *testing.T) {
 	if d := s.Behind(); d != 0 {
 		t.Fatalf("applied: %v", d)
 	}
-	s.Notify(2)
+	s.Notify(2, "")
 	now = now.Add(time.Minute)
 	if d := s.Behind(); d != time.Minute {
 		t.Fatalf("version 2 announced a minute ago: %v", d)
@@ -248,7 +248,7 @@ func TestConfigPullBacksOff(t *testing.T) {
 	start := time.Now()
 	go s.Run(ctx)
 	for range 100 { // polls announcing version 3
-		s.Notify(3)
+		s.Notify(3, "")
 		time.Sleep(6 * time.Millisecond)
 	}
 	mu.Lock()
@@ -286,10 +286,34 @@ func TestStaleConfigIsPulledAgainAtOnce(t *testing.T) {
 			return tunnel.RemoteConfig{Version: 8}, nil
 		}})
 	go s.Run(ctx)
-	s.Notify(8)
+	s.Notify(8, "")
 	for deadline := time.Now().Add(5 * time.Second); s.State().ConfigVersion != 8; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("version 8 not applied after a stale pull (%d pulls)", pulls.Load())
+		}
+	}
+}
+
+// A hub restored from a backup may announce again a version number the
+// gateway applied, with other clubs; its epoch, new at every hub start,
+// differs, so that version is pulled again.
+func TestANewHubEpochPullsTheSameVersionAgain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var pulls atomic.Int32
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{})})
+	s.SetFetch(func(context.Context) (tunnel.RemoteConfig, error) {
+		pulls.Add(1)
+		return tunnel.RemoteConfig{Version: 5, Epoch: "restored"}, nil
+	})
+	if err := s.Apply(ctx, tunnel.RemoteConfig{Version: 5, Epoch: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	go s.Run(ctx)
+	s.Notify(5, "restored")
+	for deadline := time.Now().Add(3 * time.Second); pulls.Load() == 0 || s.Behind() != 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("version 5 of a new epoch: %d pulls, behind %v", pulls.Load(), s.Behind())
 		}
 	}
 }

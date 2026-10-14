@@ -139,3 +139,20 @@ func TestDiscoverGetsItsOwnTimeout(t *testing.T) {
 		t.Fatalf("discover: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// Every start of the hub has its own config epoch, also on the same
+// state_dir (one restored from a backup).
+func TestConfigEpochIsNewAtEveryStart(t *testing.T) {
+	dir := t.TempDir()
+	a, err := OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.epoch == "" || a.epoch == b.epoch {
+		t.Fatalf("epochs %q and %q", a.epoch, b.epoch)
+	}
+}

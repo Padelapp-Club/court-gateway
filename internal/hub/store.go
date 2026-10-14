@@ -107,9 +107,10 @@ func (in Installation) ClubList() []core.ClubSpec {
 
 // Store is the hub's state.
 type Store struct {
-	dir string
-	now func() time.Time
-	key ed25519.PrivateKey
+	dir   string
+	now   func() time.Time
+	key   ed25519.PrivateKey
+	epoch string // tunnel.HeaderConfigEpoch
 
 	mu       sync.Mutex
 	gateways map[string]*GatewayRecord
@@ -142,7 +143,7 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, now: now, key: key, gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
+	s := &Store{dir: dir, now: now, key: key, epoch: rand.Text(), gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
 	if err := s.loadInstallations(); err != nil {
 		return nil, err
 	}

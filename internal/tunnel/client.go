@@ -54,8 +54,8 @@ type ClientConfig struct {
 	// OnHint is called when the hub says a newer release exists.
 	OnHint func(version string)
 	// OnConfigVersion is called with the hub's club configuration version
-	// from every answer whose signed time signs it (polls).
-	OnConfigVersion func(version int64)
+	// and epoch from every answer whose signed time signs them (polls).
+	OnConfigVersion func(version int64, epoch string)
 	// Transport defaults to NewTransport(nil, nil).
 	Transport http.RoundTripper
 	// Backoff after a failed poll grows from MinBackoff to MaxBackoff with
@@ -424,7 +424,8 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if h := resp.Header.Get(HeaderHubTime); h != "" {
-		err := c.verify.Time(req.Header.Get(HeaderNonce), h, resp.Header.Get(HeaderConfigVersion), sent)
+		version, epoch := resp.Header.Get(HeaderConfigVersion), resp.Header.Get(HeaderConfigEpoch)
+		err := c.verify.Time(req.Header.Get(HeaderNonce), h, strings.TrimSpace(version+" "+epoch), sent)
 		c.badKey.Store(errors.Is(err, ErrBadSignature))
 		switch {
 		case errors.Is(err, ErrBadSignature):
@@ -433,9 +434,9 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 		case err != nil:
 			c.log.Debug("the hub's time not taken", "error", err)
 		}
-		n, perr := strconv.ParseInt(resp.Header.Get(HeaderConfigVersion), 10, 64)
+		n, perr := strconv.ParseInt(version, 10, 64)
 		if (err == nil || errors.Is(err, ErrSlowTime)) && perr == nil && n >= 0 && c.cfg.OnConfigVersion != nil {
-			c.cfg.OnConfigVersion(n)
+			c.cfg.OnConfigVersion(n, epoch)
 		}
 	}
 	return resp, nil

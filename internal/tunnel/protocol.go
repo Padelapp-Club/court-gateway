@@ -58,6 +58,10 @@ const (
 	// configuration. A gateway that runs another version pulls PathConfig;
 	// an unsigned one is ignored.
 	HeaderConfigVersion = "X-Config-Version"
+	// HeaderConfigEpoch is random per hub start and signed with the
+	// version ("<version> <epoch>"): a hub restored from a backup cannot
+	// announce a version a gateway applied with other clubs.
+	HeaderConfigEpoch = "X-Config-Epoch"
 	// HeaderNonce is a fresh random value of each poll, and HeaderHubTime
 	// the hub's answer to it: its clock, signed with the nonce and the
 	// HeaderConfigVersion value (SignTime), so an old answer cannot be
@@ -158,6 +162,7 @@ type Whoami struct {
 // depend on the core.
 type RemoteConfig struct {
 	Version int64             `json:"version"`
+	Epoch   string            `json:"epoch,omitempty"`
 	Clubs   []json.RawMessage `json:"clubs"`
 	Seal
 }
