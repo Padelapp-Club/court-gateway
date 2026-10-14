@@ -143,13 +143,16 @@ func Run(ctx context.Context, o Options) Report {
 		add(Check{Code: CodeCRMLogin, Status: OK, Message: "вход в CRM выполнен"})
 	}
 
-	// the hub (before occupancy: the clubs to read come from the hub)
+	// the hub (before occupancy: the clubs to read come from the hub; nil
+	// when its club config was not received)
 	hubChecksOut, remoteClubs := hubChecks(ctx, o, s, &r)
 
 	// occupancy of one club
 	switch {
 	case !loginOK:
 		add(Check{Code: CodeOccupancy, Status: Skip, Message: "нет входа в CRM"})
+	case remoteClubs == nil:
+		add(Check{Code: CodeOccupancy, Status: Skip, Message: "хаб недоступен или не отдал конфигурацию клубов: какие клубы проверять, неизвестно"})
 	case len(remoteClubs) == 0 && len(r.Clubs) > 0:
 		add(Check{Code: CodeOccupancy, Status: Skip, Message: "нет клуба, конфигурация которого подходит CRM"})
 	case len(remoteClubs) == 0:
@@ -282,7 +285,7 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	}
 	// the CRM check the service makes before serving a club, each bounded
 	ectx := driver.WithEvaluation(ctx)
-	var clubs []clubDriver
+	clubs := []clubDriver{}
 	ids := make([]string, 0, len(servers))
 	for _, srv := range servers {
 		cd := clubDriver{id: srv.Settings().ClubID, drv: srv.Driver()}

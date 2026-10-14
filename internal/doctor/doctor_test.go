@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -96,6 +97,32 @@ func TestDoctorStepsHaveTheirOwnTimeouts(t *testing.T) {
 			t.Errorf("%s failed: %s", c.Code, c.Message)
 		}
 		if c.Code == CodeOccupancy && c.Status != OK {
+			t.Errorf("occupancy: %s %s", c.Status, c.Message)
+		}
+	}
+}
+
+// downHub is a hub that cannot be reached.
+type downHub struct{}
+
+func (downHub) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("connection refused")
+}
+
+// While the hub is unreachable, the occupancy check says so, not that the
+// operator has not connected clubs yet.
+func TestDoctorOccupancyWhileTheHubIsUnreachable(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(cfg, []byte(gatewayYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep := Run(context.Background(), Options{
+		ConfigPath: cfg, Getenv: func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] },
+		Factories: map[string]driver.Factory{"demo": demo.New}, Accounts: map[string]driver.AccountFactory{"demo": demo.NewAccount},
+		Version: "1.0.0", HubTransport: downHub{}, Timeout: time.Second,
+	})
+	for _, c := range rep.Checks {
+		if c.Code == CodeOccupancy && (c.Status != Skip || !strings.Contains(c.Message, "хаб недоступен")) {
 			t.Errorf("occupancy: %s %s", c.Status, c.Message)
 		}
 	}
