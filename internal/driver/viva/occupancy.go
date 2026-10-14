@@ -62,7 +62,9 @@ const listDays = 7
 // ahead of ours) plus overnight_minutes is incomplete; breaks are listed
 // break_lookback_days back.
 func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
-	dateTo = day(to, loc) // a record that starts after to's day cannot overlap
+	// a record that starts after to's day cannot overlap; one day more in
+	// case Viva reads dateTo as exclusive
+	dateTo = day(to, loc).AddDate(0, 0, 1)
 	if kind == "breaks" {
 		return day(from, loc).AddDate(0, 0, -d.lookback), dateTo, true
 	}

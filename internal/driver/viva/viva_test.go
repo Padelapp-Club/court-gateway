@@ -81,13 +81,13 @@ func TestOccupancyListsLocalDaysAndCutsOverlap(t *testing.T) {
 			t.Fatalf("non-overlapping or foreign-room booking %s returned: %s", id, raw)
 		}
 	}
-	// exercises from the local day before, breaks with a week of look-back
-	// and to the range's last day
+	// exercises from the local day before, breaks with a week of look-back,
+	// to the day after the range's last
 	want := map[string]string{"GET /exercises?": d.AddDate(0, 0, -1).Format("2006-01-02"), "GET /breaks?": d.AddDate(0, 0, -viva.DefaultBreakLookbackDays).Format("2006-01-02")}
 	for prefix, from := range want {
 		found := false
 		for _, c := range f.stub.Calls() {
-			if strings.HasPrefix(c, prefix) && strings.Contains(c, "dateFrom="+from) && strings.Contains(c, "dateTo="+d.Format("2006-01-02")) {
+			if strings.HasPrefix(c, prefix) && strings.Contains(c, "dateFrom="+from) && strings.Contains(c, "dateTo="+d.AddDate(0, 0, 1).Format("2006-01-02")) {
 				found = true
 			}
 		}
