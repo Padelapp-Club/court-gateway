@@ -191,7 +191,7 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 		add("slot_minutes: %d — шаг сетки в минутах, от 5 до 240, и сутки должны делиться на него без остатка (например 30 или 60)", s.SlotMinutes)
 		slotOK = false
 	}
-	s.Hours = [7]*DayHours{}
+	s.Hours = [7]*[2]int{}
 	if len(c.Hours) == 0 {
 		add("hours: параметр обязателен (часы работы по дням недели, например mon-fri: \"07:00-23:00\")")
 	} else {
@@ -200,7 +200,7 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 		s.Hours = hours
 		if slotOK && len(herrs) == 0 {
 			for i, h := range hours {
-				if h != nil && (h.Open%s.SlotMinutes != 0 || h.Close%s.SlotMinutes != 0) {
+				if h != nil && (h[0]%s.SlotMinutes != 0 || h[1]%s.SlotMinutes != 0) {
 					add("hours: часы работы в %s не совпадают с сеткой %d мин", dayNamesRu[i], s.SlotMinutes)
 				}
 			}
@@ -385,7 +385,7 @@ func dayText(h *[2]int) string {
 	if h == nil || h[0] >= h[1] {
 		return "closed"
 	}
-	return formatClock(h[0]) + "-" + formatClock(h[1])
+	return FormatClock(h[0]) + "-" + FormatClock(h[1])
 }
 
 // HoursMap groups consecutive days with the same hours: mon-fri, sat-sun.

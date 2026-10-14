@@ -110,7 +110,7 @@ func (s *Server) handleClub(w http.ResponseWriter, _ *http.Request) {
 			hours[dayKeys[i]] = nil
 			continue
 		}
-		hours[dayKeys[i]] = &hoursDTO{Open: formatClock(h.Open), Close: formatClock(h.Close)}
+		hours[dayKeys[i]] = &hoursDTO{Open: FormatClock(h[0]), Close: FormatClock(h[1])}
 	}
 	WriteJSON(w, http.StatusOK, clubDTO{
 		ID:           s.cfg.ClubID,
@@ -241,7 +241,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 	}
 	out := pricesDTO{Court: court, Date: date.Format("2006-01-02"), Currency: s.caps.Currency, Periods: []periodDTO{}}
 	for _, p := range datePeriods(table, s.cfg.Location, date) {
-		out.Periods = append(out.Periods, periodDTO{Start: formatClock(p.From), End: formatClock(p.To), PricePerHour: rubles(p.PerHour)})
+		out.Periods = append(out.Periods, periodDTO{Start: FormatClock(p.From), End: FormatClock(p.To), PricePerHour: rubles(p.PerHour)})
 	}
 	WriteJSON(w, http.StatusOK, out)
 }

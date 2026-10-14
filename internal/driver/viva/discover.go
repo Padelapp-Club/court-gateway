@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -82,11 +83,7 @@ func studioClock(s string) (int, bool) {
 	if len(s) < 5 || s[2] != ':' {
 		return 0, false
 	}
-	var h, m int
-	if _, err := fmt.Sscanf(s[:5], "%02d:%02d", &h, &m); err != nil || h > 24 || m > 59 {
-		return 0, false
-	}
-	return h*60 + m, true
+	return core.ParseClock(s[:5])
 }
 
 // studioHours turns workTime into hours per ISO weekday. from == to means
@@ -136,15 +133,13 @@ func studioHours(wt *vivaWorkTime) ([7]*[2]int, []driver.Notice, bool) {
 			prev := (i + 6) % 7
 			notices = append(notices, driver.Notice{Code: "HOURS_UNRESOLVED", Message: fmt.Sprintf(
 				"студия работает за полночь (%s до %s), а %s открывается в %s: у дня в часах клуба одно окно — впишите часы на %s вручную",
-				shortDays[prev], hhmm(c[1]), shortDays[i], hhmm(own[i][0]), shortDays[i])})
+				shortDays[prev], core.FormatClock(c[1]), shortDays[i], core.FormatClock(own[i][0]), shortDays[i])})
 		}
 	}
 	return out, notices, found
 }
 
 var shortDays = [7]string{"пн", "вт", "ср", "чт", "пт", "сб", "вс"}
-
-func hhmm(m int) string { return fmt.Sprintf("%02d:%02d", m/60, m%60) }
 
 // zoneForOffset is a fixed-offset IANA zone for a whole number of hours
 // (Etc/GMT-3 is UTC+3: the sign is inverted in that namespace).

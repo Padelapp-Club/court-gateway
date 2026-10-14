@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -175,18 +176,18 @@ func timeSpans(c *condition) ([]span, bool) {
 	return []span{{days: days, from: from, to: 1440}, {days: next, from: 0, to: to}}, true
 }
 
-// clock parses "HH:MM" or "HH:MM:SS" into minutes.
+// clock parses "HH:MM" or "HH:MM:SS" (the seconds are dropped) into
+// minutes before 24:00.
 func clock(s string) (int, bool) {
 	parts := strings.Split(strings.TrimSpace(s), ":")
-	if len(parts) < 2 || len(parts) > 3 {
-		return 0, false
+	if len(parts) == 3 {
+		if _, err := strconv.Atoi(parts[2]); err != nil {
+			return 0, false
+		}
+		parts = parts[:2]
 	}
-	h, err1 := strconv.Atoi(parts[0])
-	m, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
-		return 0, false
-	}
-	return h*60 + m, true
+	m, ok := core.ParseClock(strings.Join(parts, ":"))
+	return m, ok && m < 1440
 }
 
 // kopecks reads a JSON number or numeric string as an amount in kopecks.

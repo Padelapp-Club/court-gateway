@@ -154,13 +154,6 @@ type Court struct {
 	Name string
 }
 
-// DayHours are the opening hours of one weekday in minutes since local
-// midnight; Close may be 1440.
-type DayHours struct {
-	Open  int
-	Close int
-}
-
 // HubSettings configure the outbound connection to the hub.
 type HubSettings struct {
 	URL string
@@ -199,7 +192,7 @@ type Settings struct {
 	Location     *time.Location
 	SlotMinutes  int
 	// Hours is indexed by ISO weekday (0 = Monday); nil means closed.
-	Hours  [7]*DayHours
+	Hours  [7]*[2]int // per ISO weekday: opening and closing minute (up to 1440); nil closed
 	Courts []Court
 	// Driver is the input for the driver factory.
 	Driver driver.Config

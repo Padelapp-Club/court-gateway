@@ -31,10 +31,10 @@ func TestLoadValid(t *testing.T) {
 	if s.ClubID != "my-club" || s.SlotMinutes != 30 || s.Location.String() != "Europe/Moscow" {
 		t.Fatalf("%+v", s)
 	}
-	if h := s.Hours[0]; h == nil || h.Open != 420 || h.Close != 1380 {
+	if h := s.Hours[0]; h == nil || h[0] != 420 || h[1] != 1380 {
 		t.Fatalf("monday = %+v", h)
 	}
-	if h := s.Hours[5]; h == nil || h.Close != 1440 {
+	if h := s.Hours[5]; h == nil || h[1] != 1440 {
 		t.Fatalf("saturday = %+v", h)
 	}
 	if s.Hours[6] != nil {

@@ -45,8 +45,10 @@ func parseDays(key string) ([]int, error) {
 	return out, nil
 }
 
-// parseClock parses "HH:MM"; "24:00" is allowed as an end of day.
-func parseClock(s string) (int, bool) {
+// ParseClock reads "HH:MM" as minutes since midnight; "24:00" (1440) is
+// an end of day. The one clock parser of the gateway: drivers use it for
+// the CRM's clock times.
+func ParseClock(s string) (int, bool) {
 	h, m, ok := strings.Cut(strings.TrimSpace(s), ":")
 	if !ok || len(h) == 0 || len(h) > 2 || len(m) != 2 {
 		return 0, false
@@ -59,12 +61,13 @@ func parseClock(s string) (int, bool) {
 	return hh*60 + mm, true
 }
 
-func formatClock(min int) string {
+// FormatClock writes minutes since midnight as "HH:MM".
+func FormatClock(min int) string {
 	return fmt.Sprintf("%02d:%02d", min/60, min%60)
 }
 
-func parseHours(path string, m map[string]string) ([7]*DayHours, []string) {
-	var hours [7]*DayHours
+func parseHours(path string, m map[string]string) ([7]*[2]int, []string) {
+	var hours [7]*[2]int
 	var defined [7]bool
 	var errs []string
 	keys := make([]string, 0, len(m))
@@ -79,11 +82,11 @@ func parseHours(path string, m map[string]string) ([7]*DayHours, []string) {
 			errs = append(errs, path+": "+err.Error())
 			continue
 		}
-		var dh *DayHours
+		var dh *[2]int
 		if lv := strings.ToLower(v); lv != "closed" {
 			a, b, ok := strings.Cut(v, "-")
-			open, ok1 := parseClock(a)
-			closeAt, ok2 := parseClock(b)
+			open, ok1 := ParseClock(a)
+			closeAt, ok2 := ParseClock(b)
 			if !ok || !ok1 || !ok2 || open >= 1440 {
 				errs = append(errs, fmt.Sprintf("%s.%s: «%s» — ожидается время вида \"07:00-23:00\" (конец дня — 24:00) или closed", path, k, v))
 				continue
@@ -92,7 +95,7 @@ func parseHours(path string, m map[string]string) ([7]*DayHours, []string) {
 				errs = append(errs, fmt.Sprintf("%s.%s: «%s» — закрытие должно быть позже открытия; работа после полуночи пока не поддерживается, укажите 24:00", path, k, v))
 				continue
 			}
-			dh = &DayHours{Open: open, Close: closeAt}
+			dh = &[2]int{open, closeAt}
 		}
 		for _, d := range days {
 			if defined[d] {
