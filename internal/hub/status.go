@@ -74,9 +74,6 @@ func (s *metricSet) addBool(key string, v bool) {
 }
 
 func (s *metricSet) bytes() []byte {
-	if len(s.lines) == 0 {
-		return nil
-	}
 	return []byte(strings.Join(s.lines, "\n") + "\n")
 }
 

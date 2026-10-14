@@ -100,6 +100,9 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	if cfg.Password == "" {
 		add(errors.New("CRM_PASSWORD: переменная окружения с паролем администратора Viva не задана"))
 	}
+	if a, ok := cfg.Account.(*Account); ok {
+		return a.c // a club shares its account's session
+	}
 	hc := &http.Client{Timeout: timeout}
 	if cfg.HTTPClient != nil {
 		*hc = *cfg.HTTPClient
@@ -124,9 +127,6 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		}
 	}
 	c := login(cfg, 20*time.Second, add)
-	if a, ok := cfg.Account.(*Account); ok {
-		c = a.c
-	}
 	p := cfg.CRM
 	studio, err := p.String("crm", "studio", true)
 	add(err)

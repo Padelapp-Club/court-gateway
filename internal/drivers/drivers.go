@@ -29,7 +29,7 @@ func ClubCRMKeys(crmType string) []string { return clubCRMKeys[crmType] }
 // resources a club takes — crm keys of a whole studio, court params of one
 // room: what the hub keeps for one club, not knowing the CRM type.
 func ResourceKeys() (studio, room []string) {
-	return []string{viva.StudioKey, demo.StudioKey}, []string{viva.RoomKey}
+	return []string{viva.StudioKey}, []string{viva.RoomKey} // demo's studio key is the same
 }
 
 // AllClubCRMKeys returns the club-level crm keys of every driver: what the

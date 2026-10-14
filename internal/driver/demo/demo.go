@@ -40,10 +40,6 @@ var _ driver.Driver = (*Driver)(nil)
 // ClubCRMKeys are the club-level keys of the crm section.
 var ClubCRMKeys = []string{"studio"}
 
-// StudioKey is the crm key of the demo studio a club takes
-// (drivers.ResourceKeys).
-const StudioKey = "studio"
-
 // New is the driver.Factory for crm.type "demo".
 func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 
