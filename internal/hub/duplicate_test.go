@@ -22,7 +22,9 @@ import (
 
 // Two running copies of one gateway (one secret): the hub serves the
 // first and refuses the other with 409 DUPLICATE_GATEWAY — it gets no
-// partner request and its heartbeats do not count — and reports it in
+// partner request and its heartbeats count only as a sign of life (a
+// restarted gateway is not offline while the hub still holds a call of
+// the copy that crashed) — and reports it in
 // /hub/status and the status files, for as long as the first keeps its
 // polls open. The other takes over as soon as the first stops polling
 // (a crash closes its connections), or at once when the first says it
@@ -70,6 +72,12 @@ func TestSecondCopyIsRefused(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	if !second.Client.Duplicate() || second.Client.Connected() {
 		t.Fatal("the second copy took over from one that still polls")
+	}
+	if err := second.Client.SendHeartbeat(context.Background(), tunnel.Heartbeat{Ready: false, Reason: "CRM_AUTH_FAILED"}); !errors.Is(err, tunnel.ErrDuplicate) {
+		t.Fatalf("heartbeat of the refused copy: %v", err)
+	}
+	if h := w.hub.Server().Monitor().Health("demo-club"); h.State == hub.StateOffline || !h.Ready {
+		t.Fatalf("after the refused copy's heartbeat, an hour after the last counted one: %+v", h)
 	}
 
 	// the first copy stops without a word (killed: no release): its polls

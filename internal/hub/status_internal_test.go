@@ -38,7 +38,7 @@ func TestMonitorForgetsDeletedInstallations(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewMonitor(st, NewBroker(time.Second, nil), MonitorConfig{OfflineAfter: time.Minute})
-	m.Heartbeat("gone-net", tunnel.Heartbeat{Ready: true})
+	m.Heartbeat("gone-net", tunnel.Heartbeat{Ready: true}, true)
 	m.Tick()
 	if err := st.DeleteInstallation("gone-net"); err != nil {
 		t.Fatal(err)

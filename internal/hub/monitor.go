@@ -176,13 +176,17 @@ func cleanBuild(b string) string {
 }
 
 // Heartbeat records a heartbeat from installation's gateway, received now (hub
-// clock: the gateway's clock is not trusted for liveness).
-func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
+// clock: the gateway's clock is not trusted for liveness); of a copy not
+// bound only that it is alive, its report does not count.
+func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat, bound bool) {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	h := m.health(installation)
-	h.lastBeat, h.beats = now, h.beats+1
+	if h.lastBeat = now; !bound {
+		return
+	}
+	h.beats++
 	h.ready, h.reason, h.clubs = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil
 	if !hb.Ready {
 		h.clubs = cleanClubs(hb.ReasonClubs)

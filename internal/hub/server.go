@@ -324,13 +324,14 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed heartbeat")
 		return
 	}
+	// a copy refused (not bound) is alive all the same: a restarted
+	// gateway is not offline while the old copy's call runs out
 	release := s.admitted(w, r, g)
-	if release == nil {
-		return
+	s.monitor.Heartbeat(g.Installation, hb, release != nil)
+	if release != nil {
+		release()
+		w.WriteHeader(http.StatusNoContent)
 	}
-	release()
-	s.monitor.Heartbeat(g.Installation, hb)
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleConfig gives a gateway its installation's club configuration.
