@@ -538,7 +538,8 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 	if rq.Partner != "" && !scopeAllows(rq.Scopes, rq.Method) {
 		return fail(http.StatusForbidden, "FORBIDDEN", "the API key has no scope for this operation")
 	}
-	if !allowed(rq.Method, rq.Path) {
+	// the gateway API (/gateway/...) is the hub operator's, never a partner's
+	if !allowed(rq.Method, rq.Path) || (rq.Partner != "" && strings.HasPrefix(rq.Path, "/gateway/")) {
 		return fail(http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	}
 	if len(rq.Body) > MaxRequestBody {

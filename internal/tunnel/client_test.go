@@ -85,6 +85,10 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: PathDiscover})); r.Status != http.StatusOK {
 		t.Fatalf("POST %s blocked: %d", PathDiscover, r.Status)
 	}
+	// never for a partner, even one the hub signed with every scope
+	if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: PathDiscover, Partner: "booker", Scopes: []string{"read", "book"}})); r.Status != http.StatusNotFound {
+		t.Fatalf("a partner reached %s: %d", PathDiscover, r.Status)
+	}
 	for _, p := range []string{"/gateway/other", "/gateway/discover/../../hub/status"} {
 		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodPost, Path: p})); r.Status != http.StatusNotFound {
 			t.Fatalf("%q reached the handler: %d", p, r.Status)
