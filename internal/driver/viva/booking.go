@@ -174,7 +174,7 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 		return driver.Booking{}, err
 	}
 	if len(ivs) == 0 {
-		return driver.Booking{}, driver.ErrCourtNotConfigured
+		return driver.Booking{}, d.notACourt(s)
 	}
 	iv := ivs[0]
 	status := driver.StatusActive
@@ -215,7 +215,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no room")
 	}
 	if _, ours := d.byRoom[strings.ToLower(s.Room.ID)]; !ours {
-		return driver.ErrCourtNotConfigured
+		return d.notACourt(s)
 	}
 	if err := d.checkOwnership(kind, raw, partner); err != nil {
 		return err
@@ -241,6 +241,16 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	default:
 		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /%s/{id} answered HTTP %d", kind, status))
 	}
+}
+
+// notACourt is a record in a room that is no configured court: a court
+// removed from this club's config, or another studio's (club's) record,
+// which is no booking of this club at all.
+func (d *Driver) notACourt(s slot) error {
+	if s.Studio != nil && strings.EqualFold(s.Studio.ID, d.studio) {
+		return driver.ErrCourtNotConfigured
+	}
+	return driver.ErrNotFound
 }
 
 func isNull(r json.RawMessage) bool { return len(r) == 0 || string(r) == "null" }

@@ -20,6 +20,7 @@ import (
 // Obviously fake identifiers: nothing here refers to a real studio.
 const (
 	studio      = "00000000-0000-4000-8000-0000000000aa"
+	otherStudio = "00000000-0000-4000-8000-0000000000ab"
 	room1       = "00000000-0000-4000-8000-0000000000b1"
 	room2       = "00000000-0000-4000-8000-0000000000b2"
 	roomOther   = "00000000-0000-4000-8000-0000000000b9"

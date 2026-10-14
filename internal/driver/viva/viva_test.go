@@ -441,7 +441,8 @@ func TestCancelOwnershipRules(t *testing.T) {
 		{"comment without marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "club note"}), false, driver.ErrNotOwned},
 		{"null comment", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": nil}), false, driver.ErrNotOwned},
 		{"another partner's marker", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:other]"}), false, driver.ErrNotOwned},
-		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "comment": "[cg:booker]"}), false, driver.ErrCourtNotConfigured},
+		{"room that is not a court", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "studio": map[string]any{"id": studio}, "comment": "[cg:booker]"}), false, driver.ErrCourtNotConfigured},
+		{"another studio's record", "e-" + f.stub.SeedExercise(map[string]any{"timeFrom": d.Format(time.RFC3339), "timeTo": d.Add(time.Hour).Format(time.RFC3339), "room": map[string]any{"id": roomOther}, "studio": map[string]any{"id": otherStudio}, "comment": "[cg:booker]"}), false, driver.ErrNotFound},
 		{"own exercise", "e-" + seedEx(map[string]any{"clientsCount": 0, "comment": "[cg:booker] note"}), false, nil},
 		{"own exercise, empty client fields", "e-" + seedEx(map[string]any{"clientsCount": 0, "clients": []any{}, "guests": nil, "participants": map[string]any{}, "bookings": "", "comment": "[cg:booker]"}), false, nil},
 		{"clients listed, no clientsCount", "e-" + seedEx(map[string]any{"clients": []any{map[string]any{"id": "fixture-client"}}, "comment": "[cg:booker]"}), false, driver.ErrNotOwned},
@@ -511,11 +512,17 @@ func TestGetBooking(t *testing.T) {
 		t.Fatalf("leak %s", leak)
 	}
 	// a record in a room that is not (or no longer) a configured court is
-	// not exposed: 409 COURT_NOT_CONFIGURED, for reading and cancelling
+	// not exposed: 409 COURT_NOT_CONFIGURED, for reading and cancelling;
+	// another studio's (club's) record is no booking of this club: 404
 	other := f.seedClubBooking(roomOther, d.Add(10*time.Hour), d.Add(11*time.Hour))
+	elsewhere := f.stub.SeedExercise(map[string]any{"timeFrom": d.Add(10 * time.Hour).Format(time.RFC3339), "timeTo": d.Add(11 * time.Hour).Format(time.RFC3339),
+		"room": map[string]any{"id": roomOther}, "studio": map[string]any{"id": otherStudio}, "comment": "[cg:booker]"})
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
 		if st, m, raw := call(t, f, method, "/v1/clubs/test-club/bookings/e-"+other, contract.BookKey, ""); st != 409 || m["code"] != "COURT_NOT_CONFIGURED" || strings.Contains(raw, roomOther) {
 			t.Fatalf("%s: %d %s", method, st, raw)
+		}
+		if st, m, raw := call(t, f, method, "/v1/clubs/test-club/bookings/e-"+elsewhere, contract.BookKey, ""); st != 404 || m["code"] != "NOT_FOUND" {
+			t.Fatalf("%s, another club's booking: %d %s", method, st, raw)
 		}
 	}
 	// a break id is read from the breaks endpoint
