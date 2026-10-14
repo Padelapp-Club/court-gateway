@@ -255,7 +255,7 @@ func (s Signing) Client(t *testing.T, handler http.Handler) *tunnel.Client {
 	}
 	// the hub's time, as the client's first poll answer brings it
 	reg := tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret))
-	if err := v.Time("sync", tunnel.SignTime(s.Key, s.Installation, reg, "sync", "0", time.Now()), "0", time.Now()); err != nil {
+	if err := v.Time("sync", tunnel.SignTime(s.Key, s.Installation, reg, "sync", "0", time.Now()), "0", time.Now(), v.Ticket()); err != nil {
 		t.Fatal(err)
 	}
 	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: s.Secret, Handler: handler,

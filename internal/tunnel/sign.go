@@ -203,6 +203,10 @@ var ErrStaleConfig = errors.New("the config is older than the one announced or a
 // ErrSlowTime: the hub's time arrived too late to be taken (MaxTimeRoundTrip).
 var ErrSlowTime = errors.New("the hub's time arrived too late to be taken")
 
+// ErrUnconfirmedRun: the hub answered from another run (a restart) not yet
+// confirmed as the current one (Verifier.Time): no request runs until it is.
+var ErrUnconfirmedRun = errors.New("the hub's current run is not confirmed yet")
+
 // Verifier checks the hub's signatures on the gateway against the hub's
 // time as last signed (Time), and its config version announcements.
 type Verifier struct {
@@ -218,8 +222,11 @@ type Verifier struct {
 	offset time.Duration   // the hub's clock minus now, then
 	config int64           // the config version announced, or applied since
 	epoch  string          // the hub run it belongs to
-	signed int64           // the hub's latest signed time in that run (unix ms)
 	gone   map[string]bool // the runs it replaced: never taken again
+	seen   uint64          // how many times another run was seen (Ticket)
+	unsure bool            // since then, which run is current is not confirmed
+	next   string          // the run seen then, and its version
+	nextV  int64
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
@@ -235,14 +242,25 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now, gone: map[string]bool{}}, nil
 }
 
+// Ticket is taken when a request is sent, for Time: its answer confirms
+// which hub run is current only when no other run was seen since.
+func (v *Verifier) Ticket() uint64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.seen
+}
+
 // Time takes the hub's signed time (header, signed with the request's
 // nonce and version, "<number> <epoch>") from the answer to a request sent
-// at sent, unless slower than MaxTimeRoundTrip (ErrSlowTime). The version
-// is taken anyway: within an epoch it only goes up; a new epoch (a hub
-// restart or restore) replaces it when the hub signed it later than all
-// it signed of the current one (not by when the requests were sent: a
-// late answer may be the older run's), and a replaced epoch never returns.
-func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
+// at sent with ticket (Ticket), unless slower than MaxTimeRoundTrip
+// (ErrSlowTime). The version is taken anyway: its order never comes from
+// the hub's clock. Within an epoch it only goes up. Another epoch (a hub
+// restart or restore) is not taken on its own, a late answer may be an
+// ended run's: until an answer to a request sent after it was seen names
+// the current epoch, the run is unconfirmed. That epoch is taken (a run
+// that ended cannot answer a nonce made after another run answered), the
+// others seen are replaced, and a replaced epoch never returns.
+func (v *Verifier) Time(nonce, header, version string, sent time.Time, ticket uint64) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
 	sig, err2 := base64.StdEncoding.DecodeString(sigText)
@@ -252,11 +270,24 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	number, epoch, _ := strings.Cut(version, " ")
-	if n, err := strconv.ParseInt(number, 10, 64); err == nil && epoch == v.epoch {
-		v.config, v.signed = max(v.config, n), max(v.signed, ms)
-	} else if err == nil && !v.gone[epoch] && ms > v.signed {
-		v.gone[v.epoch] = true
-		v.config, v.epoch, v.signed = n, epoch, ms
+	n, err := strconv.ParseInt(number, 10, 64)
+	switch {
+	case err != nil || v.gone[epoch]:
+	case v.unsure && ticket == v.seen: // asked after the other run was seen
+		if epoch != v.next {
+			v.gone[v.next] = true
+		}
+		if epoch != v.epoch {
+			v.gone[v.epoch], v.config = true, n
+		}
+		v.config, v.epoch, v.unsure = max(v.config, n), epoch, false
+	case epoch == v.epoch:
+		v.config = max(v.config, n)
+	case v.unsure && epoch == v.next:
+		v.nextV = max(v.nextV, n)
+	default:
+		v.seen++
+		v.unsure, v.next, v.nextV = true, epoch, n
 	}
 	received := v.now()
 	if rtt := received.Sub(sent); rtt > MaxTimeRoundTrip {
@@ -289,11 +320,22 @@ func (v *Verifier) clock() time.Time {
 }
 
 // Announced is the config version and epoch taken from the hub's signed
-// time (Time), or applied since (Config).
+// time (Time), or applied since (Config); while the hub's run is not
+// confirmed, the other run's: a config is pending.
 func (v *Verifier) Announced() (int64, string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.unsure {
+		return v.nextV, v.next
+	}
 	return v.config, v.epoch
+}
+
+// Confirmed reports whether the hub's current run is confirmed (Time).
+func (v *Verifier) Confirmed() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return !v.unsure
 }
 
 // check verifies a seal: signed by the pinned key for this registration,
@@ -324,21 +366,29 @@ func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 // Request accepts rq when the hub signed it for this gateway, valid now,
 // and for the poll that carried it (nonce, fresh on every poll), so a
 // request runs once with nothing kept to remember it. Until the hub's
-// time is known it accepts nothing (ErrClockUnknown).
+// time is known it accepts nothing (ErrClockUnknown), nor while its run
+// is not confirmed (ErrUnconfirmedRun).
 func (v *Verifier) Request(rq *Request, nonce string) error {
-	return v.check(rq.Seal, rq.message(nonce), true)
+	if err := v.check(rq.Seal, rq.message(nonce), true); err != nil {
+		return err
+	}
+	if !v.Confirmed() {
+		return ErrUnconfirmedRun
+	}
+	return nil
 }
 
 // Config accepts a club configuration signed for this gateway, valid now,
-// of the epoch announced (Time) and not older than announced or applied
-// since (ErrStaleConfig); a replay within its validity gives the same one.
+// of the epoch announced (Time) and confirmed, and not older than
+// announced or applied since (ErrStaleConfig); a replay within its
+// validity gives the same one.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if rc.Epoch != v.epoch || rc.Version < v.config {
+	if v.unsure || rc.Epoch != v.epoch || rc.Version < v.config {
 		return fmt.Errorf("%w: version %d, %d announced or applied", ErrStaleConfig, rc.Version, v.config)
 	}
 	v.config = rc.Version

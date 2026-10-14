@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,7 +36,7 @@ func signed(rq Request) Request {
 // synced gives v the hub's time hubNow, as a quick poll answer does.
 func synced(t *testing.T, v *Verifier, hubNow time.Time) *Verifier {
 	t.Helper()
-	if err := v.Time("sync", SignTime(testKey, "inst", testRegistration, "sync", "0", hubNow), "0", v.now()); err != nil {
+	if err := v.Time("sync", SignTime(testKey, "inst", testRegistration, "sync", "0", hubNow), "0", v.now(), v.Ticket()); err != nil {
 		t.Fatal(err)
 	}
 	return v
@@ -225,9 +227,9 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 		}
 		stamp := SignTime(testKey, "inst", testRegistration, "nonce-1", "7", hubNow)
 		for name, err := range map[string]error{
-			"another nonce":   v.Time("nonce-2", stamp, "7", local),
-			"another version": v.Time("nonce-1", stamp, "8", local),
-			"forged":          v.Time("nonce-1", SignTime(otherTestKey, "inst", testRegistration, "nonce-1", "7", hubNow), "7", local),
+			"another nonce":   v.Time("nonce-2", stamp, "7", local, v.Ticket()),
+			"another version": v.Time("nonce-1", stamp, "8", local, v.Ticket()),
+			"forged":          v.Time("nonce-1", SignTime(otherTestKey, "inst", testRegistration, "nonce-1", "7", hubNow), "7", local, v.Ticket()),
 		} {
 			if !errors.Is(err, ErrBadSignature) {
 				t.Fatalf("%s: stamp accepted (%v)", name, err)
@@ -236,7 +238,7 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 		if _, known := v.Now(); known {
 			t.Fatal("a refused stamp made the hub's time known")
 		}
-		if err := v.Time("nonce-1", stamp, "7", local); err != nil || (v.offset-off).Abs() > time.Millisecond {
+		if err := v.Time("nonce-1", stamp, "7", local, v.Ticket()); err != nil || (v.offset-off).Abs() > time.Millisecond {
 			t.Fatalf("stamp: %v, offset %s", err, v.offset)
 		}
 		rq.ID = "after-stamp"
@@ -253,7 +255,7 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 	}
 	local := hubNow.Add(-2 * time.Hour)
 	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local); err != nil || (v.offset-2*time.Hour).Abs() > time.Millisecond {
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local, v.Ticket()); err != nil || (v.offset-2*time.Hour).Abs() > time.Millisecond {
 		t.Fatalf("a large offset is still reported: %v %s", err, v.offset)
 	}
 	rq := sampleRequest()
@@ -273,13 +275,13 @@ func TestVerifierTakesTheHubsTimeOnlyFromAQuickAnswer(t *testing.T) {
 	local := hubNow
 	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
 	sent := local.Add(-MaxTimeRoundTrip - time.Millisecond)
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", sent); !errors.Is(err, ErrSlowTime) {
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", sent, v.Ticket()); !errors.Is(err, ErrSlowTime) {
 		t.Fatalf("a slow answer: %v", err)
 	}
 	if _, known := v.Now(); known {
 		t.Fatal("the time of a slow answer was taken")
 	}
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local.Add(-MaxTimeRoundTrip)); err != nil {
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local.Add(-MaxTimeRoundTrip), v.Ticket()); err != nil {
 		t.Fatalf("an answer within the bound: %v", err)
 	}
 	if now, known := v.Now(); !known || now.Sub(hubNow.Truncate(time.Millisecond)).Abs() > time.Second {
@@ -305,7 +307,7 @@ func TestVerifierRefusesAnOlderConfig(t *testing.T) {
 	if err := v.Config(config(5)); err != nil {
 		t.Fatalf("the same config again: %v", err)
 	}
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "7", time.Now()), "7", time.Now()); err != nil {
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "7", time.Now()), "7", time.Now(), v.Ticket()); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.Config(config(6)); !errors.Is(err, ErrStaleConfig) {
@@ -331,42 +333,80 @@ func TestClockStepDoesNotMoveTheHubsTime(t *testing.T) {
 
 // The config version the hub announces in its signed time stands, however
 // slow the answer (these all are), and belongs to its epoch (hub run).
-// Within an epoch a late answer does not lower it; a new epoch (the hub
-// restarted or was restored from a backup) may, when the hub signed it
-// later than the current one, and then a config of the earlier run still
-// in flight is refused, as is a late announcement of it or of a run
-// signed earlier, and a run once replaced is never taken again.
+// Within an epoch a late answer does not lower it. Another epoch (the hub
+// restarted or was restored from a backup) is taken, and a config of it,
+// only once the answer to a request sent after it was seen names it,
+// whatever the hub's clock said: a late answer of an ended run is set
+// right by such an answer of the current run, and a run once replaced is
+// never taken again.
 func TestAnnouncedConfigVersionAndEpoch(t *testing.T) {
 	v, _ := NewVerifier(testPub, "inst", "s", nil)
 	t0 := time.Now().Add(-time.Hour)
+	earlier := v.Ticket() // a request sent before any answer
 	type cfg struct {
 		version int64
 		epoch   string
 		ok      bool
 	}
-	for _, step := range []struct {
+	for i, step := range []struct {
 		announced string
+		fresh     bool          // its request was sent after another run was last seen
 		signed    time.Duration // after t0, on the hub's clock
+		taken     string        // Announced then
 		configs   []cfg
 	}{
-		{"5 run-a", 1 * time.Second, []cfg{{5, "run-a", true}}},
-		{"7 run-a", 3 * time.Second, []cfg{{6, "run-a", false}}},
-		{"6 run-a", 2 * time.Second, []cfg{{6, "run-a", false}, {7, "run-a", true}}}, // an older poll's answer, late
-		{"4 run-b", 5 * time.Second, []cfg{{7, "run-a", false}, {4, "run-b", true}}}, // restored
-		{"9 run-a", 4 * time.Second, []cfg{{9, "run-a", false}, {4, "run-b", true}}}, // run A's answer, late
-		{"3 run-c", 4 * time.Second, []cfg{{3, "run-c", false}, {4, "run-b", true}}}, // a run signed before B's answer, late
-		{"9 run-a", 6 * time.Second, []cfg{{9, "run-a", false}, {4, "run-b", true}}}, // run A again, its clock ahead
+		{"5 run-a", false, 10 * time.Second, "5 run-a", []cfg{{5, "run-a", false}}}, // not confirmed yet
+		{"5 run-a", true, 11 * time.Second, "5 run-a", []cfg{{5, "run-a", true}}},
+		{"7 run-a", false, 12 * time.Second, "7 run-a", []cfg{{6, "run-a", false}}},
+		{"6 run-a", false, 11 * time.Second, "7 run-a", []cfg{{6, "run-a", false}, {7, "run-a", true}}},  // an older poll's answer, late
+		{"4 run-b", false, -2 * time.Minute, "4 run-b", []cfg{{7, "run-a", false}, {4, "run-b", false}}}, // another run: pending
+		{"4 run-b", true, -2 * time.Minute, "4 run-b", []cfg{{4, "run-b", true}, {7, "run-a", false}}},   // restored, its clock behind
+		{"9 run-a", true, 365 * 24 * time.Hour, "4 run-b", []cfg{{9, "run-a", false}, {4, "run-b", true}}},
+		{"3 run-c", false, 5 * time.Second, "3 run-c", []cfg{{3, "run-c", false}, {4, "run-b", false}}}, // an ended run's answer, late
+		{"4 run-b", true, 6 * time.Second, "4 run-b", []cfg{{3, "run-c", false}, {4, "run-b", true}}},
+		{"3 run-c", true, 7 * time.Second, "4 run-b", []cfg{{3, "run-c", false}, {4, "run-b", true}}},
+		{"2 run-d", false, time.Second, "2 run-d", []cfg{{2, "run-d", false}}},
+		{"2 run-d", true, time.Second, "2 run-d", []cfg{{2, "run-d", true}, {4, "run-b", false}}},
 	} {
+		ticket := earlier
+		if step.fresh {
+			ticket = v.Ticket()
+		}
 		at := t0.Add(step.signed)
-		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", step.announced, at), step.announced, t0); !errors.Is(err, ErrSlowTime) {
-			t.Fatalf("%s: %v", step.announced, err)
+		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", step.announced, at), step.announced, t0, ticket); !errors.Is(err, ErrSlowTime) {
+			t.Fatalf("%d %s: %v", i, step.announced, err)
+		}
+		if n, e := v.Announced(); fmt.Sprintf("%d %s", n, e) != step.taken {
+			t.Fatalf("%d %s: announced %d %s, want %s", i, step.announced, n, e, step.taken)
 		}
 		for _, c := range step.configs {
 			rc := &RemoteConfig{Version: c.version, Epoch: c.epoch, Clubs: []json.RawMessage{}}
 			rc.Sign(testKey, "inst", testRegistration, time.Now())
 			if err := v.Config(rc); (err == nil) != c.ok {
-				t.Fatalf("config %d %s with %s announced: %v", c.version, c.epoch, step.announced, err)
+				t.Fatalf("%d: config %d %s with %s announced: %v", i, c.version, c.epoch, step.announced, err)
 			}
 		}
+	}
+}
+
+// While another hub run that answered is not confirmed, a request signed
+// for its poll is answered 503 CONFIG_PENDING and not run; once the answer
+// to a request sent since confirms the run, it runs.
+func TestRequestWaitsUntilTheHubRunIsConfirmed(t *testing.T) {
+	ran := 0
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ran++ }))
+	earlier := c.verify.Ticket()
+	if err := c.verify.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1 run-b", time.Now()), "1 run-b", time.Now(), earlier); err != nil {
+		t.Fatal(err)
+	}
+	rq := signed(Request{Method: http.MethodGet, Path: "/v1/clubs"})
+	if r := c.Execute(t.Context(), rq, testNonce); r.Status != http.StatusServiceUnavailable || !strings.Contains(string(r.Body), "CONFIG_PENDING") || ran != 0 {
+		t.Fatalf("before the run is confirmed: %d %s, ran %d", r.Status, r.Body, ran)
+	}
+	if err := c.verify.Time("m", SignTime(testKey, "inst", testRegistration, "m", "1 run-b", time.Now()), "1 run-b", time.Now(), c.verify.Ticket()); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.Execute(t.Context(), rq, testNonce); r.Status != http.StatusOK || ran != 1 {
+		t.Fatalf("once confirmed: %d %s, ran %d", r.Status, r.Body, ran)
 	}
 }

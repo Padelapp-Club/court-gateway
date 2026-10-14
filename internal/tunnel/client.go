@@ -389,6 +389,7 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 		connected()
 		return nil, nil
 	case http.StatusOK:
+		_ = c.confirm(req.Context())
 		connected()
 	default:
 		return nil, c.hubError(resp.StatusCode, "a poll")
@@ -417,7 +418,7 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	var nonce [16]byte
 	_, _ = crand.Read(nonce[:])
 	req.Header.Set(HeaderNonce, hex.EncodeToString(nonce[:]))
-	sent := c.verify.now()
+	sent, ticket := c.verify.now(), c.verify.Ticket()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -426,7 +427,7 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 		version, epoch := resp.Header.Get(HeaderConfigVersion), resp.Header.Get(HeaderConfigEpoch)
 		c.announce.Lock()
 		defer c.announce.Unlock()
-		err := c.verify.Time(req.Header.Get(HeaderNonce), h, strings.TrimSpace(version+" "+epoch), sent)
+		err := c.verify.Time(req.Header.Get(HeaderNonce), h, strings.TrimSpace(version+" "+epoch), sent, ticket)
 		c.badKey.Store(errors.Is(err, ErrBadSignature))
 		switch {
 		case errors.Is(err, ErrBadSignature):
@@ -443,12 +444,25 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// confirm makes an exchange now when another hub run answered, so that its
+// answer confirms which run is current (Verifier.Time).
+func (c *Client) confirm(ctx context.Context) error {
+	if c.verify.Confirmed() {
+		return nil
+	}
+	_, err := c.Whoami(ctx)
+	return err
+}
+
 // MaxConfigBody bounds the club configuration of an installation.
 const MaxConfigBody = 8 << 20
 
 // FetchConfig pulls the installation's club configuration from the hub.
 func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	var out RemoteConfig
+	if err := c.confirm(ctx); err != nil {
+		return out, err
+	}
 	req, err := c.newRequest(ctx, http.MethodGet, PathConfig, nil)
 	if err != nil {
 		return out, err
@@ -558,6 +572,11 @@ func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response
 	err := c.verify.Request(&rq, nonce)
 	if errors.Is(err, ErrClockUnknown) {
 		r := fail(http.StatusServiceUnavailable, "CLOCK_UNKNOWN", "the club's gateway does not know the hub's time yet, retry")
+		r.Header["Retry-After"] = "5"
+		return r
+	}
+	if errors.Is(err, ErrUnconfirmedRun) {
+		r := fail(http.StatusServiceUnavailable, "CONFIG_PENDING", "the hub restarted; the club's gateway is taking its configuration, retry")
 		r.Header["Retry-After"] = "5"
 		return r
 	}

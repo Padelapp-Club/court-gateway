@@ -73,7 +73,7 @@ func TestDecisionsUseTheHubsClock(t *testing.T) {
 	}
 
 	reg := tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-secret"))
-	if err := v.Time("n", tunnel.SignTime(key, "inst", reg, "n", "1", hubNow), "1", now()); err != nil {
+	if err := v.Time("n", tunnel.SignTime(key, "inst", reg, "n", "1", hubNow), "1", now(), v.Ticket()); err != nil {
 		t.Fatal(err)
 	}
 	local.Store(hubNow.UnixNano()) // the computer's clock is set right
