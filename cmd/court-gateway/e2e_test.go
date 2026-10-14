@@ -682,3 +682,40 @@ func TestSelfcheckWithARejectedPasswordIsNotRun(t *testing.T) {
 		t.Fatalf("selfcheck with a rejected password: rc=%d %s, %d logins", rc, errb.String(), s.stub.LoginAttempts()-before)
 	}
 }
+
+// setup --force while the service runs (a new join code: a new secret)
+// restarts the service, which then runs with the new connection: nobody
+// has to restart it by hand.
+func TestServiceRestartsWhenSetupRewritesTheHubConnection(t *testing.T) {
+	s := newStack(t)
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	restarted := make(chan []string, 1)
+	restartProcess = func(_ string, args []string) error { restarted <- args; return update.ErrRestartRequired }
+	defer func() { restartProcess = update.Restart }()
+	done := make(chan int, 1)
+	go func() { done <- serve(context.Background(), cfg, "", &contract.LogBuffer{}, env{}.get) }()
+	getenv, err := core.EnvWithDotEnv(cfg, env{}.get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testkit.WaitFor(t, "the service connected", 15*time.Second, func() bool {
+		who, err := tunnel.FetchWhoami(context.Background(), s.hub.Transport(), s.hub.URL(), getenv(core.DefaultHubSecretEnv))
+		return err == nil && who.Connected
+	})
+	out.Reset()
+	if rc := run(s.setupArgs("--force"), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup --force: %s", out.String())
+	}
+	select {
+	case rc := <-done:
+		if rc != exitRestart || len(restarted) != 1 {
+			t.Fatalf("serve returned %d, restarts %d", rc, len(restarted))
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the service kept running with the replaced secret")
+	}
+}

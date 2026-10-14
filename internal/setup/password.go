@@ -19,7 +19,7 @@ import (
 // rest of the environment, as serve sees it). The file is written as setup
 // writes it: same quoting, mode 0600, and on Windows the folder and .env
 // closed and verified (deps.ProtectSecrets) before and after. The running
-// service keeps the old password until it is restarted.
+// service takes the new password from .env by itself.
 func SetPassword(ctx context.Context, cfgPath, password string, getenv func(string) string, deps Deps) error {
 	if password == "" {
 		return problem("MISSING_INPUT", "не хватает: CRM_PASSWORD (или --password-stdin)")

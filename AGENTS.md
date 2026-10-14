@@ -208,7 +208,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | `CONFIG_VALID` | `gateway.yaml` or `.env` is broken — the message lists every problem |
 | `CRM_LOGIN` / `CRM_OCCUPANCY` | the Viva login is wrong, a club's studio/rooms on the hub are wrong, or Viva is unreachable |
 | `HUB_REACHABLE` | no outbound HTTPS to the hub, or its certificate failed verification |
-| `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed |
+| `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed (the running service restarts by itself on the rewritten files) |
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
 | `HUB_CONFIG` | `fail`: the clubs configured on the hub do not load with this CRM — report to the operator (the service keeps the previous config); `warn`: the service has not applied the newest config yet, or a club is served but its config disagrees with the CRM (its time zone) — report to the operator |
 | `SECRETS_FILE` | Windows `fail`: the folder holding `.env`, or `.env`, is open to other users — run the `hint` command (`install-service`, which closes both) in PowerShell as Administrator; `warn` elsewhere: `chmod 600 .env` |

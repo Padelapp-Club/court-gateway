@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,9 +12,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
@@ -33,6 +36,9 @@ func (*passwordAccount) CheckLogin(context.Context) error { return nil }
 
 // The running service re-reads the CRM password when set-password rewrites
 // .env, and only then: that is what ends its stop after a rejected login.
+// It reads .env itself, so a password in its own environment does not
+// hide the new one, and it redacts the new password in its log from then
+// on, as it did the old one.
 func TestServiceTakesTheNewPasswordFromEnvFile(t *testing.T) {
 	dir := t.TempDir()
 	cfg, env := filepath.Join(dir, "gateway.yaml"), filepath.Join(dir, ".env")
@@ -47,7 +53,10 @@ func TestServiceTakesTheNewPasswordFromEnvFile(t *testing.T) {
 	t0 := time.Now().Add(-time.Hour)
 	write("CRM_PASSWORD='old-password'\n", t0)
 	acct := &passwordAccount{}
-	w := newPasswordWatch(cfg, func(string) string { return "" }, acct, slog.New(slog.DiscardHandler))
+	var logs bytes.Buffer
+	log := core.NewLogger(&logs, slog.LevelInfo, []string{"old-password"})
+	procEnv := func(k string) string { return map[string]string{core.PasswordEnv: "service-env-password"}[k] }
+	w := newConfigWatch(cfg, procEnv, acct, log, func() { t.Fatal("restarted for a password") })
 	w.check()
 	if len(acct.set) != 0 {
 		t.Fatalf("an unchanged .env set the password: %v", acct.set)
@@ -57,6 +66,10 @@ func TestServiceTakesTheNewPasswordFromEnvFile(t *testing.T) {
 	w.check()
 	if len(acct.set) != 1 || acct.set[0] != "new-password" {
 		t.Fatalf("passwords set: %v", acct.set)
+	}
+	log.Info("a CRM answer that echoes new-password back")
+	if strings.Contains(logs.String(), "new-password") {
+		t.Fatalf("the new password was logged:\n%s", logs.String())
 	}
 }
 

@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +39,10 @@ var statusInterval = 60 * time.Second
 // confirmDeadline is how long a freshly updated binary has to become
 // ready (and connected to the hub) before it rolls itself back.
 const confirmDeadline = 3 * time.Minute
+
+// restartProcess starts the installed binary again in place of this
+// process (update.Restart); a variable for tests.
+var restartProcess = update.Restart
 
 // maxHandovers bounds how often one start of the installed binary hands
 // over in a row (Windows: a version that exits to be restarted).
@@ -164,10 +170,10 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		checked := false
 		sentConfig := int64(-1) // the applied config version the hub last heard of
 		lastSeen := time.Now()  // the hub, or the start
-		password := newPasswordWatch(cfgPath, procEnv, s.Driver.Account, log)
+		files := newConfigWatch(cfgPath, procEnv, s.Driver.Account, log, askRestart)
 		clockSkewed := false
 		for {
-			password.check()
+			files.check()
 			_, clockKnown := verifier.Now()
 			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown}
 			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
@@ -276,7 +282,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		// returns only where a process cannot replace itself (Windows) or
 		// on failure; then the restart code makes the installed binary or
 		// the service manager start again
-		if err := update.Restart(installed, serveArgs(cfgPath, logFile)); err != nil && !errors.Is(err, update.ErrRestartRequired) {
+		if err := restartProcess(installed, serveArgs(cfgPath, logFile)); err != nil && !errors.Is(err, update.ErrRestartRequired) {
 			log.Error("restart failed; the service manager will start the binary again", "error", err)
 		}
 		return exitRestart
@@ -343,39 +349,81 @@ func passwordRejected(acct driver.Account) func() bool {
 	return func() bool { return ok && ps.PasswordRejected() }
 }
 
-// passwordWatch re-reads the CRM password when .env changes (set-password
-// rewrites it), so a gateway that stopped calling the CRM after a rejected
-// login resumes without a restart.
-type passwordWatch struct {
+// configWatch notices when setup or set-password rewrites gateway.yaml or
+// .env next to it. A new CRM password is taken at once, read from .env
+// itself (the redactor learns it first): that ends a stop after a
+// rejected login. A changed hub connection (setup --force: a new secret,
+// key, installation or address) restarts the service, which then runs
+// with it.
+type configWatch struct {
 	cfgPath string
 	procEnv func(string) string
 	acct    driver.PasswordSetter
 	log     *slog.Logger
-	seen    os.FileInfo
+	restart func()
+	seen    [2]os.FileInfo
+	// as the files said when last read
+	password, hub string
 }
 
-func newPasswordWatch(cfgPath string, procEnv func(string) string, acct driver.Account, log *slog.Logger) *passwordWatch {
-	w := &passwordWatch{cfgPath: cfgPath, procEnv: procEnv, log: log}
+func newConfigWatch(cfgPath string, procEnv func(string) string, acct driver.Account, log *slog.Logger, restart func()) *configWatch {
+	w := &configWatch{cfgPath: cfgPath, procEnv: procEnv, log: log, restart: restart}
 	w.acct, _ = acct.(driver.PasswordSetter)
-	w.seen, _ = os.Stat(filepath.Join(filepath.Dir(cfgPath), core.EnvFileName))
+	w.seen = w.stat()
+	w.password, w.hub, _ = w.read()
 	return w
 }
 
-func (w *passwordWatch) check() {
-	st, err := os.Stat(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName))
-	if w.acct == nil || err != nil || (w.seen != nil && st.ModTime().Equal(w.seen.ModTime()) && st.Size() == w.seen.Size()) {
+func (w *configWatch) stat() (out [2]os.FileInfo) {
+	out[0], _ = os.Stat(w.cfgPath)
+	out[1], _ = os.Stat(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName))
+	return out
+}
+
+// read returns the CRM password in .env and the hub connection the files
+// configure ("" when they do not load), .env taking precedence over the
+// process environment.
+func (w *configWatch) read() (password, hub string, err error) {
+	vals := map[string]string{}
+	if data, err := os.ReadFile(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName)); err == nil {
+		if vals, err = core.ParseDotEnv(data); err != nil {
+			return "", "", err
+		}
+	}
+	password = vals[core.PasswordEnv]
+	s, err := core.LoadFile(w.cfgPath, func(k string) string { return cmp.Or(vals[k], w.procEnv(k)) })
+	if err != nil {
+		return password, "", err
+	}
+	h := s.Hub
+	return password, strings.Join([]string{h.URL, h.Installation, core.EncodeHubKey(h.Key), tunnel.SecretSHA256(h.Secret), h.CAFile, strconv.Itoa(h.Polls)}, "\n"), nil
+}
+
+func (w *configWatch) check() {
+	st := w.stat()
+	if same(st[0], w.seen[0]) && same(st[1], w.seen[1]) {
 		return
 	}
 	w.seen = st
-	env, err := core.EnvWithDotEnv(w.cfgPath, w.procEnv)
-	if err != nil {
-		w.log.Warn("changed .env not read", "error", err)
-		return
+	password, hub, err := w.read()
+	switch {
+	case err != nil:
+		w.log.Warn("changed gateway.yaml or .env not read in full", "error", err)
+	case hub != w.hub:
+		w.log.Info("the hub connection changed in gateway.yaml or .env (setup --force): restarting")
+		w.hub = hub
+		w.restart()
 	}
-	if p := env(core.PasswordEnv); p != "" {
-		w.acct.SetPassword(p)
+	if password != "" && password != w.password && w.acct != nil {
+		core.AddSecret(w.log, password)
+		w.acct.SetPassword(password)
 		w.log.Info("CRM password re-read from .env: logging in to the CRM again")
 	}
+	w.password = cmp.Or(password, w.password)
+}
+
+func same(a, b os.FileInfo) bool {
+	return (a == nil) == (b == nil) && (a == nil || a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size())
 }
 
 // hubOfflineAfter is how long the hub may be unreachable before the
