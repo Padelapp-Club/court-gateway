@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -262,5 +263,29 @@ func TestSetupAuthenticatesTheHubKey(t *testing.T) {
 	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: "NOT-A-FINGERPRINT"}
 	if res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{&calls}}); err == nil || res.Error.Code != "INVALID_INPUT" || calls != 0 {
 		t.Fatalf("a malformed fingerprint: %+v %v, hub calls %d", res.Error, err, calls)
+	}
+}
+
+// Every code setup can fail with has a row in the AI agents' table of
+// what to do (AGENTS.md, step 3): an agent must never meet a code the
+// instructions do not name.
+func TestAgentsTableNamesEverySetupCode(t *testing.T) {
+	src, err := os.ReadFile("setup.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := os.ReadFile("../../AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := regexp.MustCompile(`problem\("([A-Z_]+)"`).FindAllSubmatch(src, -1)
+	if len(codes) < 10 {
+		t.Fatalf("found only %d codes in setup.go", len(codes))
+	}
+	for _, m := range codes {
+		row := regexp.MustCompile("(?m)^\\| [^|]*`" + string(m[1]) + "`[^|]*\\|")
+		if !row.Match(agents) {
+			t.Errorf("AGENTS.md has no row for %s", m[1])
+		}
 	}
 }
