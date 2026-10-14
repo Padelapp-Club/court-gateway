@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
@@ -14,6 +15,10 @@ import (
 // partner nor a config reload in the middle of a create opens a window for
 // a double booking.
 var createLocks = keyedLocks{m: map[string]*keyedLock{}}
+
+// createLockWait bounds the wait for another create of the same court:
+// then the partner gets 503 BUSY and retries.
+var createLockWait = 10 * time.Second
 
 type keyedLocks struct {
 	mu sync.Mutex

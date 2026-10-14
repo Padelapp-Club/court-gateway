@@ -340,7 +340,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// no other create of this court may run between our check and our write
-	lctx, lcancel := context.WithTimeout(r.Context(), driverTimeout)
+	lctx, lcancel := context.WithTimeout(r.Context(), createLockWait)
 	unlock, err := createLocks.lock(lctx, resourceKey(s.drv, req.Court))
 	lcancel()
 	if err != nil {
