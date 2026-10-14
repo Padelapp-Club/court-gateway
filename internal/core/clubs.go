@@ -159,9 +159,8 @@ func (c *Clubs) Ready(ctx context.Context) error {
 // request context.
 func (c *Clubs) APIHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if name, ok := auth.PartnerName(r.Context()); ok {
-			info(r).partner = name
-		}
+		name, _ := auth.PartnerName(r.Context())
+		SetPartner(r, name)
 		t := c.cur.Load()
 		rest, ok := strings.CutPrefix(r.URL.Path, "/v1/clubs/")
 		if !ok {

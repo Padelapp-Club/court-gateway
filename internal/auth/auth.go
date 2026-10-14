@@ -155,12 +155,14 @@ func Bearer(r *http.Request) (string, bool) {
 	return k, k != ""
 }
 
-func isWrite(method string) bool {
+// Needs is the scope method needs: read for GET, HEAD and OPTIONS, book
+// for the rest. The hub and the gateway decide alike.
+func Needs(method string) Scope {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return false
+		return ScopeRead
 	}
-	return true
+	return ScopeBook
 }
 
 // Wrap protects next.
@@ -178,7 +180,7 @@ func (a *Authenticator) Wrap(next http.Handler) http.Handler {
 			a.writeErr(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "unknown API key")
 			return
 		}
-		write := isWrite(r.Method)
+		write := Needs(r.Method) == ScopeBook
 		if (write && !p.book) || (!write && !p.read) {
 			a.writeErr(w, r, http.StatusForbidden, "FORBIDDEN", "the API key has no scope for this operation")
 			return

@@ -543,16 +543,6 @@ func allowed(method, p string) bool {
 	return strings.HasPrefix(p, "/v1/")
 }
 
-// scopeAllows: a partner reads with read, writes with book (as the hub's
-// auth.Authenticator decides).
-func scopeAllows(scopes []string, method string) bool {
-	need := string(auth.ScopeBook)
-	if method == http.MethodGet || method == http.MethodHead {
-		need = string(auth.ScopeRead)
-	}
-	return slices.Contains(scopes, need)
-}
-
 // Execute runs one tunnelled request against the local handler, if the
 // hub signed it for this gateway and the poll that sent nonce.
 func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response {
@@ -571,7 +561,7 @@ func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response
 		c.log.Error("request refused: not signed by the hub for this gateway", "request_id", rq.RequestID, "error", err)
 		return fail(http.StatusBadGateway, "SIGNATURE_REJECTED", "the club's gateway did not accept the hub's signature")
 	}
-	if rq.Partner != "" && !scopeAllows(rq.Scopes, rq.Method) {
+	if rq.Partner != "" && !slices.Contains(rq.Scopes, string(auth.Needs(rq.Method))) {
 		return fail(http.StatusForbidden, "FORBIDDEN", "the API key has no scope for this operation")
 	}
 	// the gateway API (/gateway/...) is the hub operator's, never a partner's

@@ -253,8 +253,6 @@ func (d *Driver) notACourt(s slot) error {
 	return driver.ErrNotFound
 }
 
-func isNull(r json.RawMessage) bool { return len(r) == 0 || string(r) == "null" }
-
 // clientKeys are the fields of an exercise that may list its clients. A
 // value other than null, "", [] or {} under any of them means the
 // exercise has a client: Cancel refuses it.
@@ -282,11 +280,11 @@ func (d *Driver) checkOwnership(kind string, raw map[string]json.RawMessage, par
 				return driver.ErrNotOwned
 			}
 		}
-		if !isNull(raw["masterServiceBooking"]) {
+		if m := raw["masterServiceBooking"]; len(m) > 0 && string(m) != "null" { // even {}: stricter than isEmpty
 			return driver.ErrNotOwned
 		}
 		var n float64
-		if cc := raw["clientsCount"]; isNull(cc) {
+		if cc := raw["clientsCount"]; isEmpty(cc) {
 			return invalid("clientsCount is missing: the record may have clients")
 		} else if err := json.Unmarshal(cc, &n); err != nil {
 			return invalid("clientsCount is not a number")
@@ -296,7 +294,7 @@ func (d *Driver) checkOwnership(kind string, raw map[string]json.RawMessage, par
 		}
 	}
 	r, ok := raw["comment"]
-	if !ok || isNull(r) {
+	if !ok || isEmpty(r) {
 		return driver.ErrNotOwned
 	}
 	var comment string
