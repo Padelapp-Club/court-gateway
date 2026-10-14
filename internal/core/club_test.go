@@ -100,7 +100,7 @@ func TestValidateClubSpecNamesJSONKeys(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	msg := err.Error()
-	for _, want := range []string{"id: «Bad Id»", "name: параметр обязателен", "timezone: неизвестный часовой пояс", "slot_minutes: 7", "hours.mon: «9-10»", "courts[0].name", "crm.type: задаётся только в gateway.yaml"} {
+	for _, want := range []string{"id: «Bad Id»", "name: параметр обязателен", "timezone: неизвестный часовой пояс", "unknown time zone Mars/Base", "slot_minutes: 7", "hours.mon: «9-10»", "courts[0].name", "crm.type: задаётся только в gateway.yaml"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("missing %q in:\n%s", want, msg)
 		}

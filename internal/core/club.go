@@ -181,7 +181,7 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 	if s.TimezoneName == "" {
 		add("timezone: параметр обязателен (например Europe/Moscow)")
 	} else if loc, err := time.LoadLocation(s.TimezoneName); err != nil {
-		add("timezone: неизвестный часовой пояс «%s» (пример: Europe/Moscow)", s.TimezoneName)
+		add("timezone: неизвестный часовой пояс «%s» (пример: Europe/Moscow): %v", s.TimezoneName, err)
 	} else {
 		s.Location = loc
 	}
