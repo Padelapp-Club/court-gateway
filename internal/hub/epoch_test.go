@@ -168,6 +168,9 @@ func TestReplacedHubRunIsNotTakenAgain(t *testing.T) {
 	if err := <-second; err != nil {
 		t.Fatal(err)
 	}
+	if b := syncer.Behind(); b != 0 {
+		t.Errorf("behind %s after the replaced run's answer", b)
+	}
 	x.mu.Lock()
 	x.replay = old
 	x.mu.Unlock()
@@ -212,4 +215,43 @@ func TestRestoredHubIsFollowedToItsLowerVersion(t *testing.T) {
 		srv, ok := in.Clubs.Server("club-r")
 		return in.Syncer.State().ConfigVersion == 1 && ok && srv.Settings().ClubName == club.Name && in.Syncer.Behind() == 0
 	})
+}
+
+// A late answer that announces an older version of the hub's run does
+// not mark the applied, current config as behind: the syncer is told the
+// version the gateway took, not the one the late answer carries.
+func TestLateAnnouncementDoesNotMarkTheConfigBehind(t *testing.T) {
+	h := testkit.StartHub(t, "poll_wait: 1s\n"+testkit.OperatorYAML, testkit.HubEnv(), hub.Options{})
+	secret := h.Register("club-a", "Before change")
+	x := newCrossing(h.Transport())
+	c, syncer, _ := epochGateway(t, h, "club-a", secret, x)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	x.mu.Lock()
+	x.armed = true
+	x.mu.Unlock()
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { _, err := c.Whoami(ctx); first <- err }()
+	<-x.firstHeld
+	go func() { _, err := c.Whoami(ctx); second <- err }()
+	<-x.secondHeld // announces the version before the change
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/club-a/clubs/club-a", testkit.Club("club-a", "After change", "Court 1"))
+	close(x.sendFirst)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	rc, err := c.FetchConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.Apply(ctx, rc); err != nil || syncer.Behind() != 0 {
+		t.Fatalf("version %d applied: %v, behind %s", rc.Version, err, syncer.Behind())
+	}
+	close(x.sendSecond)
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if b := syncer.Behind(); b != 0 {
+		t.Errorf("behind %s after a late announcement of an older version", b)
+	}
 }

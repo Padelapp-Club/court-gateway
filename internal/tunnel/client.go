@@ -53,8 +53,9 @@ type ClientConfig struct {
 	Logger   *slog.Logger
 	// OnHint is called when the hub says a newer release exists.
 	OnHint func(version string)
-	// OnConfigVersion is called with the hub's club configuration version
-	// and epoch from every answer whose signed time signs them (polls).
+	// OnConfigVersion is called, after every answer whose signed time signs
+	// a config version (polls), with the version and epoch the verifier
+	// holds then (Verifier.Announced), in the order it took them.
 	OnConfigVersion func(version int64, epoch string)
 	// Transport defaults to NewTransport(nil, nil).
 	Transport http.RoundTripper
@@ -78,6 +79,7 @@ type Client struct {
 	authFail atomic.Bool
 	dup      atomic.Bool
 	badKey   atomic.Bool // the hub's last signed time failed the pinned key
+	announce sync.Mutex  // one signed time taken and announced at a time
 	mu       sync.Mutex
 	state    string // "connected" / "disconnected", for transition logs
 }
@@ -409,7 +411,8 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 }
 
 // doTimed sends req with a fresh nonce and takes the hub's signed time and
-// config version from the answer (Verifier.Time, OnConfigVersion).
+// config version from the answer (Verifier.Time), then announces the
+// version taken (OnConfigVersion).
 func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	var nonce [16]byte
 	_, _ = crand.Read(nonce[:])
@@ -421,6 +424,8 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	}
 	if h := resp.Header.Get(HeaderHubTime); h != "" {
 		version, epoch := resp.Header.Get(HeaderConfigVersion), resp.Header.Get(HeaderConfigEpoch)
+		c.announce.Lock()
+		defer c.announce.Unlock()
 		err := c.verify.Time(req.Header.Get(HeaderNonce), h, strings.TrimSpace(version+" "+epoch), sent)
 		c.badKey.Store(errors.Is(err, ErrBadSignature))
 		switch {
@@ -432,7 +437,7 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 		}
 		n, perr := strconv.ParseInt(version, 10, 64)
 		if (err == nil || errors.Is(err, ErrSlowTime)) && perr == nil && n >= 0 && c.cfg.OnConfigVersion != nil {
-			c.cfg.OnConfigVersion(n, epoch)
+			c.cfg.OnConfigVersion(c.verify.Announced())
 		}
 	}
 	return resp, nil

@@ -288,6 +288,14 @@ func (v *Verifier) clock() time.Time {
 	return v.now()
 }
 
+// Announced is the config version and epoch taken from the hub's signed
+// time (Time), or applied since (Config).
+func (v *Verifier) Announced() (int64, string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.config, v.epoch
+}
+
 // check verifies a seal: signed by the pinned key for this registration,
 // and valid now on the hub's clock, or on this computer's when that is
 // not known, unless needClock (ErrClockUnknown).
