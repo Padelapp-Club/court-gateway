@@ -511,11 +511,12 @@ func testPrices(t *testing.T, env *Env) {
 	if len(periods) == 0 {
 		t.Fatalf("no price periods: %s", r.Body)
 	}
-	prevEnd := ""
+	var prevEnd time.Time
 	for _, p := range periods {
 		m := p.(map[string]any)
-		s, e := m["start"].(string), m["end"].(string)
-		if s >= e || s < prevEnd {
+		s, err1 := time.Parse(time.RFC3339, fmt.Sprint(m["start_at"]))
+		e, err2 := time.Parse(time.RFC3339, fmt.Sprint(m["end_at"]))
+		if err1 != nil || err2 != nil || !e.After(s) || s.Before(prevEnd) {
 			t.Fatalf("periods not ordered: %s", r.Body)
 		}
 		if pp, _ := m["price_per_hour"].(float64); pp <= 0 {

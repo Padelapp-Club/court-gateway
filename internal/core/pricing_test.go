@@ -2,9 +2,16 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
@@ -235,30 +242,93 @@ func TestPriceAdjustmentOffTheGrid(t *testing.T) {
 	if got, err := quote(context.Background(), tb, loc, 30, at(10, 0), at(10, 30)); err != nil || got != 875 {
 		t.Fatalf("first half hour = %d, %v; want 875 (15 min at 2000/h + 15 min at 1500/h)", got, err)
 	}
-	want := []pricePeriod{{0, 615, 2000_00, true}, {615, 645, 1500_00, true}, {645, 1440, 2000_00, true}}
-	got := dayPeriods(tb, 0)
-	if len(got) != len(want) {
-		t.Fatalf("periods %+v", got)
+	got := periodsText(datePeriods(tb, loc, at(0, 0)), loc)
+	if want := "00:00-10:15 200000, 10:15-10:45 150000, 10:45-00:00 200000"; got != want {
+		t.Fatalf("periods %s, want %s", got, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("period %d = %+v, want %+v", i, got[i], want[i])
+}
+
+func TestDatePeriods(t *testing.T) {
+	loc := mustLoc(t)
+	got := periodsText(datePeriods(testTable(), loc, time.Date(2030, 3, 8, 0, 0, 0, 0, time.UTC)), loc) // Friday
+	if want := "07:00-09:00 150000, 09:00-17:00 180000, 17:00-20:00 260000, 20:00-00:00 300000"; got != want {
+		t.Fatalf("periods %s, want %s", got, want)
+	}
+	if rubles(1500_49) != 1500 || rubles(1500_50) != 1501 || rubles(-1500_50) != -1501 {
+		t.Fatal("rubles rounding")
+	}
+}
+
+func periodsText(ps []datePeriod, loc *time.Location) string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, fmt.Sprintf("%s-%s %d", p.Start.In(loc).Format("15:04"), p.End.In(loc).Format("15:04"), p.PerHour))
+	}
+	return strings.Join(out, ", ")
+}
+
+// tableDriver prices by one table.
+type tableDriver struct {
+	slowDriver
+	table driver.PriceTable
+}
+
+func (d tableDriver) PriceTable(context.Context, string) (driver.PriceTable, error) {
+	return d.table, nil
+}
+
+// The day's prices on a day the clocks change are the date's own instants:
+// in Europe/Helsinki on 2026-10-25 the hour 03:00-04:00 happens twice, at
+// two prices of a UTC+3 studio (1000 before its 04:00, 2000 after), and
+// in America/Santiago on 2026-09-06 midnight is skipped, yet the answer is
+// for that Sunday (2000), not for the Saturday before (1000).
+func TestDailyPricesWhenTheClocksChange(t *testing.T) {
+	studio := time.FixedZone("studio", 3*3600)
+	cases := []struct {
+		zone, date string
+		table      driver.PriceTable
+		want       string
+	}{
+		{"Europe/Helsinki", "2026-10-25", driver.PriceTable{Zone: studio, Base: []driver.PriceRule{
+			{Days: driver.AllWeekdays, From: 0, To: 240, PerHour: 1000_00}, {Days: driver.AllWeekdays, From: 240, To: 1440, PerHour: 2000_00}}},
+			"00:00-03:00 2026-10-25T00:00:00+03:00/2026-10-25T03:00:00+02:00 1000, " +
+				"03:00-23:00 2026-10-25T03:00:00+02:00/2026-10-25T23:00:00+02:00 2000, " +
+				"23:00-24:00 2026-10-25T23:00:00+02:00/2026-10-26T00:00:00+02:00 1000"},
+		{"America/Santiago", "2026-09-06", driver.PriceTable{Zone: time.FixedZone("studio", -4*3600), Base: []driver.PriceRule{
+			{Days: driver.Weekdays{5: true}, From: 0, To: 1440, PerHour: 1000_00}, {Days: driver.Weekdays{6: true}, From: 0, To: 1440, PerHour: 2000_00}}},
+			"01:00-24:00 2026-09-06T01:00:00-03:00/2026-09-07T00:00:00-03:00 2000"},
+	}
+	for _, c := range cases {
+		loc, err := time.LoadLocation(c.zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := NewServer(&Settings{ClubID: "club-a", Location: loc, SlotMinutes: 30, Courts: []Court{{ID: "court-1"}}}, tableDriver{table: c.table}, nil)
+		r := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-a/prices?court=court-1&date="+c.date, nil)
+		w := httptest.NewRecorder()
+		srv.APIHandler().ServeHTTP(w, r.WithContext(auth.WithPartnerName(r.Context(), "reader")))
+		var out pricesDTO
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", c.zone, w.Code, w.Body)
+		}
+		var got []string
+		for _, p := range out.Periods {
+			got = append(got, fmt.Sprintf("%s-%s %s/%s %d", p.Start, p.End, p.StartAt, p.EndAt, p.PricePerHour))
+		}
+		if out.Date != c.date || strings.Join(got, ", ") != c.want {
+			t.Errorf("%s: date %s, periods\n%s\nwant\n%s", c.zone, out.Date, strings.Join(got, ", "), c.want)
 		}
 	}
 }
 
-func TestDayPeriods(t *testing.T) {
-	got := dayPeriods(testTable(), 4) // Friday
-	want := []pricePeriod{{420, 540, 1500_00, true}, {540, 1020, 1800_00, true}, {1020, 1200, 2600_00, true}, {1200, 1440, 3000_00, true}}
-	if len(got) != len(want) {
-		t.Fatalf("got %+v", got)
+// Of a repeated midnight the date starts at the first (Asia/Amman went
+// back from 01:00 to 00:00 on 2021-10-29).
+func TestDayStartOfARepeatedMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Amman")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("period %d = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-	if rubles(1500_49) != 1500 || rubles(1500_50) != 1501 || rubles(-1500_50) != -1501 {
-		t.Fatal("rubles rounding")
+	if got := dayStart(2021, 10, 29, loc); got.Format(time.RFC3339) != "2021-10-29T00:00:00+03:00" {
+		t.Fatalf("dayStart = %s", got.Format(time.RFC3339))
 	}
 }

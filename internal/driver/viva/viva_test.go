@@ -535,10 +535,8 @@ func TestPricesEndpoint(t *testing.T) {
 	if st != 200 {
 		t.Fatalf("%d %s", st, raw)
 	}
-	got, _ := json.Marshal(m["periods"])
-	want := `[{"end":"12:00","price_per_hour":1500,"start":"07:00"},{"end":"16:00","price_per_hour":2000,"start":"12:00"},{"end":"24:00","price_per_hour":3000,"start":"16:00"}]`
-	if string(got) != want {
-		t.Fatalf("periods = %s\nwant      %s", got, want)
+	if got := periodLabels(m); got != "07:00-12:00 1500, 12:00-16:00 2000, 16:00-24:00 3000" {
+		t.Fatalf("periods = %s", got)
 	}
 	// a quote across the 16:00 boundary up to midnight, Moscow time
 	msk, _ := time.LoadLocation("Europe/Moscow")
@@ -630,11 +628,19 @@ func TestPriceImpactOffTheGrid(t *testing.T) {
 		t.Fatalf("quote: %d %s; want total 1750 (half an hour at 2000/h, half an hour at 1500/h)", st, raw)
 	}
 	st, m, raw = call(t, f, http.MethodGet, "/v1/clubs/test-club/prices?court=court-1&date="+from.Format("2006-01-02"), contract.ReadKey, "")
-	got, _ := json.Marshal(m["periods"])
-	want := `[{"end":"10:15","price_per_hour":2000,"start":"00:00"},{"end":"10:45","price_per_hour":1500,"start":"10:15"},{"end":"24:00","price_per_hour":2000,"start":"10:45"}]`
-	if st != http.StatusOK || string(got) != want {
+	if st != http.StatusOK || periodLabels(m) != "00:00-10:15 2000, 10:15-10:45 1500, 10:45-24:00 2000" {
 		t.Fatalf("prices: %d %s", st, raw)
 	}
+}
+
+// periodLabels writes the periods of a /prices answer in the club's clock.
+func periodLabels(m map[string]any) string {
+	var out []string
+	for _, p := range m["periods"].([]any) {
+		p := p.(map[string]any)
+		out = append(out, fmt.Sprint(p["start"], "-", p["end"], " ", p["price_per_hour"]))
+	}
+	return strings.Join(out, ", ")
 }
 
 // Two partners book the same court and hour at the same moment, through

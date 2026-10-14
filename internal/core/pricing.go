@@ -137,58 +137,61 @@ type pricePeriod struct {
 	ok       bool // a base rule covers the stretch
 }
 
-// dayPeriods lists the effective hourly prices of an ISO weekday, merging
-// adjacent stretches with the same price. Stretches without a price are
-// omitted.
-func dayPeriods(t driver.PriceTable, day int) []pricePeriod {
-	return merge(segments(t, day, 0, 1440))
+// datePeriod is a stretch of a date with one hourly price.
+type datePeriod struct {
+	Start, End time.Time
+	PerHour    int64
 }
 
-// datePeriods lists the prices of the club's local date (midnight in
-// loc) in the club's clock. Rules written in a zone that is as far from
-// UTC all that day are the weekday's (dayPeriods); otherwise the day is
-// walked in pieces of one offset in both zones, each priced in the rules'
-// zone and shifted to the club's clock.
-func datePeriods(t driver.PriceTable, loc *time.Location, date time.Time) []pricePeriod {
-	end := time.Date(date.Year(), date.Month(), date.Day()+1, 0, 0, 0, 0, loc)
-	if _, differ := driver.ZonesDiffer(loc, cmp.Or(t.Zone, loc), date, end.Sub(date)-time.Nanosecond); !differ {
-		return dayPeriods(t, isoWeekday(date))
-	}
-	var all []pricePeriod
-	for c := date; c.Before(end); {
-		next := end
-		for _, b := range []time.Time{nextBoundary(c, t.Zone), nextBoundary(c, loc)} {
-			if b.Before(next) {
-				next = b
-			}
+// datePeriods lists the prices of the club's civil date (date's year,
+// month and day in loc) from its first instant to the next date's: a
+// repeated hour is listed twice, a skipped one not at all. The day is
+// walked in pieces of one date and offset of the rules' zone, as quote
+// does; adjacent stretches with the same price are joined and stretches
+// without one omitted.
+func datePeriods(t driver.PriceTable, loc *time.Location, date time.Time) []datePeriod {
+	rz := cmp.Or(t.Zone, loc)
+	end := dayStart(date.Year(), date.Month(), date.Day()+1, loc)
+	var out []datePeriod
+	for c := dayStart(date.Year(), date.Month(), date.Day(), loc); c.Before(end); {
+		next := nextBoundary(c, rz)
+		if end.Before(next) {
+			next = end
 		}
-		rc, cc := c.In(t.Zone), c.In(loc)
+		rc := c.In(rz)
 		from := rc.Hour()*60 + rc.Minute()
-		shift := cc.Hour()*60 + cc.Minute() - from
+		at := func(m int) time.Time { return c.Add(time.Duration(m-from) * time.Minute) }
 		for _, p := range segments(t, isoWeekday(rc), from, from+int(next.Sub(c)/time.Minute)) {
-			p.From, p.To = p.From+shift, p.To+shift
-			all = append(all, p)
+			switch n := len(out); {
+			case !p.ok:
+			case n > 0 && out[n-1].End.Equal(at(p.From)) && out[n-1].PerHour == p.PerHour:
+				out[n-1].End = at(p.To)
+			default:
+				out = append(out, datePeriod{at(p.From), at(p.To), p.PerHour})
+			}
 		}
 		c = next
 	}
-	return merge(all)
+	return out
 }
 
-// merge drops the stretches without a price and joins adjacent ones with
-// the same price.
-func merge(ps []pricePeriod) []pricePeriod {
-	var out []pricePeriod
-	for _, p := range ps {
-		if !p.ok {
-			continue
-		}
-		if n := len(out); n > 0 && out[n-1].To == p.From && out[n-1].PerHour == p.PerHour {
-			out[n-1].To = p.To
-			continue
-		}
-		out = append(out, p)
+// dayStart is the first instant of the civil date y-m-d in loc. time.Date
+// alone may miss it: it puts a skipped midnight on the day before (the
+// date then starts when the clocks jump) and may take the later of a
+// repeated midnight.
+func dayStart(y int, m time.Month, d int, loc *time.Location) time.Time {
+	t := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	if t.Day() != time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Day() {
+		_, t = t.ZoneBounds()
 	}
-	return out
+	if start, _ := t.ZoneBounds(); !start.IsZero() {
+		_, off := start.Add(-time.Nanosecond).Zone()
+		e := time.Date(y, m, d, 0, 0, 0, 0, time.FixedZone("", off)).In(loc)
+		if _, eo := e.Zone(); eo == off && e.Before(t) {
+			t = e
+		}
+	}
+	return t
 }
 
 // rubles rounds kopecks to whole rubles, half away from zero.

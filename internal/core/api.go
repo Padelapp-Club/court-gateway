@@ -54,9 +54,13 @@ type occupancyDTO struct {
 	Intervals []intervalDTO `json:"intervals"`
 }
 
+// periodDTO: start_at and end_at are the instants; start and end, the
+// same in the club's clock, repeat on a day the clocks go back.
 type periodDTO struct {
 	Start        string `json:"start"`
 	End          string `json:"end"`
+	StartAt      string `json:"start_at"`
+	EndAt        string `json:"end_at"`
 	PricePerHour int64  `json:"price_per_hour"`
 }
 
@@ -224,7 +228,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	date, err := time.ParseInLocation("2006-01-02", r.URL.Query().Get("date"), s.cfg.Location)
+	date, err := time.Parse("2006-01-02", r.URL.Query().Get("date"))
 	if err != nil {
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "date is required in YYYY-MM-DD format")
 		return
@@ -235,8 +239,15 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := pricesDTO{Court: court, Date: date.Format("2006-01-02"), Currency: s.caps.Currency, Periods: []periodDTO{}}
+	clock := func(t time.Time) string {
+		if lt := t.In(s.cfg.Location); lt.Day() == date.Day() {
+			return FormatClock(lt.Hour()*60 + lt.Minute())
+		}
+		return "24:00" // the next date's first instant
+	}
 	for _, p := range datePeriods(table, s.cfg.Location, date) {
-		out.Periods = append(out.Periods, periodDTO{Start: FormatClock(p.From), End: FormatClock(p.To), PricePerHour: rubles(p.PerHour)})
+		out.Periods = append(out.Periods, periodDTO{Start: clock(p.Start), End: clock(p.End), StartAt: s.ts(p.Start), EndAt: s.ts(p.End),
+			PricePerHour: rubles(p.PerHour)})
 	}
 	WriteJSON(w, http.StatusOK, out)
 }
