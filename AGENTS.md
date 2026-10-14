@@ -107,7 +107,10 @@ curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" && curl -fLO "$B/$F" 
 
 On Windows ARM64 put `windows-arm64.exe` in `$f`.
 
-Windows:
+Windows: first run `ssh -V`. It must show `OpenSSH_for_Windows_8.1` or newer (`ssh-keygen -Y`
+needs 8.1; Windows 10 may have an older one or none). If older or missing: tell the human, run
+`winget install Microsoft.OpenSSH.Beta`, open a new PowerShell as Administrator and check again
+(not yet verified on a Windows 10 machine). Then:
 
 ```powershell
 & {

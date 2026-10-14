@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Padelapp-Club/court-gateway/internal/doctor"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
@@ -292,7 +293,7 @@ func TestCloudInitStopsOnChecksumMismatchAndForgetsSecrets(t *testing.T) {
 // line), and the hash comparison throws before anything renames or runs
 // the file.
 func TestWindowsInstallBlocksCheckTheHashFirst(t *testing.T) {
-	for doc, marker := range map[string]string{"README.md": "### Windows", "AGENTS.md": "\nWindows:\n"} {
+	for doc, marker := range map[string]string{"README.md": "### Windows", "AGENTS.md": "\nWindows: first run"} {
 		block := strings.TrimSpace(fencedBlock(t, doc, marker, "powershell"))
 		body := block[strings.Index(block, "& {"):]
 		sig, check := strings.Index(body, "ssh-keygen -Y verify"), strings.Index(body, "Get-FileHash")
@@ -342,5 +343,32 @@ func TestBuildTargetsAreTheReleasePlatforms(t *testing.T) {
 	got := strings.ReplaceAll(list, "/", "-")
 	if got != strings.Join(update.Platforms, " ") || !slices.Contains(update.Platforms, "windows-arm64") {
 		t.Fatalf("build.sh targets %q, release platforms %v", got, update.Platforms)
+	}
+}
+
+// The doctor sample in README.md shows every check doctor makes.
+func TestReadmeDoctorSampleShowsEveryCheck(t *testing.T) {
+	sample := fencedBlock(t, "README.md", "## Проверка: `court-gateway doctor`", "")
+	for _, code := range []string{doctor.CodeConfig, doctor.CodeSecretFile, doctor.CodeCRMLogin, doctor.CodeOccupancy,
+		doctor.CodeHubReach, doctor.CodeHubAuth, doctor.CodeTunnel, doctor.CodeHubConfig, doctor.CodeVersion} {
+		if !strings.Contains(sample, "] "+code+" ") {
+			t.Errorf("README.md: the doctor sample has no %s", code)
+		}
+	}
+}
+
+// What the club or the operator must be told, and the docs keep saying.
+func TestDocsKeepTheOperatorFacts(t *testing.T) {
+	for _, c := range []struct{ doc, fact string }{
+		{"README.md", "winget install Microsoft.OpenSSH.Beta"}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10
+		{"AGENTS.md", "winget install Microsoft.OpenSSH.Beta"},
+		{"README.md", "FileVault, после отключения питания"}, // after a power loss a Mac with FileVault waits for a login
+		{"README.md", "`CLOCK_UNKNOWN`"},                     // a buffering proxy keeps the hub's time from the gateway
+		{"docs/hub.md", "`504` (любой код)"},                 // a create answered 502/504 has an unknown outcome
+		{"docs/hub.md", "`outdated=1` дольше суток"},         // a self-built gateway does not update itself
+	} {
+		if !strings.Contains(readDoc(t, c.doc), c.fact) {
+			t.Errorf("%s no longer says %q", c.doc, c.fact)
+		}
 	}
 }
