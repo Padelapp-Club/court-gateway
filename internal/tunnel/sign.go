@@ -212,12 +212,14 @@ type Verifier struct {
 	key          ed25519.PublicKey
 	installation string
 	registration string
-	now          func() time.Time
-	started      time.Time // this process, on now (time.Now: monotonic)
+	now          func() time.Time // this computer's clock
+	started      time.Time        // this process, on now (time.Now: monotonic)
 
 	mu     sync.Mutex
 	synced bool                 // the hub has signed its time for this process
-	offset time.Duration        // the hub's clock minus now, as last signed
+	hubAt  time.Time            // the hub's time as last signed
+	at     time.Time            // when it arrived, on time.Now: its monotonic reading carries hubAt on
+	offset time.Duration        // the hub's clock minus now, then
 	start  int64                // this process's start on the hub's clock, unix ms
 	config int64                // the config version announced, or applied since
 	seen   map[string]time.Time // request id -> until when (hub time) it is remembered
@@ -228,7 +230,9 @@ type Verifier struct {
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
-// secret) of an installation; now defaults to time.Now.
+// secret) of an installation; now, this computer's clock, defaults to
+// time.Now. The hub's time is carried on by the monotonic clock, never by
+// now: a step of this computer's clock does not move it.
 func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() time.Time) (*Verifier, error) {
 	if len(key) != ed25519.PublicKeySize || installation == "" || secret == "" {
 		return nil, errors.New("tunnel: the hub key, the installation and the secret are required")
@@ -267,19 +271,12 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	if !v.synced {
 		v.start = ms - received.Sub(v.started).Milliseconds()
 	}
-	v.synced, v.offset = true, time.UnixMilli(ms).Sub(received)
+	hub := time.UnixMilli(ms)
+	v.synced, v.hubAt, v.at, v.offset = true, hub, time.Now(), hub.Sub(received)
 	if n, err := strconv.ParseInt(version, 10, 64); err == nil {
 		v.config = n
 	}
 	return nil
-}
-
-// Offset is how far the hub's clock is ahead of this computer's, as the
-// hub last signed it (0 before it has).
-func (v *Verifier) Offset() time.Duration {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.offset
 }
 
 // Now is the hub's time now, as the hub last signed it, and whether it
@@ -295,10 +292,11 @@ func (v *Verifier) Now() (time.Time, bool) {
 // computer's; v.mu must be held.
 func (v *Verifier) known() bool { return v.synced && v.offset.Abs() <= MaxClockSkew }
 
-// clock is the hub's time now, as far as it is known; v.mu must be held.
+// clock is the hub's time now, as far as it is known: the last signed one
+// and the monotonic time since; v.mu must be held.
 func (v *Verifier) clock() time.Time {
 	if v.known() {
-		return v.now().Add(v.offset)
+		return v.hubAt.Add(time.Since(v.at))
 	}
 	return v.now()
 }

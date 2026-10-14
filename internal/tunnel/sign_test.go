@@ -228,8 +228,8 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 		if _, known := v.Now(); known {
 			t.Fatal("a refused stamp made the hub's time known")
 		}
-		if err := v.Time("nonce-1", stamp, "7", local); err != nil || (v.Offset()-off).Abs() > time.Millisecond {
-			t.Fatalf("stamp: %v, offset %s", err, v.Offset())
+		if err := v.Time("nonce-1", stamp, "7", local); err != nil || (v.offset-off).Abs() > time.Millisecond {
+			t.Fatalf("stamp: %v, offset %s", err, v.offset)
 		}
 		rq.ID = "after-stamp"
 		rq.Sign(testKey, "inst", testRegistration, hubNow)
@@ -245,8 +245,8 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 	}
 	local := hubNow.Add(-2 * time.Hour)
 	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local); err != nil || (v.Offset()-2*time.Hour).Abs() > time.Millisecond {
-		t.Fatalf("a large offset is still reported: %v %s", err, v.Offset())
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local); err != nil || (v.offset-2*time.Hour).Abs() > time.Millisecond {
+		t.Fatalf("a large offset is still reported: %v %s", err, v.offset)
 	}
 	rq := sampleRequest()
 	rq.Sign(testKey, "inst", testRegistration, hubNow)
@@ -295,7 +295,7 @@ func TestVerifierTakesTheHubsTimeOnlyFromAQuickAnswer(t *testing.T) {
 	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local.Add(-MaxTimeRoundTrip)); err != nil {
 		t.Fatalf("an answer within the bound: %v", err)
 	}
-	if now, known := v.Now(); !known || !now.Equal(hubNow.Truncate(time.Millisecond)) {
+	if now, known := v.Now(); !known || now.Sub(hubNow.Truncate(time.Millisecond)).Abs() > time.Second {
 		t.Fatalf("hub time %s (known %v), want %s", now, known, hubNow)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,23 +13,27 @@ import (
 )
 
 // Every decision on "now" is made on the hub's time, which the hub signs
-// on its poll answers, not on the club computer's clock. Here that clock
-// is 55 minutes slow: half past midnight by the hub and the CRM, 23:35 of
-// the day before by the computer. An exercise that began yesterday is
-// left out of the CRM's lists by now, so the first hours of today are
-// incomplete, a booking that has started cannot be cancelled, and before
-// the hub's time is known nothing is booked or cancelled at all.
+// on its poll answers, carried on by the monotonic clock, not on the club
+// computer's clock. Here that clock is 55 minutes fast when the hub's time
+// arrives and is then set right, so the old offset would make it 23:35 of
+// the day before; it is half past midnight by the hub and the CRM. An
+// exercise that began yesterday is left out of the CRM's lists by now, so
+// the first hours of today are incomplete, a booking that has started
+// cannot be cancelled, and before the hub's time is known nothing is
+// booked or cancelled at all.
 func TestDecisionsUseTheHubsClock(t *testing.T) {
 	msk := time.FixedZone("UTC+3", 3*3600) // the studio's own offset
 	today := time.Date(2030, 1, 8, 0, 0, 0, 0, msk)
 	hubNow := today.Add(30 * time.Minute)
-	local := hubNow.Add(-55 * time.Minute)
+	var local atomic.Int64 // this computer's clock, unix ns
+	local.Store(hubNow.Add(55 * time.Minute).UnixNano())
+	now := func() time.Time { return time.Unix(0, local.Load()) }
 	pub, key, _ := ed25519.GenerateKey(nil)
-	v, err := tunnel.NewVerifier(pub, "inst", "fixture-secret", func() time.Time { return local })
+	v, err := tunnel.NewVerifier(pub, "inst", "fixture-secret", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := newFixture(t, fixtureOpts{services: bookingService, now: func() time.Time { return local },
+	f := newFixture(t, fixtureOpts{services: bookingService, now: now,
 		crmNow: func() time.Time { return hubNow }, clock: v.Now})
 	// a club booking from 23:00 yesterday to 02:00, which Viva no longer lists
 	f.seedClubBooking(room1, today.Add(-time.Hour), today.Add(2*time.Hour))
@@ -68,9 +73,10 @@ func TestDecisionsUseTheHubsClock(t *testing.T) {
 	}
 
 	reg := tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-secret"))
-	if err := v.Time("n", tunnel.SignTime(key, "inst", reg, "n", "1", hubNow), "1", local); err != nil {
+	if err := v.Time("n", tunnel.SignTime(key, "inst", reg, "n", "1", hubNow), "1", now()); err != nil {
 		t.Fatal(err)
 	}
+	local.Store(hubNow.UnixNano()) // the computer's clock is set right
 	if m := occupancy(); m["complete"] != false {
 		t.Fatalf("the first hour of the CRM's today counts as complete: %v", m)
 	}

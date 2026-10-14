@@ -208,10 +208,14 @@ func (c *Client) Refused() int64 { return c.refused.Load() }
 // pinned key: the hub signs with another key (a new one, or not the hub).
 func (c *Client) HubKeyMismatch() bool { return c.badKey.Load() }
 
-// ClockOffset is how far the hub's clock is ahead of this computer's, as
-// the hub last signed it; beyond MaxClockSkew the gateway refuses what
-// the hub signs and reports CLOCK_SKEW.
-func (c *Client) ClockOffset() time.Duration { return c.verify.Offset() }
+// ClockOffset is how far the hub's clock was ahead of this computer's
+// when the hub last signed it (0 before it has); beyond MaxClockSkew the
+// gateway refuses what the hub signs and reports CLOCK_SKEW.
+func (c *Client) ClockOffset() time.Duration {
+	c.verify.mu.Lock()
+	defer c.verify.mu.Unlock()
+	return c.verify.offset
+}
 
 // Run keeps Polls pollers running until ctx is done.
 func (c *Client) Run(ctx context.Context) {
