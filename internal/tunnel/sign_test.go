@@ -332,8 +332,10 @@ func TestClockStepDoesNotMoveTheHubsTime(t *testing.T) {
 // The config version the hub announces in its signed time stands, however
 // slow the answer (these all are), and belongs to its epoch (hub run).
 // Within an epoch a late answer does not lower it; a new epoch (the hub
-// restarted or was restored from a backup) may, and then a config of the
-// earlier run still in flight is refused, as is a late announcement of it.
+// restarted or was restored from a backup) may, when the hub signed it
+// later than the current one, and then a config of the earlier run still
+// in flight is refused, as is a late announcement of it or of a run
+// signed earlier, and a run once replaced is never taken again.
 func TestAnnouncedConfigVersionAndEpoch(t *testing.T) {
 	v, _ := NewVerifier(testPub, "inst", "s", nil)
 	t0 := time.Now().Add(-time.Hour)
@@ -344,7 +346,7 @@ func TestAnnouncedConfigVersionAndEpoch(t *testing.T) {
 	}
 	for _, step := range []struct {
 		announced string
-		sent      time.Duration // after t0
+		signed    time.Duration // after t0, on the hub's clock
 		configs   []cfg
 	}{
 		{"5 run-a", 1 * time.Second, []cfg{{5, "run-a", true}}},
@@ -352,8 +354,11 @@ func TestAnnouncedConfigVersionAndEpoch(t *testing.T) {
 		{"6 run-a", 2 * time.Second, []cfg{{6, "run-a", false}, {7, "run-a", true}}}, // an older poll's answer, late
 		{"4 run-b", 5 * time.Second, []cfg{{7, "run-a", false}, {4, "run-b", true}}}, // restored
 		{"9 run-a", 4 * time.Second, []cfg{{9, "run-a", false}, {4, "run-b", true}}}, // run A's answer, late
+		{"3 run-c", 4 * time.Second, []cfg{{3, "run-c", false}, {4, "run-b", true}}}, // a run signed before B's answer, late
+		{"9 run-a", 6 * time.Second, []cfg{{9, "run-a", false}, {4, "run-b", true}}}, // run A again, its clock ahead
 	} {
-		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", step.announced, time.Now()), step.announced, t0.Add(step.sent)); !errors.Is(err, ErrSlowTime) {
+		at := t0.Add(step.signed)
+		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", step.announced, at), step.announced, t0); !errors.Is(err, ErrSlowTime) {
 			t.Fatalf("%s: %v", step.announced, err)
 		}
 		for _, c := range step.configs {

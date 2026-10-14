@@ -212,13 +212,14 @@ type Verifier struct {
 	now          func() time.Time // this computer's clock
 
 	mu     sync.Mutex
-	synced bool          // the hub has signed its time for this process
-	hubAt  time.Time     // the hub's time as last signed
-	at     time.Time     // when it arrived, on time.Now: its monotonic reading carries hubAt on
-	offset time.Duration // the hub's clock minus now, then
-	config int64         // the config version announced, or applied since
-	epoch  string        // the hub run it belongs to
-	since  time.Time     // when the first request answered with that epoch was sent
+	synced bool            // the hub has signed its time for this process
+	hubAt  time.Time       // the hub's time as last signed
+	at     time.Time       // when it arrived, on time.Now: its monotonic reading carries hubAt on
+	offset time.Duration   // the hub's clock minus now, then
+	config int64           // the config version announced, or applied since
+	epoch  string          // the hub run it belongs to
+	signed int64           // the hub's latest signed time in that run (unix ms)
+	gone   map[string]bool // the runs it replaced: never taken again
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
@@ -231,14 +232,16 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 	if now == nil {
 		now = time.Now
 	}
-	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now}, nil
+	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now, gone: map[string]bool{}}, nil
 }
 
 // Time takes the hub's signed time (header, signed with the request's
 // nonce and version, "<number> <epoch>") from the answer to a request sent
 // at sent, unless slower than MaxTimeRoundTrip (ErrSlowTime). The version
 // is taken anyway: within an epoch it only goes up; a new epoch (a hub
-// restart or restore) replaces it, unless announced to an earlier request.
+// restart or restore) replaces it when the hub signed it later than all
+// it signed of the current one (not by when the requests were sent: a
+// late answer may be the older run's), and a replaced epoch never returns.
 func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
@@ -250,9 +253,10 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	defer v.mu.Unlock()
 	number, epoch, _ := strings.Cut(version, " ")
 	if n, err := strconv.ParseInt(number, 10, 64); err == nil && epoch == v.epoch {
-		v.config = max(v.config, n)
-	} else if err == nil && sent.After(v.since) {
-		v.config, v.epoch, v.since = n, epoch, sent
+		v.config, v.signed = max(v.config, n), max(v.signed, ms)
+	} else if err == nil && !v.gone[epoch] && ms > v.signed {
+		v.gone[v.epoch] = true
+		v.config, v.epoch, v.signed = n, epoch, ms
 	}
 	received := v.now()
 	if rtt := received.Sub(sent); rtt > MaxTimeRoundTrip {
