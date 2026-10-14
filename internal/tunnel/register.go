@@ -3,6 +3,7 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,9 +21,34 @@ var ErrJoinCodeRejected = errors.New("join code rejected")
 // while after too many failed ones.
 var ErrRateLimited = errors.New("too many failed registrations from this address")
 
+// FetchHubKey reads the hub's public signing key, unauthenticated: setup
+// checks it out of band before it spends a join code.
+func FetchHubKey(ctx context.Context, rt http.RoundTripper, hubURL string) (ed25519.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hubURL, "/")+PathHubKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		HubKey string `json:"hub_key"`
+	}
+	status, err := exchange(hubClient(rt).Do, req, 4096, &out)
+	switch {
+	case status == 0:
+		return nil, err
+	case status != http.StatusOK:
+		return nil, answerError(status, "the hub key")
+	}
+	key, kerr := core.ParseHubKey(out.HubKey)
+	if err != nil || kerr != nil {
+		return nil, errors.New("hub sent no valid signing key")
+	}
+	return key, nil
+}
+
 // Register exchanges a join code for the gateway secret. Nothing of the
-// answer may be used before RegisterResponse.Verify with a key checked
-// out of band: an interceptor of the TLS could have written any field.
+// answer may be used before RegisterResponse.Verify with the key checked
+// out of band (FetchHubKey): an interceptor of the TLS could have written
+// any field.
 func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version string) (RegisterResponse, error) {
 	var out RegisterResponse
 	body, _ := json.Marshal(RegisterRequest{Code: strings.TrimSpace(code), Version: version})
@@ -43,15 +69,8 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 		return out, answerError(status, "registration")
 	case err != nil || out.Secret == "" || !core.ValidID(out.Installation):
 		return RegisterResponse{}, errors.New("hub sent a malformed registration answer")
-	case !validKey(out.HubKey):
-		return RegisterResponse{}, errors.New("hub sent no signing key: it is older than this gateway")
 	}
 	return out, nil
-}
-
-func validKey(s string) bool {
-	_, err := core.ParseHubKey(s)
-	return err == nil
 }
 
 // FetchWhoami asks the hub how it sees this gateway.

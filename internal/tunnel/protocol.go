@@ -23,7 +23,9 @@ import (
 
 // Endpoints on the hub.
 const (
-	PathRegister  = "/tunnel/register"
+	PathRegister = "/tunnel/register"
+	// PathHubKey returns the hub's public signing key, unauthenticated.
+	PathHubKey    = "/tunnel/hub-key"
 	PathPoll      = "/tunnel/poll"
 	PathReply     = "/tunnel/reply"
 	PathWhoami    = "/tunnel/whoami"

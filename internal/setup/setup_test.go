@@ -82,9 +82,13 @@ func TestMissingInputs(t *testing.T) {
 	}
 }
 
+// statusTransport answers a registration with its status.
 type statusTransport int
 
 func (s statusTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path != tunnel.PathRegister {
+		return registerTransport.RoundTrip(r)
+	}
 	return &http.Response{StatusCode: int(s), Body: io.NopCloser(strings.NewReader("{}")), Header: http.Header{}, Request: r}, nil
 }
 
@@ -108,29 +112,41 @@ var (
 
 func publicOf(k ed25519.PrivateKey) string { return core.EncodeHubKey(k.Public().(ed25519.PublicKey)) }
 
-// keyTransport answers a registration as a hub with key would, signed
-// for the join code asked; nil answers without a key (an old hub).
+// keyTransport answers as a hub with key would: its key, and a
+// registration signed for the join code asked; nil answers without a key.
 type keyTransport struct{ key ed25519.PrivateKey }
 
 func (k keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	var rq tunnel.RegisterRequest
-	_ = json.NewDecoder(r.Body).Decode(&rq)
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&rq)
+	}
 	rr := tunnel.RegisterResponse{Installation: "inst-1", Name: "Сеть", Secret: "cgs_0123456789abcdef0123456789abcdef"}
 	if k.key != nil {
 		rr.HubKey = publicOf(k.key)
 		rr.Sign(k.key, rq.Code)
 	}
-	body, _ := json.Marshal(rr)
+	body, _ := json.Marshal(rr) // its hub_key also answers PathHubKey
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}, Request: r}, nil
 }
 
 var registerTransport = keyTransport{testHub}
 
-type countingTransport struct{ calls *int }
+// countingTransport counts the join codes redeemed with hub (by default
+// registerTransport).
+type countingTransport struct {
+	calls *int
+	hub   http.RoundTripper
+}
 
 func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	*c.calls++
-	return registerTransport.RoundTrip(r)
+	if r.URL.Path == tunnel.PathRegister {
+		*c.calls++
+	}
+	if c.hub == nil {
+		return registerTransport.RoundTrip(r)
+	}
+	return c.hub.RoundTrip(r)
 }
 
 // On Windows setup closes the config folder (and an existing .env) before
@@ -143,7 +159,7 @@ func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: printOf(testHubKey)}
 	var events []string
 	hubCalls := 0
-	deps := Deps{HubTransport: countingTransport{&hubCalls}, ProtectSecrets: func(p string) error {
+	deps := Deps{HubTransport: countingTransport{calls: &hubCalls}, ProtectSecrets: func(p string) error {
 		_, envErr := os.Stat(env)
 		events = append(events, fmt.Sprintf("%s hub=%d env=%v", filepath.Base(p), hubCalls, envErr == nil))
 		return nil
@@ -184,8 +200,8 @@ func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 	}
 }
 
-// setup pins the hub's signing key from the registration answer, and
-// every new join code pins it again; a hub that sends no key is refused.
+// setup pins the hub's signing key, and every new join code pins it
+// again; a hub that sends no key is refused.
 func TestSetupPinsTheHubKey(t *testing.T) {
 	dir := t.TempDir()
 	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
@@ -222,7 +238,7 @@ func TestSetupRefusesURLCredentials(t *testing.T) {
 		dir := t.TempDir()
 		in.ConfigPath, in.JoinCode, in.HubKeyFingerprint = filepath.Join(dir, "gateway.yaml"), "AAAA-AAAA-AAAA-AAAA", printOf(testHubKey)
 		calls := 0
-		res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{&calls}})
+		res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{calls: &calls}})
 		encoded, _ := json.Marshal(res)
 		if err == nil || res.Error.Code != "INVALID_INPUT" || calls != 0 || bytes.Contains(encoded, []byte(marker)) {
 			t.Fatalf("%+v: %s (%v), hub calls %d", in, encoded, err, calls)
@@ -246,10 +262,11 @@ func printOf(b64 string) string {
 // or against the fingerprint the operator gives with the join code (a
 // self-build, a custom hub), also at re-enrollment (--force). A TLS
 // interceptor substituting its own key is refused with HUB_KEY_MISMATCH
-// and nothing is written; a malformed fingerprint is refused before the
-// join code is spent.
+// before the join code is spent, and nothing is written; a malformed
+// fingerprint is refused before the hub is asked.
 func TestSetupAuthenticatesTheHubKey(t *testing.T) {
-	forged := keyTransport{otherHub} // an interceptor answers with its own key
+	redeemed := 0
+	forged := countingTransport{&redeemed, keyTransport{otherHub}} // an interceptor answers with its own key
 	for name, in := range map[string]Input{
 		"embedded":    {HubKey: testHubKey},
 		"fingerprint": {HubKeyFingerprint: strings.ToLower(printOf(testHubKey))}, // as typed: case and dashes do not matter
@@ -258,8 +275,8 @@ func TestSetupAuthenticatesTheHubKey(t *testing.T) {
 			dir := t.TempDir()
 			in.ConfigPath, in.HubURL, in.JoinCode, in.CRMType = filepath.Join(dir, "gateway.yaml"), "https://hub.example.test", "AAAA-AAAA-AAAA-AAAA", "demo"
 			res, err := Run(context.Background(), in, Deps{HubTransport: forged})
-			if err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
-				t.Fatalf("a substituted key: %+v %v", res.Error, err)
+			if err == nil || res.Error.Code != "HUB_KEY_MISMATCH" || redeemed != 0 {
+				t.Fatalf("a substituted key: %+v %v, join codes redeemed %d", res.Error, err, redeemed)
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 				t.Fatalf("files written: %v", entries)
@@ -278,7 +295,7 @@ func TestSetupAuthenticatesTheHubKey(t *testing.T) {
 	}
 	calls := 0
 	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: "NOT-A-FINGERPRINT"}
-	if res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{&calls}}); err == nil || res.Error.Code != "INVALID_INPUT" || calls != 0 {
+	if res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{calls: &calls}}); err == nil || res.Error.Code != "INVALID_INPUT" || calls != 0 {
 		t.Fatalf("a malformed fingerprint: %+v %v, hub calls %d", res.Error, err, calls)
 	}
 }
@@ -307,12 +324,15 @@ func TestAgentsTableNamesEverySetupCode(t *testing.T) {
 	}
 }
 
-// tamperTransport answers as testHub would and then changes the answer
-// on its way, as an interceptor of the TLS can.
+// tamperTransport answers as testHub would and then changes the
+// registration answer on its way, as an interceptor of the TLS can.
 type tamperTransport func(*tunnel.RegisterResponse)
 
 func (f tamperTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, _ := registerTransport.RoundTrip(r)
+	if r.URL.Path != tunnel.PathRegister {
+		return resp, nil
+	}
 	var rr tunnel.RegisterResponse
 	_ = json.NewDecoder(resp.Body).Decode(&rr)
 	f(&rr)

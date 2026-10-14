@@ -121,6 +121,9 @@ func (s *Server) Handler() http.Handler {
 		core.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 	mux.HandleFunc("POST "+tunnel.PathRegister, s.handleRegister)
+	mux.HandleFunc("GET "+tunnel.PathHubKey, func(w http.ResponseWriter, _ *http.Request) {
+		core.WriteJSON(w, http.StatusOK, map[string]string{"hub_key": core.EncodeHubKey(s.store.HubKey())})
+	})
 	mux.HandleFunc("POST "+tunnel.PathPoll, s.gateway(s.handlePoll))
 	mux.HandleFunc("POST "+tunnel.PathReply, s.gateway(s.handleReply))
 	mux.HandleFunc("GET "+tunnel.PathWhoami, s.gateway(s.handleWhoami))

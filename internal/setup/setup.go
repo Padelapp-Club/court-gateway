@@ -229,9 +229,20 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		}
 		rt = tunnel.NewTransport(roots, nil)
 	}
+	// the hub's key, checked out of band before the join code is spent:
+	// the embedded key or the operator's fingerprint (an interceptor of the
+	// TLS could put in its own)
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	reg, err := tunnel.Register(rctx, rt, d.HubURL, in.JoinCode, deps.Version)
-	cancel()
+	defer cancel()
+	key, err := tunnel.FetchHubKey(rctx, rt, d.HubURL)
+	if err == nil && ((wantKey != nil && !key.Equal(wantKey)) || (wantPrint != "" && core.NormalizeFingerprint(core.HubKeyFingerprint(key)) != wantPrint)) {
+		return fail(problem("HUB_KEY_MISMATCH", "хаб ответил ключом %s, а ожидался другой (встроенный в выпуск или отпечаток от оператора): соединение с хабом перехвачено или отпечаток неверный — ничего не записано, код подключения не израсходован; сверьте отпечаток с оператором",
+			core.HubKeyFingerprint(key)))
+	}
+	var reg tunnel.RegisterResponse
+	if err == nil {
+		reg, err = tunnel.Register(rctx, rt, d.HubURL, in.JoinCode, deps.Version)
+	}
 	switch {
 	case errors.Is(err, tunnel.ErrRateLimited):
 		return fail(problem("HUB_RATE_LIMITED", "хаб временно не принимает коды подключения с этого адреса — повторите позже, через минуту"))
@@ -243,22 +254,15 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		return fail(problem("HUB_UNREACHABLE", "хаб недоступен: %v", err))
 	}
 
-	// 3. the hub's key, checked out of band: the embedded key or the
-	// operator's fingerprint (an interceptor of the TLS above could have
-	// put in its own); then the whole answer, which that key must have
-	// signed for this join code, before any other field of it is used;
-	// then write, pinning the key here and again at every new join code.
-	// The CRM settings written are this computer's inputs, never the hub's
-	// (validate): the hub must not decide where the CRM password goes.
-	got, _ := core.ParseHubKey(reg.HubKey) // Register refuses an invalid one
-	if (wantKey != nil && !got.Equal(wantKey)) || (wantPrint != "" && core.NormalizeFingerprint(core.HubKeyFingerprint(got)) != wantPrint) {
-		return fail(problem("HUB_KEY_MISMATCH", "хаб ответил ключом %s, а ожидался другой (встроенный в выпуск или отпечаток от оператора): соединение с хабом перехвачено или отпечаток неверный — ничего не записано; код подключения израсходован, попросите у оператора новый и сверьте отпечаток",
-			core.HubKeyFingerprint(got)))
-	}
-	if reg.Verify(got, strings.TrimSpace(in.JoinCode)) != nil {
+	// 3. the whole answer, which that key must have signed for this join
+	// code, before any field of it is used; then write, pinning the key
+	// here and again at every new join code. The CRM settings written are
+	// this computer's inputs, never the hub's (validate): the hub must not
+	// decide where the CRM password goes.
+	if reg.Verify(key, strings.TrimSpace(in.JoinCode)) != nil {
 		return fail(problem("HUB_KEY_MISMATCH", "ответ хаба на код подключения не подписан его ключом: соединение с хабом перехвачено — ничего не записано; код подключения израсходован, попросите у оператора новый"))
 	}
-	d.HubKey = reg.HubKey
+	d.HubKey = core.EncodeHubKey(key)
 	text, p := validate(d, crm, reg.Installation, reg.Name, in.Password, reg.Secret)
 	if p != nil {
 		return fail(p)
