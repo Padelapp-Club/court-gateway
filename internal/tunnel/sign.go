@@ -27,15 +27,13 @@ const SignedFor = 60 * time.Second
 const clockSkew = 30 * time.Second
 
 // MaxClockSkew bounds how far this computer's clock may be off the hub's
-// and still be corrected: the gateway checks signatures against the hub's
-// time (Verifier.Time) when they are at most this far apart, and against
-// its own clock otherwise, refusing them (readiness: CLOCK_SKEW).
+// and still be corrected (Verifier.Time); further off, signatures are
+// checked against its own clock and refused (readiness: CLOCK_SKEW).
 const MaxClockSkew = time.Hour
 
-// MaxTimeRoundTrip bounds how long a poll may take, from sending it to
-// its answer's headers, for the hub's time on that answer to be taken:
-// the hub sends the headers before it holds the poll, so a slower answer
-// (a proxy that buffers it) would leave the time that much behind.
+// MaxTimeRoundTrip bounds a poll's time to its answer's headers for the
+// hub's time on it to be taken: the hub sends them before it holds the
+// poll, so a slower answer (a buffering proxy) would carry a late time.
 const MaxTimeRoundTrip = 5 * time.Second
 
 // Seal is the hub's signature and what it binds the message to: the
@@ -135,9 +133,8 @@ func (rq *Request) Sign(key ed25519.PrivateKey, installation, registration, nonc
 	rq.Signature = ed25519.Sign(key, rq.message(nonce))
 }
 
-// Sign seals rc for a registration of an installation (the hub). The
-// clubs are signed as the bytes that are sent: first written the way
-// encoding/json sends a raw message (compact, HTML-escaped).
+// Sign seals rc for a registration of an installation (the hub), the clubs
+// as the bytes sent (compact, HTML-escaped, as encoding/json sends them).
 func (rc *RemoteConfig) Sign(key ed25519.PrivateKey, installation, registration string, now time.Time) {
 	for i, raw := range rc.Clubs {
 		var compact, escaped bytes.Buffer
@@ -178,15 +175,14 @@ func (rr *RegisterResponse) Verify(key ed25519.PublicKey, code string) error {
 }
 
 // timeMessage is what the hub signs of its clock on a poll answer: the
-// time, the poll's nonce and the config version it announces.
+// time, the poll's nonce and the config version (and epoch) it announces.
 func timeMessage(installation, registration, nonce, version string, ms int64) []byte {
 	s := Seal{Installation: installation, Registration: registration, IssuedAt: ms, ExpiresAt: ms}
 	return s.message("time", func(c *canon) { c.str(nonce); c.str(version) })
 }
 
-// SignTime is the HeaderHubTime value the hub sets on a poll answer:
-// its time now, bound to the poll's nonce and to the HeaderConfigVersion
-// value version, "<unix ms> <base64 signature>".
+// SignTime is the HeaderHubTime value of a poll answer, "<unix ms> <base64
+// signature>": the hub's time, bound to the nonce and to version.
 func SignTime(key ed25519.PrivateKey, installation, registration, nonce, version string, now time.Time) string {
 	ms := now.UnixMilli()
 	return strconv.FormatInt(ms, 10) + " " + base64.StdEncoding.EncodeToString(ed25519.Sign(key, timeMessage(installation, registration, nonce, version, ms)))
@@ -196,23 +192,19 @@ func SignTime(key ed25519.PrivateKey, installation, registration, nonce, version
 // gateway, or no longer valid.
 var ErrBadSignature = errors.New("not signed by the hub for this gateway")
 
-// ErrClockUnknown: the gateway does not know the hub's time yet, or this
-// computer's clock is more than MaxClockSkew off it; nothing that depends
-// on the time now is decided (a request is refused, not executed).
+// ErrClockUnknown: the hub's time is not known, or this computer's clock is
+// more than MaxClockSkew off it: a request is refused, not executed.
 var ErrClockUnknown = errors.New("the hub's time is not known")
 
-// ErrStaleConfig: a config older than the version the hub announced, or
-// than the one applied since — a pull that crossed a newer version, not a
-// forgery: it is pulled again.
+// ErrStaleConfig: a config older than the version announced or applied
+// since, a pull that crossed a newer version: it is pulled again.
 var ErrStaleConfig = errors.New("the config is older than the one announced or applied")
 
-// ErrSlowTime: the hub's time arrived too late to be taken
-// (MaxTimeRoundTrip).
+// ErrSlowTime: the hub's time arrived too late to be taken (MaxTimeRoundTrip).
 var ErrSlowTime = errors.New("the hub's time arrived too late to be taken")
 
-// Verifier checks the hub's signatures on the gateway, against the hub's
-// time as last signed for it (Time), and the hub's announcements of its
-// config version.
+// Verifier checks the hub's signatures on the gateway against the hub's
+// time as last signed (Time), and its config version announcements.
 type Verifier struct {
 	key          ed25519.PublicKey
 	installation string
@@ -228,9 +220,8 @@ type Verifier struct {
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
-// secret) of an installation; now, this computer's clock, defaults to
-// time.Now. The hub's time is carried on by the monotonic clock, never by
-// now: a step of this computer's clock does not move it.
+// secret) of an installation; now (default time.Now) is this computer's
+// clock. The hub's time is carried on by the monotonic clock, never by now.
 func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() time.Time) (*Verifier, error) {
 	if len(key) != ed25519.PublicKeySize || installation == "" || secret == "" {
 		return nil, errors.New("tunnel: the hub key, the installation and the secret are required")
@@ -241,13 +232,11 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now}, nil
 }
 
-// Time takes the hub's signed time from the answer to a request sent at
-// sent (header, the HeaderHubTime value, signed with the request's nonce
-// and the announced config version): from then on signatures are checked
-// against the hub's clock, so this computer's may be off, and a config
-// older than version is refused (the announced version stands, also when
-// it went down: the hub was restored). An answer slower than
-// MaxTimeRoundTrip is not taken (ErrSlowTime).
+// Time takes the hub's signed time (header, signed with the request's
+// nonce and version, "<number> <epoch>") from the answer to a request sent
+// at sent: signatures are then checked against the hub's clock, and a
+// config older than the number refused, also when it went down (a restored
+// hub). An answer slower than MaxTimeRoundTrip is not taken (ErrSlowTime).
 func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
@@ -270,9 +259,8 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	return nil
 }
 
-// Now is the hub's time now, as the hub last signed it, and whether it
-// is known (ErrClockUnknown); when it is not, Now is this computer's own.
-// It is the clock of every booking decision (driver.Clock).
+// Now is the hub's time now as last signed and whether it is known; when
+// not, it is this computer's. It is the booking decisions' driver.Clock.
 func (v *Verifier) Now() (time.Time, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -318,18 +306,16 @@ func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 }
 
 // Request accepts rq when the hub signed it for this gateway, valid now,
-// and for the poll that carried it (nonce, fresh on every poll): a
-// request signed for another poll, of this process or of one before it,
-// is refused, so a request runs once and nothing is kept to remember it.
-// Until the hub's time is known it accepts nothing (ErrClockUnknown).
+// and for the poll that carried it (nonce, fresh on every poll), so a
+// request runs once with nothing kept to remember it. Until the hub's
+// time is known it accepts nothing (ErrClockUnknown).
 func (v *Verifier) Request(rq *Request, nonce string) error {
 	return v.check(rq.Seal, rq.message(nonce), true)
 }
 
-// Config accepts a club configuration signed for this gateway, valid
-// now, and not older than the one announced (Time) or applied since
-// (ErrStaleConfig). Replaying it within its validity gives the same
-// configuration.
+// Config accepts a club configuration signed for this gateway, valid now
+// and not older than announced (Time) or applied since (ErrStaleConfig);
+// a replay within its validity gives the same configuration.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err

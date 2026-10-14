@@ -13,13 +13,11 @@ import (
 // Broker hands partner requests to the long polls of an installation's
 // gateway and routes the replies back.
 //
-// Every registration of a gateway has a generation (Store numbers them,
-// growing). Polls and requests carry the generation they were
-// authenticated or routed under, and the broker serves only the newest one:
-// once a registration is replaced or removed (Retire), its open polls end
-// empty, it can no longer pick up a request, and a request routed to it is
-// ErrOffline. A request it had already picked up ends at once with
-// ErrReplaced: its reply could no longer be told from a stale one.
+// Polls and requests carry the generation of the registration they were
+// authenticated or routed under (Store numbers them), and only the newest
+// is served: a retired one's polls end empty, a request routed to it is
+// ErrOffline, and one it had picked up ends with ErrReplaced (its reply
+// could not be told from a stale one).
 type Broker struct {
 	now      func() time.Time
 	pollWait time.Duration
@@ -114,9 +112,8 @@ func isDead(c *gwConn) bool {
 	}
 }
 
-// pollConn returns the connection of generation gen of inst, replacing an
-// older one; nil when gen is retired or older than the current one.
-// b.mu must be held.
+// pollConn returns generation gen's connection of inst, replacing an older
+// one; nil when gen is retired or older. b.mu must be held.
 func (b *Broker) pollConn(inst string, gen uint64) *gwConn {
 	if gen < b.retired[inst] {
 		return nil
@@ -135,9 +132,8 @@ func (b *Broker) pollConn(inst string, gen uint64) *gwConn {
 	return c
 }
 
-// Retire ends every generation of inst below gen: their polls return
-// empty and requests routed to them are ErrOffline. The store calls it,
-// under its own lock, when a registration is replaced or removed.
+// Retire ends every generation of inst below gen (the store, under its
+// lock, when a registration is replaced or removed).
 func (b *Broker) Retire(inst string, gen uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -267,11 +263,8 @@ func (b *Broker) Connected(club string) bool {
 }
 
 // Serving reports whether gateway process instance of club has a poll
-// open, had one a moment ago (between two polls), or runs a call it
-// picked up: until it replies or the time the gateway gives the call is
-// up, so a busy gateway whose polls are all taken still holds its place.
-// A process that crashed or lost its connection stops polling at once, or
-// when its last poll ends, and its calls end with their time.
+// open, had one a moment ago, or runs a call it picked up (until its reply
+// or time), so a busy gateway holds its place and a dead one loses it.
 func (b *Broker) Serving(club, instance string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -302,9 +295,8 @@ func (b *Broker) Info(club string) ConnInfo {
 	return ConnInfo{Connected: connected, LastSeen: c.lastSeen, Meta: c.meta}
 }
 
-// Do sends req to generation gen of club's gateway and waits for the
-// reply. pickup bounds the wait for a free poll, wait bounds the wait for
-// the reply after pickup.
+// Do sends req to generation gen of club's gateway and waits pickup for a
+// free poll, then wait for the reply.
 func (b *Broker) Do(ctx context.Context, club string, gen uint64, req tunnel.Request, pickup, wait time.Duration) (tunnel.Response, error) {
 	if !b.Connected(club) {
 		return tunnel.Response{}, ErrOffline

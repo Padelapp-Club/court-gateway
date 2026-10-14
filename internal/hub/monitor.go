@@ -23,14 +23,11 @@ const (
 	StateOffline  = "offline"
 )
 
-// Monitor watches the heartbeats gateways send after each of their own
-// self-checks. It never calls a gateway: a gateway is offline when its
-// heartbeats stop for longer than offlineAfter, and not ready after
-// readyFailures self-checks in a row that report ready=false (a heartbeat
-// that repeats the last one's CheckedAt, sent for a new config, is not
-// another one). Every Tick it re-evaluates every registered gateway,
-// writes the status files for the external checker (which decides whether
-// and how to alert) and logs state changes. The hub sends no alerts of its own.
+// Monitor watches the gateways' heartbeats and never calls a gateway: one
+// is offline when they stop for offlineAfter, not ready after
+// readyFailures self-checks in a row with ready=false (a repeated CheckedAt,
+// sent for a new config, is not another). Every Tick writes the status
+// files for the external checker, which alerts, and logs state changes.
 type Monitor struct {
 	store         *Store
 	broker        *Broker
@@ -311,9 +308,8 @@ func (m *Monitor) health(installation string) *installationHealth {
 }
 
 // silentSince is when the installation was last known alive: its last
-// heartbeat, or, before the first one, the later of the hub's start and its
-// registration. So a hub restart cannot hide a dead gateway, and one that
-// has just registered gets offline_after to send its first heartbeat.
+// heartbeat, before the first the later of the hub's start and its
+// registration (a restart hides no dead gateway, a new one gets time).
 func (m *Monitor) silentSince(h *installationHealth, registered time.Time) time.Time {
 	if !h.lastBeat.IsZero() {
 		return h.lastBeat
@@ -425,9 +421,8 @@ const (
 	EventReady    = "ready"
 )
 
-// event names a state change worth a log line. The first evaluation of a
-// gateway (prev empty) counts only when it is already bad; pending never
-// does.
+// event names a state change worth a log line; a first evaluation only
+// when already bad, pending never.
 func event(prev, next string) string {
 	switch {
 	case next == StateOffline:

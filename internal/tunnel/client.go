@@ -125,10 +125,9 @@ func hubClient(rt http.RoundTripper) *http.Client {
 	return &http.Client{Transport: rt, CheckRedirect: core.RefuseRedirects}
 }
 
-// LoadRoots returns the roots the hub's certificate is checked against:
-// nil (the system roots) without caFile, otherwise ONLY the certificates
-// in caFile. That pins the hub's CA: a TLS-inspecting proxy that this
-// machine trusts can then not stand in for the hub.
+// LoadRoots returns the roots of the hub's certificate: nil (the system's)
+// without caFile, otherwise ONLY caFile's, pinning the hub's CA against a
+// TLS-inspecting proxy this machine trusts.
 func LoadRoots(caFile string) (*x509.CertPool, error) {
 	if caFile == "" {
 		return nil, nil
@@ -144,10 +143,8 @@ func LoadRoots(caFile string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// NewTransport builds the HTTPS transport used to reach the hub: proxy
-// from the environment (clubs behind a corporate proxy), HTTP/2 with
-// pings so a silently dead path is noticed, TLS 1.2+ verified against
-// roots (nil means the system roots).
+// NewTransport is the HTTPS transport to the hub: the proxy, HTTP/2 pings
+// (a silently dead path is noticed), TLS 1.2+ against roots (nil: system).
 func NewTransport(roots *x509.CertPool, proxy core.ProxyFunc) *http.Transport {
 	t := proxy.Transport()
 	t.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
@@ -217,9 +214,8 @@ func (c *Client) Duplicate() bool { return c.dup.Load() }
 // not sign them for this gateway (heartbeats report it).
 func (c *Client) Refused() int64 { return c.refused.Load() }
 
-// ClockOffset is how far the hub's clock was ahead of this computer's
-// when the hub last signed it (0 before it has); beyond MaxClockSkew the
-// gateway refuses what the hub signs and reports CLOCK_SKEW.
+// ClockOffset is how far the hub's clock was ahead of this computer's when
+// last signed (0 before); beyond MaxClockSkew: CLOCK_SKEW.
 func (c *Client) ClockOffset() time.Duration {
 	c.verify.mu.Lock()
 	defer c.verify.mu.Unlock()
@@ -361,9 +357,8 @@ func (c *Client) newRequest(ctx context.Context, method, p string, body []byte) 
 	return req, nil
 }
 
-// poll returns the next request and the poll's nonce, nil when the hub
-// had none, or an error. connected is called as soon as the hub accepted
-// the poll (headers received), before the long wait for the body.
+// poll returns the next request (nil: none) and the poll's nonce, calling
+// connected once the hub accepted the poll, before the long wait.
 func (c *Client) poll(ctx context.Context, connected func()) (*Request, string, error) {
 	pctx, cancel := context.WithTimeout(ctx, c.cfg.PollTimeout)
 	defer cancel()
@@ -413,9 +408,8 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 	return &rq, nil
 }
 
-// doTimed sends req with a fresh nonce and takes the hub's signed time
-// from the answer (Verifier.Time), and the config version it announces
-// when the hub signed it (OnConfigVersion).
+// doTimed sends req with a fresh nonce and takes the hub's signed time and
+// config version from the answer (Verifier.Time, OnConfigVersion).
 func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	var nonce [16]byte
 	_, _ = crand.Read(nonce[:])
@@ -473,9 +467,8 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	return out, nil
 }
 
-// Release tells the hub that this copy has stopped, so the copy started
-// after it (a restart, an update) is served at once rather than refused
-// as a duplicate. Call it after Run has returned.
+// Release tells the hub, after Run returned, that this copy stopped: the
+// next one (a restart, an update) is not refused as a duplicate.
 func (c *Client) Release(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodPost, PathRelease, nil)
 	if err != nil {
@@ -561,8 +554,7 @@ func scopeAllows(scopes []string, method string) bool {
 }
 
 // Execute runs one tunnelled request against the local handler, if the
-// hub signed it for this gateway and for the poll that sent nonce.
-// Exposed for tests.
+// hub signed it for this gateway and the poll that sent nonce.
 func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response {
 	fail := func(status int, code, msg string) Response {
 		b, _ := json.Marshal(map[string]string{"code": code, "message": msg, "request_id": rq.RequestID})

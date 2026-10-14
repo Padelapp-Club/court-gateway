@@ -14,8 +14,7 @@ import (
 	"time"
 )
 
-// Sentinel errors. Drivers wrap them (fmt.Errorf("...: %w", ErrX)) and the
-// core maps them to API error codes with errors.Is.
+// Sentinel errors: drivers wrap them, the core maps them to API codes.
 var (
 	// ErrNotSupported: the CRM has no such capability (e.g. payment marks).
 	ErrNotSupported = errors.New("not supported by this CRM")
@@ -28,19 +27,15 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrStarted: the booking has already started; it is not cancelled.
 	ErrStarted = errors.New("booking has already started")
-	// ErrCourtNotConfigured: the booking is on a court (a CRM room) that
-	// is not a court of the club's config, e.g. one removed from it.
+	// ErrCourtNotConfigured: the booking's CRM room is no court of the club's config.
 	ErrCourtNotConfigured = errors.New("booking is on a court that is not configured")
-	// ErrClockUnknown: the time now is not known (Clock), so a decision
-	// that depends on it is not made.
+	// ErrClockUnknown: the time now is not known (Clock): no decision on it.
 	ErrClockUnknown = errors.New("the hub's time is not known yet")
 )
 
-// Clock is the time every booking decision is made on: the hub's, as the
-// hub last signed it (tunnel.Verifier.Now), so a club computer whose clock
-// is off decides as the hub does. known is false until the gateway knows
-// it; now is then this computer's time, and a decision that depends on it
-// is not made (ErrClockUnknown) or its answer is incomplete.
+// Clock is the time of every booking decision: the hub's, as last signed
+// (tunnel.Verifier.Now), so a club computer whose clock is off decides as
+// the hub does. Until known, now is this computer's and nothing is decided.
 type Clock func() (now time.Time, known bool)
 
 // MisconfigError says, in Russian, what in a club's config does not match
@@ -53,9 +48,7 @@ type MisconfigError struct {
 func (e *MisconfigError) Error() string { return strings.Join(e.Problems, "; ") }
 
 // ConfigAlert says, in Russian, what in a club's config disagrees with the
-// CRM without stopping the club being served (the driver works around
-// it): the club stays served, and readiness reports Code until the config
-// is fixed, so the operator is alerted.
+// CRM while the club stays served; readiness reports Code until it is fixed.
 type ConfigAlert struct {
 	Code     string // a readiness reason, e.g. TIMEZONE_MISMATCH
 	Problems []string
@@ -71,8 +64,7 @@ const (
 	UpstreamUnavailable UpstreamKind = iota
 	// UpstreamAuth: the CRM rejected the gateway's credentials.
 	UpstreamAuth
-	// UpstreamLogin: the CRM refused a login for another reason than the
-	// credentials (a 4xx that does not say so): retried like an outage.
+	// UpstreamLogin: a login refused not for the credentials: retried like an outage.
 	UpstreamLogin
 	// UpstreamInvalid: the CRM answered with a body the driver cannot
 	// interpret. The core must never turn this into "everything is free".
@@ -97,7 +89,6 @@ func Upstream(kind UpstreamKind, detail string) error {
 
 // Capabilities are reported to partners as-is.
 type Capabilities struct {
-	// Payments: the driver can mark a booking as paid.
 	Payments bool
 	// Currency is the ISO 4217 code of the CRM's prices (PriceTable
 	// amounts are its hundredths).
@@ -123,8 +114,7 @@ type Interval struct {
 
 // Occupancy is the answer to an occupancy query.
 type Occupancy struct {
-	// Complete is false when the driver knows the CRM could not return the
-	// whole picture (e.g. the CRM returns nothing for past dates).
+	// Complete is false when the CRM may not have returned everything.
 	Complete  bool
 	Intervals []Interval
 }
@@ -170,13 +160,10 @@ type Driver interface {
 	// Ready checks that the CRM is reachable with the configured
 	// credentials (login plus a narrow read).
 	Ready(ctx context.Context) error
-	// Occupancy returns intervals overlapping the query range.
 	Occupancy(ctx context.Context, q OccupancyQuery) (Occupancy, error)
-	// PriceTable returns the price rules of a court.
 	PriceTable(ctx context.Context, court string) (PriceTable, error)
 	// Create creates a booking. The core has already checked occupancy.
 	Create(ctx context.Context, req CreateRequest) (Booking, error)
-	// Get reads one booking by id.
 	Get(ctx context.Context, id string) (Booking, error)
 	// Cancel cancels a booking created through the gateway by partner,
 	// before it starts (ErrStarted after). A booking that is already gone
@@ -186,8 +173,7 @@ type Driver interface {
 	MarkPaid(ctx context.Context, id string, partner string) error
 }
 
-// CourtConfig is one court from the gateway config. Params holds the
-// driver-specific keys of the court entry; the core does not interpret them.
+// CourtConfig is one court; the core does not interpret its driver Params.
 type CourtConfig struct {
 	ID     string
 	Name   string
@@ -198,15 +184,13 @@ type CourtConfig struct {
 type Config struct {
 	Timezone *time.Location
 	// CRM holds every key of the `crm` section except `type`.
-	CRM Params
-	// Password is the CRM password taken from the environment.
+	CRM      Params
 	Password string
 	Courts   []CourtConfig
 	// Services maps "booking"/"tournament" to driver-specific parameters.
 	Services map[string]Params
 	Logger   *slog.Logger
-	// HTTPClient is optional; drivers create their own when nil, through
-	// Proxy when that is set.
+	// HTTPClient is optional; nil: the driver's own, through Proxy if set.
 	HTTPClient *http.Client
 	Proxy      func(*http.Request) (*url.URL, error)
 	// Now is this computer's clock, for durations (a login token's
@@ -215,9 +199,8 @@ type Config struct {
 	// Clock is the time of booking decisions; nil takes Now as known
 	// (tests and the local commands, which make none). See DecisionClock.
 	Clock Clock
-	// Account is the installation's CRM account, when there is one: a
-	// club's driver may share its CRM session, so the account and all its
-	// clubs log in once.
+	// Account is the installation's CRM account, if any: its clubs' drivers
+	// may share its session, so they all log in once.
 	Account Account
 }
 
@@ -233,17 +216,13 @@ func (c Config) DecisionClock() Clock {
 	return func() (time.Time, bool) { return now(), true }
 }
 
-// Factory builds a driver or returns a config error with a message for the
-// club administrator (in Russian).
+// Factory builds a driver or returns a config error (in Russian).
 type Factory func(Config) (Driver, error)
 
-// Resourcer is implemented by drivers whose courts are resources of the
-// CRM account (a Viva room). Resource names the resource behind a court,
-// the same for every club and every config that maps a court to it. The
-// core holds a lock per resource from the occupancy check to the end of
-// the create, so two partners, two clubs or a config reload can never book
-// one interval twice through this gateway. Without it the lock is per
-// driver and court.
+// Resourcer names the CRM resource behind a court (a Viva room), the same
+// for every club and config. The core locks per resource from the
+// occupancy check to the end of the create, so nothing books one interval
+// twice through this gateway; without it the lock is per driver and court.
 type Resourcer interface {
 	Resource(court string) string
 }
@@ -256,9 +235,8 @@ type ConfigChecker interface {
 	CheckConfig(ctx context.Context) error
 }
 
-// AccountClub is implemented by drivers of CRMs whose account holds
-// several clubs (see Account): Studio is the club's own id in the account,
-// as Studio.ID names it.
+// AccountClub: Studio is the club's own id in a CRM account of several
+// clubs (see Account), as Studio.ID names it.
 type AccountClub interface {
 	Studio() string
 }

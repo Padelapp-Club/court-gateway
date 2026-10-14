@@ -256,9 +256,8 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request, g Gateway
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handlePoll answers 200 at once and flushes the headers, so the gateway
-// knows it is connected without waiting; the body follows when a request
-// arrives (a JSON tunnel.Request) or the wait ends (an empty body).
+// handlePoll flushes 200 at once, so the gateway knows it is connected; the
+// body is a tunnel.Request when one arrives, empty when the wait ends.
 func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
 	release := s.admitted(w, r, g)
 	if release == nil {
@@ -556,9 +555,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	core.WriteJSON(w, http.StatusOK, map[string]any{"time": ts(s.now()), "latest_version": s.cfg.LatestVersion, "gateways": rows})
 }
 
-// failLimiter refuses work from a client after too many failures in a
-// window, so guessing join codes is slow without one client being able to
-// lock everyone else out.
+// failLimiter refuses a client after too many failures in a window: join
+// codes are slow to guess, and no client locks out the others.
 type failLimiter struct {
 	mu      sync.Mutex
 	max     int
@@ -600,9 +598,8 @@ func (l *failLimiter) fail(client netip.Addr, now time.Time) {
 	w.count++
 }
 
-// clientIP is the address a request came from: the peer, or, when the peer
-// is a trusted proxy, the last address in X-Forwarded-For that is not
-// one.
+// clientIP is the peer, or behind trusted proxies the last
+// X-Forwarded-For address that is not one.
 func clientIP(r *http.Request, trusted []netip.Prefix) netip.Addr {
 	isTrusted := func(a netip.Addr) bool {
 		for _, p := range trusted {

@@ -75,9 +75,8 @@ type joinCodeRecord struct {
 	Expires      time.Time `json:"expires"`
 }
 
-// Installation is one installation of the gateway (one CRM account) and
-// the configuration of the clubs it serves. Version grows with every
-// change of the clubs.
+// Installation is one gateway installation (one CRM account) and its
+// clubs' configuration; Version grows with every change of the clubs.
 type Installation struct {
 	ID      string                   `json:"id"`
 	Name    string                   `json:"name"`
@@ -290,21 +289,17 @@ func validName(name string) bool {
 	return utf8.ValidString(name) && utf8.RuneCountInString(name) <= maxName && strings.IndexFunc(name, unicode.IsControl) < 0
 }
 
-// JoinCode is a freshly created join code. Code is shown once: only its
-// hash is stored.
+// JoinCode is a fresh join code, shown once: only its hash is stored.
 type JoinCode struct {
 	Code         string
 	Installation string
 	Expires      time.Time
 }
 
-// CreateJoinCode writes a new single-use code for an installation and
-// returns it. The code itself is not stored, only its hash. A zero ttl
-// means DefaultJoinCodeTTL. name names the installation if the code
-// creates it at redemption (codes made by the CLI); an installation that
-// already has a gateway may get a code: redeeming it replaces the
-// gateway's secret (a reinstall or a replaced machine). Both the CLI and
-// the operator API create codes here.
+// CreateJoinCode writes a new single-use code for an installation (the
+// CLI and the operator API); ttl 0 is DefaultJoinCodeTTL. name names the
+// installation a CLI code creates at redemption. Redeeming a code of an
+// installation that has a gateway replaces its secret (a reinstall).
 func CreateJoinCode(dir, installation, name string, ttl time.Duration, now time.Time) (JoinCode, error) {
 	if !core.ValidID(installation) {
 		return JoinCode{}, ErrInvalidID
@@ -334,8 +329,7 @@ func CreateJoinCode(dir, installation, name string, ttl time.Duration, now time.
 	return JoinCode{Code: code, Installation: installation, Expires: rec.Expires}, nil
 }
 
-// CreateJoinCode is CreateJoinCode for the running hub: the installation
-// must exist.
+// CreateJoinCode is CreateJoinCode for the running hub (the installation exists).
 func (s *Store) CreateJoinCode(installation string, ttl time.Duration) (JoinCode, error) {
 	s.mu.Lock()
 	in, ok := s.installs[installation]
@@ -358,11 +352,9 @@ func newSecret() (string, error) {
 	return "cgs_" + hex.EncodeToString(raw[:]), nil
 }
 
-// Redeem consumes a join code and registers (or re-registers) the gateway
-// of its installation. The previous secret of that installation stops
-// working. The code file is removed before the secret is issued, so a code
-// can never be used twice, even across a crash. A code made by the CLI for
-// an installation the hub does not know yet creates it.
+// Redeem consumes a join code and registers the gateway of its
+// installation (creating one a CLI code names), retiring the previous
+// secret. The code file goes before the secret is issued: never used twice.
 func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -418,10 +410,9 @@ func (s *Store) nextGen(installation string) uint64 {
 	return s.seq
 }
 
-// Authenticate maps a gateway secret to its registration. Every record is
-// compared in constant time without an early exit. A record whose file has
-// been removed (`hub gateway revoke`) no longer authenticates
-// (ErrNotRegistered); ErrStateUnavailable means the check itself failed.
+// Authenticate maps a gateway secret to its registration, comparing every
+// record in constant time. A revoked record (file removed) is
+// ErrNotRegistered; ErrStateUnavailable means the check itself failed.
 func (s *Store) Authenticate(secret string) (GatewayRecord, error) {
 	if secret == "" {
 		return GatewayRecord{}, ErrNotRegistered
@@ -446,9 +437,8 @@ func (s *Store) Authenticate(secret string) (GatewayRecord, error) {
 	return g, err
 }
 
-// Gateway returns the registered gateway of an installation. A record
-// whose file has been removed (`hub gateway revoke`) is forgotten and its
-// polls retired (ErrNotRegistered). Any other failure to check the file is
+// Gateway returns the registered gateway of an installation; a revoked one
+// is forgotten and its polls retired (ErrNotRegistered). A failed check is
 // ErrStateUnavailable and forgets nothing.
 func (s *Store) Gateway(installation string) (GatewayRecord, error) {
 	s.mu.Lock()
@@ -494,8 +484,7 @@ func (s *Store) Gateways() []GatewayRecord {
 }
 
 // RevokeGateway removes an installation's gateway registration on disk (the
-// CLI). A running hub stops accepting its secret at the next request; the
-// installation and its clubs stay, so a new join code restores service.
+// CLI); the installation and its clubs stay for a new join code.
 func RevokeGateway(dir, installation string) error {
 	if !core.ValidID(installation) {
 		return ErrNotRegistered
@@ -582,9 +571,8 @@ func (s *Store) Installation(id string) (Installation, bool) {
 	return in.clone(), true
 }
 
-// DeleteInstallation removes an installation entirely: its clubs, its
-// gateway registration (the gateway gets 401 at its next request) and its
-// pending join codes.
+// DeleteInstallation removes an installation with its clubs, gateway
+// registration (401 at the next request) and pending join codes.
 func (s *Store) DeleteInstallation(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -616,9 +604,8 @@ func (s *Store) DeleteInstallation(id string) error {
 	return nil
 }
 
-// PutClub stores (adds or replaces) a club of an installation; the spec
-// must have passed core.ValidateClubSpec. It returns whether the club is
-// new and the installation's new config version.
+// PutClub adds or replaces a club (validated by core.ValidateClubSpec) and
+// returns whether it is new and the installation's new config version.
 func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, error) {
 	if !core.ValidID(spec.ID) {
 		return false, 0, ErrInvalidID
@@ -660,9 +647,8 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	return !existed, in.Version, nil
 }
 
-// clubResources are the CRM studios a club reads and the rooms its
-// courts book, normalized, by the keys the drivers declare
-// (drivers.ResourceKeys).
+// clubResources are the CRM studios a club reads and the rooms its courts
+// book, normalized, by the drivers' keys (drivers.ResourceKeys).
 func clubResources(c core.ClubSpec) (studios, rooms []string) {
 	studioKeys, roomKeys := drivers.ResourceKeys()
 	add := func(out *[]string, params map[string]any, keys []string) {
@@ -679,8 +665,7 @@ func clubResources(c core.ClubSpec) (studios, rooms []string) {
 	return studios, rooms
 }
 
-// DeleteClub removes a club of an installation and returns the new
-// config version.
+// DeleteClub removes a club and returns the new config version.
 func (s *Store) DeleteClub(installation, club string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

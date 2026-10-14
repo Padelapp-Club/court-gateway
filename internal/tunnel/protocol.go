@@ -1,19 +1,13 @@
-// Package tunnel carries partner requests from the hub to a gateway over a
-// connection that the GATEWAY opens. The gateway never listens: it keeps a
-// few HTTPS long-poll requests open to the hub, the hub answers a poll with
-// a queued partner request, and the gateway posts the response back.
+// Package tunnel carries partner requests from the hub to a gateway over
+// connections the GATEWAY opens: a few HTTPS long polls the hub answers
+// with a queued request, the response posted back. Plain HTTPS passes any
+// proxy that passes HTTPS, and each request's timeout notices a broken path.
 //
-// Plain HTTPS requests pass every proxy that passes HTTPS, and each one has
-// its own timeout, so a broken path is noticed by the next request.
-//
-// Trust: the gateway reaches the hub over TLS (system roots, or only the
-// CA of hub.ca_file) and follows no redirect; the hub authenticates the
-// gateway by its secret (Bearer). What the gateway acts on — requests and
-// club configurations — is signed by the hub's own ed25519 key, which the
-// gateway pins at registration after checking it out of band (the key a
-// release embeds, or the operator's fingerprint). So a TLS-inspecting
-// proxy the club's computer trusts can read the traffic and the gateway
-// secret, but cannot make the gateway write to its CRM (sign.go).
+// Trust: TLS to the hub (system roots, or only hub.ca_file's CA), no
+// redirects, the gateway's secret as Bearer. Requests and club configs are
+// signed by the hub's ed25519 key, pinned at registration after an
+// out-of-band check, so a TLS-inspecting proxy the club's computer trusts
+// cannot make the gateway write to its CRM (sign.go).
 package tunnel
 
 import (
@@ -130,10 +124,9 @@ type RegisterRequest struct {
 	Version string `json:"version,omitempty"`
 }
 
-// RegisterResponse carries the long-lived secret. It is shown once.
-// HubKey is the hub's public signing key (base64), which the gateway pins;
-// Signature is that key's signature of the whole answer for the join code
-// it answers (Sign, Verify).
+// RegisterResponse carries the long-lived secret (shown once) and HubKey,
+// the hub's public signing key (base64) the gateway pins, which signs the
+// whole answer for its join code (Signature).
 type RegisterResponse struct {
 	Installation string `json:"installation_id"`
 	Name         string `json:"name"`
@@ -157,9 +150,8 @@ type Whoami struct {
 	ClubsServed          []string `json:"clubs_served"`
 }
 
-// RemoteConfig is the club configuration of an installation (PathConfig).
-// Clubs are core.ClubSpec objects, kept raw here so the tunnel does not
-// depend on the core.
+// RemoteConfig is an installation's club configuration (PathConfig); Clubs
+// are core.ClubSpec objects, raw so the tunnel does not depend on the core.
 type RemoteConfig struct {
 	Version int64             `json:"version"`
 	Epoch   string            `json:"epoch,omitempty"`

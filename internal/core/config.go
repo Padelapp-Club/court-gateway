@@ -47,9 +47,8 @@ const DefaultWritesPerMinute = 60
 // from the environment.
 const MinKeyLength = 24
 
-// fileConfig mirrors gateway.yaml: the installation only. Its clubs are
-// configured on the hub. Driver-specific keys of `crm` are kept as a raw
-// map and handed to the driver.
+// fileConfig mirrors gateway.yaml: the installation only (its clubs are on
+// the hub); `crm` driver keys are handed to the driver raw.
 type fileConfig struct {
 	Hub *struct {
 		URL          string `yaml:"url"`
@@ -80,9 +79,8 @@ type PartnerEntry struct {
 	WritesPerMinute *int     `yaml:"writes_per_minute"`
 }
 
-// ParsePartners validates partner entries and reads their keys with
-// getenv; problems go to add, in Russian. It returns the partners and
-// their keys (secrets for the log redaction).
+// ParsePartners validates partner entries and reads their keys with getenv
+// (problems to add, in Russian); it returns them and the keys to redact.
 func ParsePartners(entries []PartnerEntry, getenv func(string) string, add func(string, ...any)) ([]auth.Partner, []string) {
 	var out []auth.Partner
 	var keys []string
@@ -176,9 +174,8 @@ type UpdateSettings struct {
 	ManifestURL string
 }
 
-// Settings is a validated configuration: the installation (CRM type and
-// login, the hub) and, once WithClub applied a club configured on the hub,
-// that club.
+// Settings is a validated configuration: the installation and, after
+// WithClub, one club configured on the hub.
 type Settings struct {
 	ClubID   string
 	ClubName string
@@ -235,9 +232,7 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 }
 
 // StateDir is the state directory of the config at cfgPath, read without
-// secrets (healthcheck needs no more): $GATEWAY_STATE_DIR, else state_dir,
-// else "state" next to the config file, the same for every process that
-// reads that config (service, healthcheck, doctor).
+// secrets: $GATEWAY_STATE_DIR, else state_dir, else "state" next to it.
 func StateDir(cfgPath string, getenv func(string) string) string {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -469,9 +464,8 @@ func ParseHubKey(s string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-// HubKeyFingerprint is how the hub's key is checked out of band (the
-// operator's admin panel shows it with the join code): the first 16 bytes
-// of the key's SHA-256 in base32, in groups of four.
+// HubKeyFingerprint checks the hub's key out of band (shown with the join
+// code): the key's SHA-256, first 16 bytes, base32 in groups of four.
 func HubKeyFingerprint(k ed25519.PublicKey) string {
 	sum := sha256.Sum256(k)
 	s := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:16])
@@ -492,10 +486,9 @@ func NormalizeFingerprint(s string) string {
 	return s
 }
 
-// CheckHTTPSURL accepts https URLs, and plain http only for loopback hosts
-// (local test doubles and development). A URL may not carry a user or
-// password (they would end up in files and logs) nor a fragment; an error
-// never repeats a URL that might hold either.
+// CheckHTTPSURL accepts https URLs, plain http only for loopback hosts, and
+// neither user, password (they would reach files and logs) nor fragment;
+// an error never repeats such a URL.
 func CheckHTTPSURL(path, raw string) error {
 	u, err := url.Parse(raw)
 	switch {

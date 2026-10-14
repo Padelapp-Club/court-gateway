@@ -170,11 +170,9 @@ func (s *Syncer) wanted(v int64) bool {
 const maxRetry = time.Minute
 
 // Run pulls and applies configs until ctx is done. A pull that crossed a
-// newer version (tunnel.ErrStaleConfig) is repeated at once. After a
-// failed pull it waits Retry, doubling with failures in a row up to
-// maxRetry, whatever the hub announces meanwhile (every poll does), then
-// pulls the newest version announced; the first failure of a row is a
-// warning, the rest debug.
+// newer version (tunnel.ErrStaleConfig) is repeated at once; after a
+// failed one it waits Retry, doubling up to maxRetry whatever is announced
+// meanwhile, then pulls the newest. A row's first failure is a warning.
 func (s *Syncer) Run(ctx context.Context) {
 	failures := 0
 	again := false // pull again at once
@@ -231,14 +229,10 @@ func (s *Syncer) Run(ctx context.Context) {
 // config is applied; the readiness round repeats it within ReadyTimeout.
 const configCheckTimeout = 20 * time.Second
 
-// Apply serves the clubs of rc that load with the driver and that the CRM
-// confirms (driver.ConfigChecker). Until it does — the club does not match
-// the CRM, or the CRM could not be asked — a club keeps its previous
-// config if it had one and no other club's config now books one of its
-// rooms, otherwise partners get 503 for it; Ready asks the
-// CRM again on every readiness round, without a new config from the hub.
-// Apply returns the problems found (nil when every club is served as
-// configured).
+// Apply serves the clubs of rc that load and that the CRM confirms
+// (driver.ConfigChecker). Until then a club keeps its previous config, if
+// no other club's config now books one of its rooms, or answers 503; Ready
+// asks the CRM again every round. It returns the problems found.
 func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -287,11 +281,9 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	return nil
 }
 
-// Ready is the installation's readiness round: it asks the CRM again
-// about the clubs not yet confirmed, serving those it confirms, then
-// checks every served club (core.Clubs.Ready). The account's reads are
-// shared by the whole round. While an Apply runs, it checks the new
-// clubs itself, and the round does not wait for it.
+// Ready is the installation's readiness round: it serves the waiting clubs
+// the CRM now confirms, then checks every served club (core.Clubs.Ready),
+// sharing the account's reads. It does not wait for a running Apply.
 func (s *Syncer) Ready(ctx context.Context) error {
 	ctx = driver.WithEvaluation(ctx)
 	if s.op.TryLock() {
@@ -309,9 +301,8 @@ func (s *Syncer) Ready(ctx context.Context) error {
 }
 
 // verify asks the CRM about every waiting club and serves the configured
-// set: a confirmed club with its new config, any other with its previous
-// one if it had one. It returns the problems of the clubs still waiting.
-// The caller holds s.op.
+// set, confirmed clubs with their new config, others with their previous
+// one; it returns the waiting clubs' problems. The caller holds s.op.
 func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 	s.mu.Lock()
 	ids := slices.Sorted(maps.Keys(s.waiting))
@@ -422,11 +413,9 @@ type Refusal struct {
 	Problems []string
 }
 
-// Build builds the server of every club in rc with this installation's
-// driver. It returns the servers of the clubs that load, a refusal, in
-// Russian, for every one that does not, and the top-level club fields
-// this version does not know and ignored (a newer hub). hook adjusts each
-// driver config before the driver is built (tests).
+// Build builds the server of every club in rc that loads, a refusal (in
+// Russian) for every other, and the club fields this version ignored (a
+// newer hub). hook adjusts each driver config (tests).
 func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*driver.Config), rc tunnel.RemoteConfig) ([]*core.Server, []Refusal, []string) {
 	var refused []Refusal
 	var servers []*core.Server

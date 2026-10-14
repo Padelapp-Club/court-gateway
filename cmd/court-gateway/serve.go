@@ -30,10 +30,9 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
-// statusInterval is how often serve runs its self-check (CRM login and a
-// narrow occupancy request). The one result feeds the health status file
-// (and so the container healthcheck) and the heartbeat to the hub; there
-// is no other scheduled CRM call. A variable for tests.
+// statusInterval is how often serve runs its self-check, its one scheduled
+// CRM call: the result feeds the status file (the container healthcheck)
+// and the heartbeat to the hub. A variable for tests.
 var statusInterval = 60 * time.Second
 
 // confirmDeadline is how long a freshly updated binary has to become
@@ -302,9 +301,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 
 // launch runs the newest verified version (next) with start until it
 // exits other than to be restarted; ran is false when this binary runs
-// itself. The log file is closed before every start: while the version
-// runs, this process holds no handle on it, which on Windows would stop
-// the version from rotating it. A later log line opens it again.
+// itself. The log file is closed before every start: a handle held here
+// would stop the version from rotating it on Windows.
 func launch(ctx context.Context, next func() string, start func(context.Context, string) (int, error), log *slog.Logger, closeLog func()) (code int, ran bool) {
 	for range maxHandovers {
 		path := next()
@@ -325,10 +323,9 @@ func launch(ctx context.Context, next func() string, start func(context.Context,
 	return 0, false
 }
 
-// serveArgs are the arguments of a version the installed binary hands
-// over to, or of the installed binary started again: serve with this
-// config and this log file. Explicit, not this process's own arguments:
-// on Windows those are the service's, and the log file is not among them.
+// serveArgs are the arguments of a version handed over to, or of the
+// installed binary started again: explicit, since on Windows this
+// process's own are the service's, without the log file.
 func serveArgs(cfgPath, logFile string) []string {
 	args := []string{"serve", "-config", cfgPath}
 	if logFile != "" {
@@ -337,9 +334,8 @@ func serveArgs(cfgPath, logFile string) []string {
 	return args
 }
 
-// buildInstallation builds what serve runs: the CRM account, the
-// multi-club handler and the syncer that keeps the clubs equal to the
-// installation's config on the hub.
+// buildInstallation builds the CRM account, the multi-club handler and the
+// syncer that keeps the clubs equal to the installation's config on the hub.
 func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, error) {
 	acct, err := core.BuildAccount(s, drivers.Accounts, s.Driver)
 	if err != nil {
@@ -351,20 +347,17 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
 }
 
-// passwordRejected reports whether the CRM rejected acct's password: then
-// no update is checked, since the new binary's self-check would log in
-// with that password again.
+// passwordRejected reports whether the CRM rejected acct's password: then no
+// update is checked, as its self-check would log in with it again.
 func passwordRejected(acct driver.Account) func() bool {
 	ps, ok := acct.(driver.PasswordSetter)
 	return func() bool { return ok && ps.PasswordRejected() }
 }
 
 // configWatch notices when setup or set-password rewrites gateway.yaml or
-// .env next to it. A new CRM password is taken at once, read from .env
-// itself (the redactor learns it first): that ends a stop after a
-// rejected login. A changed hub connection (setup --force: a new secret,
-// key, installation or address) restarts the service, which then runs
-// with it.
+// .env. A new CRM password is taken at once from .env (the redactor learns
+// it first), ending a stop after a rejected login; a changed hub
+// connection (setup --force) restarts the service.
 type configWatch struct {
 	cfgPath string
 	procEnv func(string) string
@@ -391,8 +384,7 @@ func (w *configWatch) stat() (out [2]os.FileInfo) {
 }
 
 // read returns the CRM password in .env and the hub connection the files
-// configure ("" when they do not load), .env taking precedence over the
-// process environment.
+// configure ("" when they do not load), .env before the environment.
 func (w *configWatch) read() (password, hub string, err error) {
 	vals := map[string]string{}
 	if data, err := os.ReadFile(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName)); err == nil {
@@ -468,9 +460,8 @@ func (h hubState) String() string {
 	return "disconnected"
 }
 
-// readiness combines the CRM self-check with the hub: a gateway the hub
-// cannot reach or does not accept, or whose club config was refused, is
-// not ready either, with its own reason code.
+// readiness combines the CRM self-check with the hub and the club config,
+// each failure with its own reason code.
 func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 	switch {
 	case !crmReady:
@@ -502,9 +493,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 	return true, ""
 }
 
-// sendHeartbeat reports one self-check to the hub. A failed heartbeat is
-// only logged at debug level: the hub notices missing heartbeats itself,
-// and a broken connection is already logged by the tunnel client.
+// sendHeartbeat reports one self-check to the hub; a failure is only a debug
+// line (the hub notices missing heartbeats, the tunnel logs the connection).
 func sendHeartbeat(ctx context.Context, c *tunnel.Client, hb tunnel.Heartbeat, log *slog.Logger) {
 	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -559,8 +549,7 @@ func cmdHealthcheck(args []string, stdout, stderr io.Writer, getenv func(string)
 	return probeStatusFile(core.StateDir(*cfgPath, getenv), stdout, stderr)
 }
 
-// probeStatusFile reads what the running service last observed. It needs
-// no secrets and opens no connection.
+// probeStatusFile reads what the running service last observed (no secrets, no connection).
 func probeStatusFile(dir string, stdout, stderr io.Writer) int {
 	st, err := core.ReadHealthStatus(dir)
 	if err != nil {
@@ -626,13 +615,11 @@ func probeHub(cfgPath string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdSelfcheck is what a running gateway asks a freshly downloaded binary
-// to do before switching to it: load the installation's gateway.yaml and
-// .env, log in to the CRM, reach the hub with the gateway secret (the
-// clubs on the hub are not checked). Exit 0 ok; 1 when the binary cannot
-// work with this config; update.SelfCheckTransientExit when the
-// environment failed, update.SelfCheckNotRunExit when the CRM rejected
-// the password.
+// cmdSelfcheck is what a freshly downloaded binary does before the switch:
+// load gateway.yaml and .env, log in to the CRM, reach the hub (not its
+// clubs). Exit 0 ok, 1 this binary cannot work with the config,
+// update.SelfCheckTransientExit the environment failed,
+// update.SelfCheckNotRunExit the CRM rejected the password.
 func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("selfcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)

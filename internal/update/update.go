@@ -1,16 +1,14 @@
 // Package update keeps a gateway on the newest signed release without
 // anyone at the club doing anything.
 //
-// A release publishes manifest.json (version, and per platform a download
-// URL and SHA-256) and manifest.json.sig (an ed25519 signature over the
-// exact manifest bytes, base64). The public key is embedded into release
-// builds at link time; a build without it is "self-built" and never
-// updates itself. An update is installed only if the signature verifies,
-// the version is strictly newer, the download matches the SHA-256 from the
-// signed manifest, and the new binary passes a self-check in a child
-// process. Installed updates live in the state directory (see Versions):
-// the installed binary is never replaced. After the switch the new version
-// must become ready within a deadline, or the previous one is put back.
+// A release publishes manifest.json (version, per platform a URL and
+// SHA-256) and manifest.json.sig (ed25519 over its exact bytes, base64),
+// checked with the key embedded in release builds (a self-build has none
+// and never updates). An update is installed only when signed, strictly
+// newer, matching the signed SHA-256 and passing a self-check in a child
+// process. Updates live in the state directory (Versions): the installed
+// binary is never replaced. A switched version that is not ready in time
+// is rolled back.
 package update
 
 import (
@@ -165,11 +163,9 @@ func (u *Updater) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-// httpsRedirectsOnly is the CheckRedirect of release downloads. Release
-// hosting redirects (GitHub: latest → the version → its file storage), so
-// redirects are followed, but only to https: the manifest is trusted by
-// its signature and a binary by the signed checksum, never by the
-// transport, and no secret is sent.
+// httpsRedirectsOnly is the CheckRedirect of release downloads: release
+// hosting redirects (GitHub: latest → version → file storage), followed
+// only to https. Trust is in the signature and checksum, not the transport.
 func httpsRedirectsOnly(req *http.Request, via []*http.Request) error {
 	if req.URL.Scheme != "https" {
 		return errors.New("redirect to a non-https address refused")
@@ -404,17 +400,14 @@ func markBad(dir, v string, now time.Time) {
 
 // ---- confirmation after the switch ----
 
-// MaxStartAttempts: a pending update that has been started this many
-// times without confirming itself is rolled back by the installed binary
-// before the next start (see Versions.Next).
+// MaxStartAttempts: a pending update started this many times without
+// confirming itself is rolled back before the next start (Versions.Next).
 const MaxStartAttempts = 3
 
-// Confirm runs in the version that was started. When the state directory
-// says this very version was just installed, it waits for check (the
-// gateway becoming ready) and either confirms the update or rolls it back
-// — or, when check fails with ErrNotRun, leaves it pending.
-// restart is true after a rollback: the installed binary must be started
-// again and will run the version that is current then.
+// Confirm runs in the started version. When it was just installed, it
+// waits for check (the gateway ready) and confirms or rolls it back, or
+// leaves it pending when check fails with ErrNotRun. restart is true after
+// a rollback: the installed binary must start again.
 func Confirm(ctx context.Context, v *Versions, current string, check func(context.Context) error, log *slog.Logger, now func() time.Time) (restart bool, err error) {
 	if now == nil {
 		now = time.Now
@@ -458,10 +451,9 @@ func (v *Versions) rollBackPending(ver string, now time.Time) error {
 }
 
 // Next is what the installed binary (version own) runs at start: the
-// version to hand over to, or "" to run itself. A start of a pending
-// (unconfirmed) update is counted here, before the update runs, so an
-// update that dies before it can confirm or roll back itself is rolled
-// back after MaxStartAttempts starts.
+// version to hand over to, or "" for itself. A pending update's start is
+// counted here, before it runs, so one that dies before confirming is
+// rolled back after MaxStartAttempts starts.
 func (v *Versions) Next(own string, now time.Time, log *slog.Logger) string {
 	next := v.Launch(own, now)
 	p, err := ReadPending(v.Dir)
@@ -487,11 +479,9 @@ func (v *Versions) Next(own string, now time.Time, log *slog.Logger) string {
 	return next
 }
 
-// Loop checks after first, then every interval (with up to an hour of
-// jitter so a fleet does not hit the release server at once), and when
-// trigger fires — the hub's hint — at most once an hour. onInstalled is
-// called after a successful installation; the caller restarts into the
-// new binary.
+// Loop checks after first, then every interval (up to an hour of jitter,
+// so a fleet does not come at once), and on trigger (the hub's hint) at
+// most once an hour; onInstalled then restarts into the new binary.
 func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, interval time.Duration, onInstalled func()) {
 	timer := time.NewTimer(first)
 	defer timer.Stop()
