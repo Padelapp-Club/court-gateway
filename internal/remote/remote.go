@@ -363,7 +363,11 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 		case !ok:
 			unavailable = append(unavailable, id)
 		case s.waiting[id] != nil || s.refused[id] != "": // its previous config
-			retained[id] = without(old, s.waiting[id])
+			if srv := s.without(old, s.waiting[id]); srv != nil {
+				retained[id] = srv
+			} else {
+				unavailable = append(unavailable, id)
+			}
 		default:
 			servers = append(servers, old)
 			claim(id, old)
@@ -393,16 +397,38 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 }
 
 // without is the previous config old less the courts that next, the
-// club's newer config not served, removed (old itself when none are).
-func without(old, next *core.Server) *core.Server {
-	st := *old.Settings()
-	if next != nil {
-		st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool { _, ok := next.Settings().CourtByID(c.ID); return !ok })
+// club's newer config not served, removed or moved to another CRM
+// resource (old itself when none are). Its driver is built for the courts
+// left, so it neither books, reads nor cancels on the others; nil when it
+// cannot be built (no court left).
+func (s *Syncer) without(old, next *core.Server) *core.Server {
+	if next == nil {
+		return old
 	}
+	gone := func(id string) bool {
+		_, ok := next.Settings().CourtByID(id)
+		return !ok || resource(old, id) != resource(next, id)
+	}
+	st := *old.Settings()
+	st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool { return gone(c.ID) })
 	if len(st.Courts) == len(old.Settings().Courts) {
 		return old
 	}
-	return core.NewServer(&st, old.Driver(), st.Driver.Logger)
+	st.Driver.Courts = slices.DeleteFunc(slices.Clone(st.Driver.Courts), func(c driver.CourtConfig) bool { return gone(c.ID) })
+	d, err := core.BuildDriver(&st, s.factories)
+	if err != nil {
+		return nil
+	}
+	return core.NewServer(&st, d, st.Driver.Logger)
+}
+
+// resource is the CRM resource court of srv books ("" when the driver
+// does not name it).
+func resource(srv *core.Server, court string) string {
+	if r, ok := srv.Driver().(driver.Resourcer); ok {
+		return r.Resource(court)
+	}
+	return ""
 }
 
 // resources are the CRM resources the courts of srv book
