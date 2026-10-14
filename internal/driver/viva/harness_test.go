@@ -160,17 +160,20 @@ func (f *fixture) env() *contract.Env {
 		SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
 			return "e-" + f.seedClubBooking(roomFor(court), start, end)
 		},
-		Price: func(day time.Time) contract.PriceCase {
-			s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-			total := int64(3000) // 1.5 h x 2000
-			if wd := s.Weekday(); wd == time.Saturday || wd == time.Sunday {
-				total = 2250 // 1.5 h x (2000 - 500)
-			}
-			return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: total}
-		},
+		Price:          priceCase,
 		Logs:           f.built.Logs.String,
 		PrivacyMarkers: privacyMarkers,
 	}
+}
+
+// priceCase is 10:00-11:30 on court-1 by the stub's price list.
+func priceCase(day time.Time) contract.PriceCase {
+	s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
+	total := int64(3000) // 1.5 h x 2000
+	if wd := s.Weekday(); wd == time.Saturday || wd == time.Sunday {
+		total = 2250 // 1.5 h x (2000 - 500)
+	}
+	return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute), Total: total}
 }
 
 var bookingService = map[string]map[string]any{"booking": {"direction": 12, "type": 3}}
