@@ -174,11 +174,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		clockSkewed := false
 		var refused int64    // refused signatures, at the last self-check
 		refusedGrew := false // since the self-check before
+		unwritable := false  // the status file could not be written last time
 		for {
 			files.check()
 			_, clockKnown := verifier.Now()
 			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown,
-				keyMismatch: client.HubKeyMismatch(), refusedGrew: refusedGrew}
+				keyMismatch: client.HubKeyMismatch(), refusedGrew: refusedGrew, stateUnwritable: unwritable}
 			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
 				clockSkewed = skewed
 				if skewed {
@@ -214,11 +215,14 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 				go sendHeartbeat(ctx, client, hb, log)
 			}
 			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
-			if beat || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
+			if beat || unwritable || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
 				next.Time = time.Now().UTC()
-				st = next
-				if werr := core.WriteHealthStatus(s.StateDir, st); werr != nil {
-					log.Warn("cannot write the health status file", "error", werr)
+				werr := core.WriteHealthStatus(s.StateDir, next)
+				if werr != nil && !unwritable {
+					log.Error("the state directory is not writable: the gateway reports STATE_UNWRITABLE", "path", s.StateDir, "error", werr)
+				}
+				if unwritable = werr != nil; !unwritable {
+					st = next
 				}
 			}
 			select {
@@ -452,6 +456,8 @@ type hubState struct {
 	clockKnown    bool          // the hub's time is known (tunnel.Verifier.Now)
 	keyMismatch   bool          // the hub signs with another key than the pinned one
 	refusedGrew   bool          // signatures were refused since the self-check before
+	// the state directory is not writable (the status file, updates)
+	stateUnwritable bool
 }
 
 func (h hubState) String() string {
@@ -472,6 +478,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "HUB_AUTH_FAILED"
 	case h.duplicate:
 		return false, "DUPLICATE_GATEWAY"
+	case h.stateUnwritable:
+		return false, "STATE_UNWRITABLE"
 	case h.clockOffset.Abs() > tunnel.MaxClockSkew:
 		return false, "CLOCK_SKEW"
 	case h.connected && h.keyMismatch:

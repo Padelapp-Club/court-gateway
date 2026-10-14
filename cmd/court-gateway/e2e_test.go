@@ -638,6 +638,36 @@ func TestAppliedConfigIsReportedAtOnce(t *testing.T) {
 	})
 }
 
+// A state directory the service cannot write is its own reason at the
+// hub, STATE_UNWRITABLE: nothing else is wrong.
+func TestUnwritableStateIsReported(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("POSIX permissions, not root")
+	}
+	statusInterval = 200 * time.Millisecond
+	defer func() { statusInterval = 60 * time.Second }()
+	s := newStack(t)
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	state := core.StateDir(cfg, env{}.get)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(state, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(state, 0o700) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, cfg, "", &contract.LogBuffer{}, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	mon := s.hub.Server().Monitor()
+	testkit.WaitFor(t, "a heartbeat with STATE_UNWRITABLE", 20*time.Second, func() bool { return mon.Health("club-one").Reason == "STATE_UNWRITABLE" })
+}
+
 // The running service decides "now" on the hub's signed time, not on this
 // computer's clock: with the hub 50 minutes ahead, a booking that starts
 // in half an hour by this computer has started by the hub, and is refused.
