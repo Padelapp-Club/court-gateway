@@ -61,7 +61,8 @@ func TestServeRefusesBadConfigInRussian(t *testing.T) {
 }
 
 // healthcheck reads the status file the service writes next to its
-// config; it needs no secret and opens no connection.
+// config; it needs no secret and opens no connection. Exit 0 ready, 1 not
+// ready, 2 not running or hung; with --live 0 whenever the service runs.
 func TestHealthcheck(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gateway.yaml")
@@ -69,22 +70,27 @@ func TestHealthcheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	if code := run([]string{"healthcheck", "-config", p}, &out, &errb, noEnv); code != 1 {
-		t.Fatalf("no status file: %d", code)
+	for _, args := range [][]string{{"healthcheck", "-config", p}, {"healthcheck", "-live", "-config", p}} {
+		if code := run(args, &out, &errb, noEnv); code != 2 {
+			t.Fatalf("%v, no status file: %d", args, code)
+		}
 	}
 	for _, c := range []struct {
-		st   core.HealthStatus
-		code int
+		st         core.HealthStatus
+		code, live int
 	}{
-		{core.HealthStatus{Ready: true, Time: time.Now()}, 0},
-		{core.HealthStatus{Ready: false, Reason: "CRM_UNREACHABLE", Time: time.Now()}, 1},
-		{core.HealthStatus{Ready: true, Time: time.Now().Add(-4 * statusInterval)}, 1}, // stale: the service hangs
+		{core.HealthStatus{Ready: true, Time: time.Now()}, 0, 0},
+		{core.HealthStatus{Ready: false, Reason: "CRM_UNREACHABLE", Time: time.Now()}, 1, 0},
+		{core.HealthStatus{Ready: true, Time: time.Now().Add(-4 * statusInterval)}, 2, 2}, // stale: the service hangs
 	} {
 		if err := core.WriteHealthStatus(filepath.Join(dir, "state"), c.st); err != nil {
 			t.Fatal(err)
 		}
 		if code := run([]string{"healthcheck", "-config", p}, &out, &errb, noEnv); code != c.code {
 			t.Fatalf("%+v: %d, want %d", c.st, code, c.code)
+		}
+		if code := run([]string{"healthcheck", "-live", "-config", p}, &out, &errb, noEnv); code != c.live {
+			t.Fatalf("--live, %+v: %d, want %d", c.st, code, c.live)
 		}
 	}
 }

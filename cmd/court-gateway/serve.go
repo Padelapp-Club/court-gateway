@@ -540,32 +540,35 @@ func cmdHealthcheck(args []string, stdout, stderr io.Writer, getenv func(string)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "config file")
 	hubCfg := fs.String("hub", "", "probe the hub running with this hub.yaml instead of a gateway")
+	live := fs.Bool("live", false, "only whether the service runs (its status is fresh), not whether it is ready")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	if *hubCfg != "" {
 		return probeHub(*hubCfg, stdout, stderr)
 	}
-	return probeStatusFile(core.StateDir(*cfgPath, getenv), stdout, stderr)
+	return probeStatusFile(core.StateDir(*cfgPath, getenv), *live, stdout, stderr)
 }
 
-// probeStatusFile reads what the running service last observed (no secrets, no connection).
-func probeStatusFile(dir string, stdout, stderr io.Writer) int {
+// probeStatusFile reads what the running service last observed (no
+// secrets, no connection): 0 ready (live: running), 1 not ready, 2 not
+// running or hung.
+func probeStatusFile(dir string, live bool, stdout, stderr io.Writer) int {
 	st, err := core.ReadHealthStatus(dir)
 	if err != nil {
 		fmt.Fprintln(stderr, "healthcheck: служба не запущена или ещё не проверила готовность")
-		return 1
+		return 2
 	}
 	age := time.Since(st.Time)
 	fmt.Fprintf(stdout, "ready=%v reason=%s hub=%s age=%s version=%s\n", st.Ready, st.Reason, st.Hub, age.Round(time.Second), st.Version)
 	if age > 3*statusInterval {
 		fmt.Fprintln(stderr, "healthcheck: служба давно не обновляла статус — зависла или остановлена")
-		return 1
+		return 2
 	}
-	if !st.Ready {
-		return 1
+	if st.Ready || live {
+		return 0
 	}
-	return 0
+	return 1
 }
 
 // probeHub asks the hub on this machine for /health/ready over loopback.
