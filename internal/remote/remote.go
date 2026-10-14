@@ -143,6 +143,13 @@ func (s *Syncer) track() {
 	s.clubs.SetPending(s.hub > s.applied || s.epoch != s.hubEpoch)
 }
 
+// Applied reports whether a config from the hub has been applied.
+func (s *Syncer) Applied() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applied >= 0
+}
+
 // Behind is how long the applied config has differed from the hub's
 // version (0 when it does not): a config that cannot be pulled.
 func (s *Syncer) Behind() time.Duration {

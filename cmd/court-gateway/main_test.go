@@ -129,6 +129,7 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		{"secret rejected", true, hubState{authFailed: true}, false, "HUB_AUTH_FAILED"},
 		{"another copy serves", true, hubState{duplicate: true}, false, "DUPLICATE_GATEWAY"},
 		{"hub gone briefly", true, hubState{silentFor: time.Minute}, true, ""},
+		{"hub or config not there since the start", true, hubState{connected: true, clockKnown: true, starting: true}, false, "STARTING"},
 		{"hub gone for long", true, hubState{silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
 		{"config refused", true, hubState{connected: true, clockKnown: true, configRefused: true}, false, "CONFIG_REFUSED"},
 		{"config not pulled briefly", true, hubState{connected: true, clockKnown: true, configBehind: time.Minute}, true, ""},

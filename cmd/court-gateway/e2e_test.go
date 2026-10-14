@@ -302,6 +302,35 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	}
 }
 
+// Until the service has reached the hub and applied its club config it is
+// not ready (STARTING), however short the hub's absence: the grace for a
+// lost hub is for later disconnects only.
+func TestNotReadyUntilTheHubAndAConfig(t *testing.T) {
+	s := newStack(t)
+	statusInterval = 200 * time.Millisecond
+	defer func() { statusInterval = 60 * time.Second }()
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, &out, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	s.hub.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, cfg, "", &contract.LogBuffer{}, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	health := func(want string) func() bool {
+		return func() bool {
+			var b bytes.Buffer
+			run([]string{"healthcheck", "-config", cfg}, &b, io.Discard, env{}.get)
+			return strings.Contains(b.String(), want)
+		}
+	}
+	testkit.WaitFor(t, "not ready before the hub is reached", 10*time.Second, health("ready=false reason=STARTING"))
+	s.hub.Restart()
+	testkit.WaitFor(t, "ready once connected, with a config", 30*time.Second, health("ready=true"))
+}
+
 // The whole path: the club runs setup once (CRM login + join code) and the
 // service; the operator configures the club on the hub; the gateway pulls
 // it -> doctor -> partner call through the hub -> healthcheck; then the

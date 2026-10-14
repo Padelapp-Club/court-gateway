@@ -169,7 +169,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		var crm tunnel.Heartbeat // the last self-check
 		checked := false
 		sentConfig := int64(-1) // the applied config version the hub last heard of
-		lastSeen := time.Now()  // the hub, or the start
+		var lastSeen time.Time  // the hub, when last connected
 		files := newConfigWatch(cfgPath, procEnv, s.Driver.Account, log, askRestart)
 		clockSkewed := false
 		var refused int64    // refused signatures, at the last self-check
@@ -190,7 +190,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 			if hs.connected {
 				lastSeen = time.Now()
 			}
-			hs.silentFor = time.Since(lastSeen)
+			hs.silentFor, hs.starting = time.Since(lastSeen), lastSeen.IsZero() || !syncer.Applied()
 			hb, due := check.Step(ctx)
 			if ctx.Err() != nil {
 				return
@@ -450,6 +450,7 @@ type hubState struct {
 	authFailed    bool // the hub rejected the gateway secret
 	duplicate     bool // the hub serves another copy with the same secret
 	silentFor     time.Duration
+	starting      bool          // the hub not reached, or no config applied, since the start
 	configRefused bool          // a club of the hub's config does not load
 	configBehind  time.Duration // how long the hub's config version has not been applied
 	clockOffset   time.Duration // the hub's clock minus this computer's, as the hub signed it
@@ -488,6 +489,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "CLOCK_UNKNOWN" // the hub sends no signed time: nothing is booked
 	case h.refusedGrew:
 		return false, "SIGNATURE_REFUSED"
+	case h.starting:
+		return false, "STARTING"
 
 	case !h.connected && h.silentFor > hubOfflineAfter:
 		return false, "HUB_UNREACHABLE"

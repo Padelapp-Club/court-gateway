@@ -141,7 +141,7 @@ docker ps                                  # через минуту стату�
 отпечаток его ключа `setup` нужно передать (`--hub-url`, `--hub-key-fingerprint`).
 
 Контейнер не публикует портов. В образе объявлена проверка здоровья
-(`/court-gateway healthcheck`): `healthy` — шлюз вошёл в CRM, его клубы приняты и на связи с хабом;
+(`/court-gateway healthcheck`): `healthy` — шлюз вошёл в CRM, подключился к хабу и его клубы приняты;
 `unhealthy` — нет, код причины виден в `docker inspect` (коды — [docs/hub.md](docs/hub.md#мониторинг)).
 Секреты передаются контейнеру переменными окружения из `.env` (`env_file` в compose), а
 `gateway.yaml` монтируется только для чтения.
