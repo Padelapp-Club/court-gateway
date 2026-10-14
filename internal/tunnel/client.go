@@ -304,8 +304,10 @@ func (c *Client) poller(ctx context.Context) {
 		if rq == nil {
 			continue
 		}
-		resp := c.Execute(ctx, *rq, nonce)
-		c.reply(ctx, resp)
+		// a request taken runs to its end (ExecTimeout) and its reply is
+		// delivered, also when ctx ends: a restart drains it
+		resp := c.Execute(context.WithoutCancel(ctx), *rq, nonce)
+		c.reply(context.WithoutCancel(ctx), resp)
 	}
 }
 

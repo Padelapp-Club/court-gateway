@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -215,4 +217,66 @@ func TestOnlyASignedConfigVersionIsAnnounced(t *testing.T) {
 	if fmt.Sprint(announced) != "[7e1]" {
 		t.Fatalf("announced %v, want only the signed [7e1]", announced)
 	}
+}
+
+// On a restart (Run's context ends) no new poll is taken, but a request
+// already taken runs to its end and its reply reaches the hub.
+func TestRunDrainsTheRequestInFlight(t *testing.T) {
+	started, replied := make(chan struct{}), make(chan Response, 1)
+	var once sync.Once
+	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case PathReply:
+			var resp Response
+			_ = json.NewDecoder(r.Body).Decode(&resp)
+			replied <- resp
+			w.WriteHeader(http.StatusNoContent)
+		case PathPoll:
+			nonce := r.Header.Get(HeaderNonce)
+			w.Header().Set(HeaderConfigVersion, "0")
+			w.Header().Set(HeaderHubTime, SignTime(testKey, "inst", testRegistration, nonce, "0", time.Now()))
+			sent := false
+			once.Do(func() {
+				rq := Request{ID: "call-1", Method: http.MethodGet, Path: "/v1/clubs"}
+				rq.Sign(testKey, "inst", testRegistration, nonce, time.Now())
+				_ = json.NewEncoder(w).Encode(rq)
+				sent = true
+			})
+			if !sent {
+				<-r.Context().Done()
+			}
+		}
+	}))
+	defer hub.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	c, err := NewClient(ClientConfig{HubURL: hub.URL, Secret: "s", HubKey: testPub, Installation: "inst", Polls: 1, Transport: hub.Client().Transport,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			time.Sleep(100 * time.Millisecond) // the restart comes meanwhile
+			if r.Context().Err() != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte("done"))
+		})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); c.Run(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request was not run")
+	}
+	cancel()
+	select {
+	case resp := <-replied:
+		if resp.Status != http.StatusOK || string(resp.Body) != "done" {
+			t.Fatalf("reply %d %s", resp.Status, resp.Body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reply of the request in flight was not delivered")
+	}
+	<-done
 }
