@@ -53,6 +53,15 @@ type client struct {
 	loginErr error     // the last failed login, another failure
 	failures int       // logins failed in a row, rejections aside
 	retryAt  time.Time // no login before this after loginErr
+	// the studio list of one evaluation (studioList)
+	studiosOf context.Context
+	studios   *studioRead
+}
+
+type studioRead struct {
+	once sync.Once
+	list []vivaStudio
+	err  error
 }
 
 type tokenResponse struct {
@@ -107,10 +116,22 @@ func (c *client) rejectedPassword() bool {
 }
 
 // studioList returns the account's studios: read once per evaluation
-// (driver.Shared), so the clubs of one readiness round or one config share
-// it, and never reused after it.
+// (driver.Evaluation), under its context, so the clubs of one readiness
+// round or one config share it, and never used for another one; outside
+// an evaluation it reads with ctx.
 func (c *client) studioList(ctx context.Context) ([]vivaStudio, error) {
-	return driver.Shared(ctx, func(ctx context.Context) ([]vivaStudio, error) { return listStudios(ctx, c) })
+	ev := driver.Evaluation(ctx)
+	if ev == nil {
+		return listStudios(ctx, c)
+	}
+	c.mu.Lock()
+	if c.studiosOf != ev {
+		c.studiosOf, c.studios = ev, &studioRead{}
+	}
+	r := c.studios
+	c.mu.Unlock()
+	r.once.Do(func() { r.list, r.err = listStudios(ev, c) })
+	return r.list, r.err
 }
 
 // invalidate drops the cached token if it is still the one that failed.

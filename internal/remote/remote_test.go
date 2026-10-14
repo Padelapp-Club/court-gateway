@@ -176,21 +176,19 @@ func TestBehindMeasuresAnUnappliedVersion(t *testing.T) {
 }
 
 // slowCheck is a demo driver whose CRM check makes the account's shared
-// read (driver.Shared, under the evaluation's own context), which waits
-// until that context ends.
+// read (under the evaluation's own context, driver.Evaluation), which
+// waits until that context ends.
 type slowCheck struct {
 	driver.Driver
 	deadline chan time.Time
 }
 
 func (d slowCheck) CheckConfig(ctx context.Context) error {
-	_, err := driver.Shared(ctx, func(ctx context.Context) (struct{}, error) {
-		dl, _ := ctx.Deadline()
-		d.deadline <- dl
-		<-ctx.Done()
-		return struct{}{}, ctx.Err()
-	})
-	return err
+	ev := driver.Evaluation(ctx)
+	dl, _ := ev.Deadline()
+	d.deadline <- dl
+	<-ev.Done()
+	return ev.Err()
 }
 
 // Applying a config is bounded as a whole by configCheckTimeout — the

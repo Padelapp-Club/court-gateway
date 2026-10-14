@@ -1,29 +1,20 @@
 package driver
 
-import (
-	"context"
-	"sync"
-)
+import "context"
 
 // An evaluation is one pass over the clubs of an installation: one
 // readiness round, or one application of the hub's config. Its clubs share
-// one read of the account (Shared), made under the round's own context,
-// not under that of the club that happens to ask first (which carries that
-// club's time limit). Nothing is kept after it: the only state a driver
-// keeps across requests is its login.
+// one read of the account (a driver keeps it for that evaluation), made
+// under the evaluation's own context, not under that of the club that
+// happens to ask first (which carries that club's time limit).
 
 type evaluationKey struct{}
 
-type evaluation struct {
-	ctx  context.Context
-	once sync.Once
-	val  any
-	err  error
-}
+type evaluation struct{ ctx context.Context }
 
 // WithEvaluation starts an evaluation, or keeps the one ctx already has.
 func WithEvaluation(ctx context.Context) context.Context {
-	if _, ok := ctx.Value(evaluationKey{}).(*evaluation); ok {
+	if Evaluation(ctx) != nil {
 		return ctx
 	}
 	ev := &evaluation{}
@@ -31,15 +22,12 @@ func WithEvaluation(ctx context.Context) context.Context {
 	return ev.ctx
 }
 
-// Shared returns read's result, made once per evaluation with the
-// evaluation's context and shared by every caller in it; outside an
-// evaluation it just reads with ctx.
-func Shared[T any](ctx context.Context, read func(context.Context) (T, error)) (T, error) {
-	ev, ok := ctx.Value(evaluationKey{}).(*evaluation)
-	if !ok {
-		return read(ctx)
+// Evaluation is the context of the evaluation ctx is in (WithEvaluation),
+// nil outside one: it names the evaluation, and a read its clubs share is
+// made under it.
+func Evaluation(ctx context.Context) context.Context {
+	if ev, ok := ctx.Value(evaluationKey{}).(*evaluation); ok {
+		return ev.ctx
 	}
-	ev.once.Do(func() { ev.val, ev.err = read(ev.ctx) })
-	v, _ := ev.val.(T)
-	return v, ev.err
+	return nil
 }
