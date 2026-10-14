@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 )
 
 // sensitiveKeyParts: an attribute whose key contains any of these is
@@ -26,18 +28,40 @@ func NewLogger(w io.Writer, level slog.Level, secrets []string) *slog.Logger {
 // RedactingHandler wraps a slog.Handler.
 type RedactingHandler struct {
 	inner   slog.Handler
-	secrets []string
+	secrets *secretList // shared with the handlers derived from it
+}
+
+type secretList struct {
+	mu sync.RWMutex
+	v  []string
+}
+
+func (l *secretList) add(s string) {
+	if len(s) < 4 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !slices.Contains(l.v, s) {
+		l.v = append(l.v, s)
+	}
 }
 
 // NewRedactingHandler wraps inner.
 func NewRedactingHandler(inner slog.Handler, secrets []string) *RedactingHandler {
-	var s []string
+	h := &RedactingHandler{inner: inner, secrets: &secretList{}}
 	for _, v := range secrets {
-		if len(v) >= 4 {
-			s = append(s, v)
-		}
+		h.secrets.add(v)
 	}
-	return &RedactingHandler{inner: inner, secrets: s}
+	return h
+}
+
+// AddSecret makes a logger from NewLogger redact s from now on, as it
+// does its secrets (a password the running service takes from .env).
+func AddSecret(log *slog.Logger, s string) {
+	if h, ok := log.Handler().(*RedactingHandler); ok {
+		h.secrets.add(s)
+	}
 }
 
 func (h *RedactingHandler) Enabled(ctx context.Context, l slog.Level) bool {
@@ -101,7 +125,9 @@ func (h *RedactingHandler) attr(a slog.Attr) slog.Attr {
 }
 
 func (h *RedactingHandler) scrub(s string) string {
-	for _, sec := range h.secrets {
+	h.secrets.mu.RLock()
+	defer h.secrets.mu.RUnlock()
+	for _, sec := range h.secrets.v {
 		if strings.Contains(s, sec) {
 			s = strings.ReplaceAll(s, sec, redacted)
 		}
