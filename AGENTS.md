@@ -58,6 +58,8 @@ export GATEWAY_JOIN_CODE CRM_USERNAME CRM_PASSWORD
 $env:GATEWAY_JOIN_CODE = [Net.NetworkCredential]::new('', (Read-Host 'Join code' -AsSecureString)).Password
 $env:CRM_USERNAME      = Read-Host 'Viva login (e-mail)'
 $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva password' -AsSecureString)).Password
+# only for a self-built binary: $env:GATEWAY_HUB_URL = Read-Host 'Hub URL'
+#   $env:GATEWAY_HUB_KEY_FINGERPRINT = Read-Host 'Hub key fingerprint'
 ```
 
 If the human can only give you the values in the conversation, put them into these environment
@@ -109,8 +111,9 @@ On Windows ARM64 put `windows-arm64.exe` in `$f`.
 
 Windows: first run `ssh -V`. It must show `OpenSSH_for_Windows_8.1` or newer (`ssh-keygen -Y`
 needs 8.1; Windows 10 may have an older one or none). If older or missing: tell the human, run
-`winget install Microsoft.OpenSSH.Beta`, open a new PowerShell as Administrator and check again
-(not yet verified on a Windows 10 machine). Then:
+`winget install Microsoft.OpenSSH.Beta`, open a new PowerShell as Administrator and check again.
+Verified on Windows 10 Pro 19045 x64: its built-in `OpenSSH_for_Windows_9.5` is enough, nothing to
+install there. Then:
 
 ```powershell
 & {
@@ -122,7 +125,7 @@ needs 8.1; Windows 10 may have an older one or none). If older or missing: tell 
   'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' | Set-Content allowed_signers -Encoding ascii
   cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS'
   if ($LASTEXITCODE -ne 0) { throw "SIGNATURE MISMATCH: do not run $f" }
-  $want = (Select-String -Path SHA256SUMS -Pattern (' ' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
+  $want = (Select-String -Path SHA256SUMS -Pattern ('[ *]' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
   if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "CHECKSUM MISMATCH: do not run $f" }
   Move-Item -Force $f court-gateway.exe
   'checksum-ok'
@@ -147,7 +150,8 @@ binary without the release key: it works but never updates itself — tell the h
 ```
 
 (`CRM_PASSWORD`, `GATEWAY_JOIN_CODE` and, for a self-built binary, `GATEWAY_HUB_URL` and
-`GATEWAY_HUB_KEY_FINGERPRINT` are read from the environment; `--crm viva` is the default. Windows: `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
+`GATEWAY_HUB_KEY_FINGERPRINT` are read from the environment; `--crm viva` is the default. Windows: run
+it in **PowerShell as Administrator**, `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
 continuation with a backtick. There are no flags for a club id, studio, time zone or grid.)
 
 Then remove the secrets from your shell: `unset CRM_PASSWORD GATEWAY_JOIN_CODE`
@@ -215,7 +219,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed (the running service restarts by itself on the rewritten files) |
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
 | `HUB_CONFIG` | `fail`: the clubs configured on the hub do not load with this CRM — report to the operator (the service keeps the previous config); `warn`: the service has not applied the newest config yet, or a club is served but its config disagrees with the CRM (its time zone) — report to the operator |
-| `SECRETS_FILE` | Windows `fail`: the folder holding `.env`, or `.env`, is open to other users — run the `hint` command (`install-service`, which closes both) in PowerShell as Administrator; `warn` elsewhere: `chmod 600 .env` |
+| `SECRETS_FILE` | Windows `fail`: the folder holding `.env`, or `.env`, is open to other users — as the `hint` says, in PowerShell as Administrator run `uninstall-service`, then `install-service` (which closes both; on an installed service `install-service` alone fails); `warn` elsewhere: `chmod 600 .env` |
 | `VERSION_CURRENT` | `warn` only: self-built binary, or an update is pending (installs itself) |
 
 ## Step 6 — report

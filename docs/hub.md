@@ -160,7 +160,9 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN` |
 
 **Конфиг клуба** — `name`, `timezone`, `slot_minutes`, `hours`, `crm`, `courts` (`id`, `name`
-и ключи драйвера — для Viva `viva_room`, `price_list`), `services`. В `crm` клуб задаёт только
+и ключи драйвера — для Viva `viva_room`, `price_list`), `services`. Драйвер `demo` — чтобы
+попробовать шлюз без CRM; он выключен, пока не задана переменная `GATEWAY_DEMO_CRM=1` (тогда
+`setup --crm demo`). В `crm` клуб задаёт только
 ключи клуба — для Viva `studio`, `overnight_minutes`, `break_lookback_days` (см. «API для
 партнёров», границы полноты). **Часовой пояс клуба** (`timezone`) задаёт оператор: в нём шлюз
 показывает партнёрам время, часы работы и цены дня. Даты и время, которые Viva считает по студии

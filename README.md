@@ -49,7 +49,8 @@
 2. Откройте **PowerShell от имени администратора**. Подпись сверяет `ssh-keygen` из OpenSSH: сначала
    выполните `ssh -V` — нужна версия 8.1 или новее (`OpenSSH_for_Windows_8.1` и выше). Если версия
    ниже или команды нет (бывает на Windows 10), поставьте новую: `winget install Microsoft.OpenSSH.Beta`,
-   и откройте PowerShell заново. <!-- not yet verified on a Windows 10 machine -->
+   и откройте PowerShell заново. На Windows 10 Pro 19045 x64 проверено: встроенного
+   `OpenSSH_for_Windows_9.5` достаточно, ставить ничего не нужно.
    Затем выполните, вписав в строку `$f` версию (и `arm64` вместо `amd64` на ARM):
 
    ```powershell
@@ -59,7 +60,7 @@
      'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' | Set-Content allowed_signers -Encoding ascii
      cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS'
      if ($LASTEXITCODE -ne 0) { throw "Подпись SHA256SUMS не сошлась: не запускайте $f, скачайте файлы заново" }
-     $want = (Select-String -Path SHA256SUMS -Pattern (' ' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
+     $want = (Select-String -Path SHA256SUMS -Pattern ('[ *]' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
      if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "Контрольная сумма $f не совпала: не запускайте файл, скачайте его заново" }
      Move-Item -Force $f court-gateway.exe
      .\court-gateway.exe setup --install-service
