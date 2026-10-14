@@ -248,7 +248,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	default:
 		u := &update.Updater{
 			PublicKey: key, ManifestURL: s.Update.ManifestURL, Current: version, Client: &http.Client{Timeout: 5 * time.Minute, Transport: s.Hub.Proxy.Transport()},
-			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log,
+			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log, Hold: passwordRejected(s.Driver.Account),
 		}
 		first := 5*time.Minute + time.Duration(time.Now().UnixNano()%int64(10*time.Minute))
 		go u.Loop(ctx, hint, first, 24*time.Hour, askRestart)
@@ -333,6 +333,14 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
+}
+
+// passwordRejected reports whether the CRM rejected acct's password: then
+// no update is checked, since the new binary's self-check would log in
+// with that password again.
+func passwordRejected(acct driver.Account) func() bool {
+	ps, ok := acct.(driver.PasswordSetter)
+	return func() bool { return ok && ps.PasswordRejected() }
 }
 
 // passwordWatch re-reads the CRM password when .env changes (set-password
@@ -544,9 +552,12 @@ func probeHub(cfgPath string, stdout, stderr io.Writer) int {
 }
 
 // cmdSelfcheck is what a running gateway asks a freshly downloaded binary
-// to do before switching to it: load the live config, log in to the CRM,
-// reach the hub. Exit 0 ok; update.SelfCheckTransientExit when the
-// environment failed; 1 when the binary cannot work with this config.
+// to do before switching to it: load the installation's gateway.yaml and
+// .env, log in to the CRM, reach the hub with the gateway secret (the
+// clubs on the hub are not checked). Exit 0 ok; 1 when the binary cannot
+// work with this config; update.SelfCheckTransientExit when the
+// environment failed, update.SelfCheckNotRunExit when the CRM rejected
+// the password.
 func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("selfcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -574,6 +585,9 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	var alert *driver.ConfigAlert
 	if err := clubs.Ready(ctx); err != nil && !errors.As(err, &alert) { // an alert does not stop the update
 		fmt.Fprintln(stderr, "CRM: "+core.ReadyReason(err))
+		if core.ReadyReason(err) == "CRM_AUTH_FAILED" {
+			return update.SelfCheckNotRunExit // the password, not this binary: one login, no verdict
+		}
 		return update.SelfCheckTransientExit
 	}
 	roots, err := tunnel.LoadRoots(s.Hub.CAFile)

@@ -60,6 +60,11 @@ var (
 	ErrTransient = errors.New("self-check could not complete")
 	// ErrBroken: the new binary does not work here.
 	ErrBroken = errors.New("new binary failed its self-check")
+	// ErrNotRun: the new binary's self-check did not run because the CRM
+	// rejected the password: not the binary's fault, and not retried.
+	ErrNotRun = errors.New("self-check not run: the CRM rejected the password")
+	// ErrHeld: no update is checked while Updater.Hold says so.
+	ErrHeld = errors.New("updates held while the CRM rejects the password")
 )
 
 // Asset is one platform build in a manifest.
@@ -140,6 +145,10 @@ type Updater struct {
 	CheckBinary func(ctx context.Context, path, version string) error
 	Log         *slog.Logger
 	Now         func() time.Time
+	// Hold, while true, stops every check before anything is fetched or
+	// run: the CRM rejected the password, and the new binary's self-check
+	// would log in with it again.
+	Hold func() bool
 }
 
 func (u *Updater) now() time.Time {
@@ -228,6 +237,9 @@ func (u *Updater) Fetch(ctx context.Context) (*Manifest, error) {
 // Check fetches the manifest and installs a newer release if there is
 // one; installed is the version it installed ("" for none).
 func (u *Updater) Check(ctx context.Context) (installed string, err error) {
+	if u.Hold != nil && u.Hold() {
+		return "", ErrHeld
+	}
 	m, err := u.Fetch(ctx)
 	if err != nil {
 		return "", err
@@ -493,6 +505,8 @@ func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, inte
 		installed, err := u.Check(cctx)
 		cancel()
 		switch {
+		case errors.Is(err, ErrHeld) || errors.Is(err, ErrNotRun):
+			u.log().Info("update not checked", "reason", err)
 		case err != nil:
 			u.log().Warn("update check failed", "error", err)
 		case installed != "":

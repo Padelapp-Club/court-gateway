@@ -242,9 +242,13 @@ func baseEnv() []string {
 	return out
 }
 
-// SelfCheckTransientExit is the exit code of `selfcheck` when the
-// environment (CRM, hub) rather than the binary failed.
-const SelfCheckTransientExit = 10
+// Exit codes of `selfcheck` other than 0 (passed) and 1 (broken):
+// SelfCheckTransientExit when the environment (CRM, hub) rather than the
+// binary failed, SelfCheckNotRunExit when the CRM rejected the password.
+const (
+	SelfCheckTransientExit = 10
+	SelfCheckNotRunExit    = 11
+)
 
 // ChildCheck runs the downloaded binary before the switch: `version` must
 // name the version from the signed manifest, and `selfcheck` with the live
@@ -271,6 +275,8 @@ func ChildCheck(configPath string) func(ctx context.Context, path, ver string) e
 			return nil
 		case errors.As(err, &ee) && ee.ExitCode() == SelfCheckTransientExit:
 			return fmt.Errorf("%w: %s", ErrTransient, firstLine(stderr.String()))
+		case errors.As(err, &ee) && ee.ExitCode() == SelfCheckNotRunExit:
+			return ErrNotRun
 		case cctx.Err() != nil:
 			return fmt.Errorf("%w: self-check timed out", ErrTransient)
 		default:

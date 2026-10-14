@@ -24,6 +24,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
+	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
 // Obviously fake identifiers.
@@ -661,5 +662,23 @@ func TestServeDecidesOnTheHubsClock(t *testing.T) {
 	resp, b := s.hub.Do(t, 10*time.Second, http.MethodPost, "/v1/clubs/club-one/bookings", contract.BookKey, strings.NewReader(body))
 	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "start must be in the future") {
 		t.Fatalf("a booking that started %s ago by the hub: %d %s", time.Now().Add(ahead).Sub(start).Round(time.Minute), resp.StatusCode, b)
+	}
+}
+
+// The self-check an update runs with the new binary does not judge it
+// when the CRM rejects the password: that is not the binary's fault. It
+// logs in once and exits "not run", which the updater neither counts
+// against the release nor retries.
+func TestSelfcheckWithARejectedPasswordIsNotRun(t *testing.T) {
+	s := newStack(t)
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	before := s.stub.LoginAttempts()
+	var errb bytes.Buffer
+	if rc := run([]string{"selfcheck", "-config", cfg}, io.Discard, &errb, env{"CRM_PASSWORD": "changed-in-the-crm"}.get); rc != update.SelfCheckNotRunExit || s.stub.LoginAttempts() != before+1 {
+		t.Fatalf("selfcheck with a rejected password: rc=%d %s, %d logins", rc, errb.String(), s.stub.LoginAttempts()-before)
 	}
 }
