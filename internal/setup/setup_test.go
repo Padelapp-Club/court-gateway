@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -197,6 +198,28 @@ func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 		if failOn == "folder" && hubCalls != 0 {
 			t.Fatal("join code redeemed although the folder could not be closed")
 		}
+	}
+}
+
+// A config folder closed so that the user running setup can no longer
+// write in it (an administrator without elevation on Windows) fails
+// before the join code is redeemed: FOLDER_NOT_RESTRICTED, the code not
+// spent, nothing written.
+func TestSetupFailsBeforeRedeemingWhenTheClosedFolderTakesNoFile(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a folder without write permission is still writable here")
+	}
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: printOf(testHubKey)}
+	hubCalls := 0
+	deps := Deps{HubTransport: countingTransport{calls: &hubCalls}, ProtectSecrets: func(p string) error { return os.Chmod(p, 0o500) }}
+	res, err := Run(context.Background(), in, deps)
+	if err == nil || res.OK || res.Error.Code != "FOLDER_NOT_RESTRICTED" || hubCalls != 0 {
+		t.Fatalf("result %+v %v, join codes redeemed %d", res.Error, err, hubCalls)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("written: %v", entries)
 	}
 }
 

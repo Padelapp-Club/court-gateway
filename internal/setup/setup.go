@@ -57,7 +57,8 @@ type Deps struct {
 	// ProtectSecrets, when set, closes a path to other users and verifies
 	// it (Windows: service.ProtectSecrets). It runs on the config folder
 	// (and an existing .env) before the join code is redeemed, and on the
-	// new .env after writing; any failure aborts setup.
+	// new .env after writing; any failure aborts setup, as does a folder
+	// it closed so that this user can no longer write in it.
 	ProtectSecrets func(path string) error
 }
 
@@ -217,6 +218,16 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			if err := deps.ProtectSecrets(p); err != nil {
 				return notProtected(err)
 			}
+		}
+		// a folder closed so that this user cannot write in it would
+		// take no .env after the join code is spent
+		f, err := os.CreateTemp(filepath.Dir(cfgPath), ".setup-*")
+		if err == nil {
+			f.Close()
+			err = os.Remove(f.Name())
+		}
+		if err != nil {
+			return notProtected(err)
 		}
 	}
 
