@@ -17,14 +17,8 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 )
 
-// A club whose time zone matches the studio's offset today but not on a
-// later day of the booking horizon (Europe/Helsinki on a UTC+3 studio,
-// two weeks before Helsinki leaves summer time) is served: the driver
-// reads Viva's days in the studio's own zone, so a booking that starts
-// after the clock change, late in the Helsinki evening and already on the
-// next studio day, is seen and cannot be booked over. Readiness reports
-// TIMEZONE_MISMATCH for that club, for the operator to fix. A club in a
-// zone that agrees with the studio all along raises nothing.
+// A club zone that leaves the studio's offset later in the horizon
+// (Helsinki on a UTC+3 studio) keeps occupancy right and raises an alert.
 func TestClubZoneOtherThanTheStudioIsServedAndAlerted(t *testing.T) {
 	now := func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
 	stub := vivastub.New(stubUser, stubPass, studio) // the studio is UTC+3
@@ -54,20 +48,11 @@ func TestClubZoneOtherThanTheStudioIsServedAndAlerted(t *testing.T) {
 	}
 
 	api := in.clubs.APIHandler()
-	do := func(method, path, body string) (int, map[string]any) {
-		r := httptest.NewRequest(method, path, strings.NewReader(body))
-		r = r.WithContext(auth.WithPartnerName(r.Context(), "booker"))
-		w := httptest.NewRecorder()
-		api.ServeHTTP(w, r)
-		var out map[string]any
-		_ = json.Unmarshal(w.Body.Bytes(), &out)
-		return w.Code, out
-	}
-	code, occ := do("GET", fmt.Sprintf("/v1/clubs/helsinki/occupancy?court=court-1&from=%s&to=%s", q(start), q(end)), "")
+	code, occ := serve(api, "GET", fmt.Sprintf("/v1/clubs/helsinki/occupancy?court=court-1&from=%s&to=%s", q(start), q(end)), "")
 	if code != http.StatusOK || occ["complete"] != true || len(occ["intervals"].([]any)) != 1 {
 		t.Fatalf("occupancy over the booking: %d %v", code, occ)
 	}
-	code, out := do("POST", "/v1/clubs/helsinki/bookings", fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`,
+	code, out := serve(api, "POST", "/v1/clubs/helsinki/bookings", fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`,
 		start.Format(time.RFC3339), end.Format(time.RFC3339)))
 	if code != http.StatusConflict || out["code"] != "SLOT_UNAVAILABLE" {
 		t.Fatalf("booking over it: %d %v", code, out)
@@ -85,10 +70,7 @@ func TestClubZoneOtherThanTheStudioIsServedAndAlerted(t *testing.T) {
 	}
 }
 
-// The studio's price rules are written in its own clock: a Helsinki club
-// on a UTC+3 studio pays the evening price (16:00-24:00 studio time) for
-// 15:00-16:00 Helsinki on a winter day, and the day's prices are shown in
-// the club's clock, an hour earlier than the studio's.
+// Studio prices are projected into club time.
 func TestPriceRulesAreTheStudios(t *testing.T) {
 	now := func() time.Time { return time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC) }
 	stub := vivastub.New(stubUser, stubPass, studio)
@@ -106,14 +88,9 @@ func TestPriceRulesAreTheStudios(t *testing.T) {
 	}
 	api := in.clubs.APIHandler()
 	get := func(path string) map[string]any {
-		r := httptest.NewRequest("GET", path, nil)
-		r = r.WithContext(auth.WithPartnerName(r.Context(), "booker"))
-		w := httptest.NewRecorder()
-		api.ServeHTTP(w, r)
-		var out map[string]any
-		_ = json.Unmarshal(w.Body.Bytes(), &out)
-		if w.Code != http.StatusOK {
-			t.Fatalf("%s: %d %v", path, w.Code, out)
+		code, out := serve(api, "GET", path, "")
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %v", path, code, out)
 		}
 		return out
 	}
@@ -126,6 +103,16 @@ func TestPriceRulesAreTheStudios(t *testing.T) {
 	if s := fmt.Sprint(prices["periods"]); !strings.Contains(s, "start:06:00") || !strings.Contains(s, "end:15:00") || !strings.Contains(s, "end:23:00") {
 		t.Fatalf("prices of the day in the club's clock: %s", s)
 	}
+}
+
+// serve runs one partner request against h.
+func serve(h http.Handler, method, path, body string) (int, map[string]any) {
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r.WithContext(auth.WithPartnerName(r.Context(), "booker")))
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
 }
 
 func ts(t *testing.T, s string) time.Time {
