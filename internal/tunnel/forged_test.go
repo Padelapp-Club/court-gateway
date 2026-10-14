@@ -39,6 +39,7 @@ func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 		case tunnel.PathPoll:
 			w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(hubKey, "inst", registration, r.Header.Get(tunnel.HeaderNonce), "", time.Now()))
 			w.WriteHeader(http.StatusOK)
+			_ = http.NewResponseController(w).Flush() // as the hub does, before it holds the poll
 			select {
 			case rq := <-envelopes:
 				_ = json.NewEncoder(w).Encode(rq)
@@ -103,6 +104,9 @@ func TestForgedRequestsDoNotReachTheCRM(t *testing.T) {
 		return k
 	}
 
+	for !c.Connected() { // the hub's time arrives with the first poll answer
+		time.Sleep(time.Millisecond)
+	}
 	genuine := signed(booking())
 	if r := run(genuine); r.Status != http.StatusCreated || writes() != 1 {
 		t.Fatalf("a signed booking: %d %s, %d CRM writes", r.Status, r.Body, writes())
@@ -201,6 +205,7 @@ func TestReplayAfterRestartIsRefused(t *testing.T) {
 	if r := c.Execute(t.Context(), sg.Sign(tunnel.Request{Method: http.MethodDelete, Path: create.Path + "/" + b.ID, Partner: "booker", Scopes: []string{"book"}})); r.Status != http.StatusNoContent {
 		t.Fatalf("cancel: %d %s", r.Status, r.Body)
 	}
+	time.Sleep(10 * time.Millisecond) // a restart takes longer than the seal's millisecond
 	restarted := sg.Client(t, clubs.TunnelHandler())
 	if r := restarted.Execute(t.Context(), create); r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") || posts() != 1 {
 		t.Fatalf("the create replayed after a restart: %d %s, %d CRM writes", r.Status, r.Body, posts())

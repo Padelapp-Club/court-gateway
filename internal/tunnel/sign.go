@@ -303,7 +303,7 @@ func (v *Verifier) Request(rq *Request) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	now, started := v.clock()
-	if time.UnixMilli(rq.IssuedAt).Before(started) {
+	if rq.IssuedAt < started.UnixMilli() { // in the seal's own unit
 		return fmt.Errorf("%w: issued before this gateway started", ErrBadSignature)
 	}
 	if _, dup := v.seen[rq.ID]; dup {
