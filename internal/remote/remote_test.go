@@ -3,10 +3,12 @@ package remote_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -223,4 +225,49 @@ func TestReadyDoesNotWaitForApply(t *testing.T) {
 	}
 	cancel()
 	<-applied
+}
+
+// A config that cannot be pulled is retried with a growing wait, however
+// often the hub announces it meanwhile (every poll answer does), and the
+// newest announced version is pulled once the hub answers.
+func TestConfigPullBacksOff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	pulls, failing := 0, true
+	const retry = 50 * time.Millisecond
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Retry: retry,
+		Fetch: func(context.Context) (tunnel.RemoteConfig, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			pulls++
+			if failing {
+				return tunnel.RemoteConfig{}, errors.New("hub unreachable")
+			}
+			return tunnel.RemoteConfig{Version: 3}, nil
+		}})
+	start := time.Now()
+	go s.Run(ctx)
+	for range 100 { // polls announcing version 3
+		s.Notify(3)
+		time.Sleep(6 * time.Millisecond)
+	}
+	mu.Lock()
+	n := pulls
+	failing = false
+	mu.Unlock()
+	// the most pulls that waits of 50, 100, 200 ... ms allow in the time taken
+	most := 1
+	for w, sum := retry, time.Duration(0); sum+w <= time.Since(start); w *= 2 {
+		sum += w
+		most++
+	}
+	if n > most+1 {
+		t.Fatalf("%d pulls in %s of failures, at most %d with the backoff", n, time.Since(start).Round(time.Millisecond), most)
+	}
+	for deadline := time.Now().Add(5 * time.Second); s.State().ConfigVersion != 3; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the config was not applied once the hub answered")
+		}
+	}
 }

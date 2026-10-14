@@ -63,7 +63,8 @@ type Options struct {
 	// DriverHook adjusts each club's driver config before the driver is
 	// built (tests: an HTTP client for a CRM stub).
 	DriverHook func(*driver.Config)
-	// Retry is the wait after a failed pull (default 5s).
+	// Retry is the wait after a failed pull (default 5s), doubling with
+	// failures in a row up to maxRetry.
 	Retry time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
@@ -154,36 +155,57 @@ func (s *Syncer) wanted(v int64) bool {
 	return v != s.applied
 }
 
-// Run pulls and applies configs until ctx is done.
+// maxRetry bounds the wait between failed pulls.
+const maxRetry = time.Minute
+
+// Run pulls and applies configs until ctx is done. After a failed pull it
+// waits Retry, doubling with failures in a row up to maxRetry, whatever
+// the hub announces meanwhile (every poll does), then pulls the newest
+// version announced; the first failure of a row is a warning, the rest
+// debug.
 func (s *Syncer) Run(ctx context.Context) {
+	failures := 0
+	var v int64
 	for {
-		var v int64
-		select {
-		case <-ctx.Done():
-			return
-		case v = <-s.notify:
+		if failures == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case v = <-s.notify:
+			}
+		} else {
+			select {
+			case v = <-s.notify: // announced during the wait
+			default:
+			}
 		}
 		if !s.wanted(v) {
+			failures = 0
 			continue
 		}
 		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		rc, err := s.fetch(fctx)
 		cancel()
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			s.log.Warn("club config not pulled from the hub, retrying", "version", v, "error", err)
-			go func() {
-				select {
-				case <-ctx.Done():
-				case <-time.After(s.retry):
-					s.Notify(v)
-				}
-			}()
+		if err == nil {
+			failures = 0
+			_ = s.Apply(ctx, rc)
 			continue
 		}
-		_ = s.Apply(ctx, rc)
+		if ctx.Err() != nil {
+			return
+		}
+		failures++
+		wait := min(s.retry<<min(failures-1, 16), maxRetry)
+		lvl := slog.LevelDebug
+		if failures == 1 {
+			lvl = slog.LevelWarn
+		}
+		s.log.Log(ctx, lvl, "club config not pulled from the hub, retrying", "version", v, "retry_in", wait.String(), "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
 	}
 }
 
