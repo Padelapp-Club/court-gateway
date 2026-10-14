@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 func TestKeyedLocks(t *testing.T) {
@@ -66,5 +67,63 @@ func TestCreateLockWaitIsBounded(t *testing.T) {
 	}
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"BUSY"`) {
 		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// writeDriver's occupancy read takes delay and then runs read; it counts
+// the creates that reach it.
+type writeDriver struct {
+	slowDriver
+	delay   time.Duration
+	read    func()
+	created *int
+}
+
+func (d writeDriver) Occupancy(context.Context, driver.OccupancyQuery) (driver.Occupancy, error) {
+	time.Sleep(d.delay)
+	d.read()
+	return driver.Occupancy{Complete: true}, nil
+}
+
+func (d writeDriver) Create(context.Context, driver.CreateRequest) (driver.Booking, error) {
+	*d.created++
+	return driver.Booking{ID: "e-00000000-0000-4000-8000-0000000000e1"}, nil
+}
+
+// After the court's lock and the occupancy read, right before the CRM
+// write, a create checks again that the start is still ahead on the hub's
+// clock (400) and that the write has time to finish: at least half the
+// request's time, or minWriteTime, left (503 BUSY). Neither writes.
+func TestCreateRechecksBeforeTheWrite(t *testing.T) {
+	start := time.Now().UTC().Truncate(time.Hour).Add(48 * time.Hour)
+	for _, c := range []struct {
+		name    string
+		delay   time.Duration
+		passes  bool // the start passes during the read
+		code    int
+		created int
+	}{
+		{"in time", 0, false, http.StatusCreated, 1},
+		{"the start passed during the read", 0, true, http.StatusBadRequest, 0},
+		{"too little time left", 600 * time.Millisecond, false, http.StatusServiceUnavailable, 0},
+	} {
+		now, created := start.Add(-time.Hour), 0
+		read := func() {
+			if c.passes {
+				now = start.Add(time.Second)
+			}
+		}
+		st := &Settings{ClubID: "club-a", Location: time.UTC, SlotMinutes: 60, Courts: []Court{{ID: "court-1", Name: "C1"}},
+			Driver: driver.Config{Clock: func() (time.Time, bool) { return now, true }}}
+		srv := NewServer(st, writeDriver{delay: c.delay, read: read, created: &created}, nil)
+		body := fmt.Sprintf(`{"court":"court-1","start":%q,"end":%q,"kind":"game"}`, start.Format(time.RFC3339), start.Add(time.Hour).Format(time.RFC3339))
+		ctx, cancel := context.WithTimeout(auth.WithPartnerName(context.Background(), "booker"), time.Second)
+		r := httptest.NewRequest(http.MethodPost, "/v1/clubs/club-a/bookings", strings.NewReader(body)).WithContext(ctx)
+		w := httptest.NewRecorder()
+		srv.APIHandler().ServeHTTP(w, r)
+		cancel()
+		if w.Code != c.code || created != c.created {
+			t.Fatalf("%s: %d %s, %d created", c.name, w.Code, w.Body, created)
+		}
 	}
 }

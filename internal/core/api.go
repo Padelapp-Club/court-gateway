@@ -298,7 +298,7 @@ func cleanNote(n string) string {
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	partner := info(r).partner
+	partner, entered := info(r).partner, time.Now()
 	var req createRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
@@ -366,6 +366,17 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(occ.Intervals) > 0 {
 		WriteError(w, r, http.StatusConflict, "SLOT_UNAVAILABLE", "the court is occupied in this interval")
+		return
+	}
+	// the lock and the read took time: the start must still be ahead (one
+	// passing during the write itself is not caught)
+	if now, _ := s.clock(); !start.After(now) {
+		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start must be in the future")
+		return
+	}
+	if dl, ok := r.Context().Deadline(); ok && time.Until(dl) < min(minWriteTime, dl.Sub(entered)/2) {
+		w.Header().Set("Retry-After", "5")
+		WriteError(w, r, http.StatusServiceUnavailable, "BUSY", "too little time is left to write the booking, retry")
 		return
 	}
 

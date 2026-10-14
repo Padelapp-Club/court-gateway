@@ -20,6 +20,11 @@ var createLocks = keyedLocks{m: map[string]*keyedLock{}}
 // then the partner gets 503 BUSY and retries.
 var createLockWait = 10 * time.Second
 
+// minWriteTime: with less time left for the request (or less than half
+// of its time) a create is not started (503 BUSY): a write cut off midway
+// leaves its outcome unknown.
+const minWriteTime = 10 * time.Second
+
 type keyedLocks struct {
 	mu sync.Mutex
 	m  map[string]*keyedLock
