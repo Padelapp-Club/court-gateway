@@ -611,3 +611,32 @@ func TestRefusedRequestsAreReported(t *testing.T) {
 		t.Fatalf("not reported:\n%s", metrics)
 	}
 }
+
+// A gateway revoked on disk (`hub gateway revoke`, which a running hub
+// does not hear of) leaves the status files at the next pass, even when
+// nothing asks for it in between: an offline gateway sends nothing.
+func TestRevokedGatewayLeavesTheStatusFiles(t *testing.T) {
+	dir := t.TempDir()
+	st, err := hub.OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc, err := hub.CreateJoinCode(dir, "inst-r", "", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Redeem(jc.Code); err != nil {
+		t.Fatal(err)
+	}
+	status := filepath.Join(dir, "status")
+	m := hub.NewMonitor(st, nil, hub.MonitorConfig{StatusDir: status, OfflineAfter: time.Minute})
+	m.Tick()
+	if err := hub.RevokeGateway(dir, "inst-r"); err != nil {
+		t.Fatal(err)
+	}
+	m.Tick()
+	metrics, err := os.ReadFile(filepath.Join(status, hub.MetricsFile))
+	if err != nil || !strings.Contains(string(metrics), "installations_total=0\n") || strings.Contains(string(metrics), "inst_r") {
+		t.Fatalf("metrics after the revocation (%v):\n%s", err, metrics)
+	}
+}

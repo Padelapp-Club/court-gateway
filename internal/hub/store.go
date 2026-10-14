@@ -453,25 +453,37 @@ func (s *Store) Gateway(installation string) (GatewayRecord, error) {
 	if !ok {
 		return GatewayRecord{}, ErrNotRegistered
 	}
+	if err := s.onDisk(installation); err != nil {
+		return GatewayRecord{}, err
+	}
+	return *g, nil
+}
+
+// onDisk checks that the registration file of installation is still
+// there, forgetting it when it is not; s.mu must be held.
+func (s *Store) onDisk(installation string) error {
 	_, err := os.Stat(filepath.Join(s.dir, gatewaysDir, installation+".json"))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		delete(s.gateways, installation)
 		s.nextGen(installation)
-		return GatewayRecord{}, ErrNotRegistered
+		return ErrNotRegistered
 	case err != nil:
-		return GatewayRecord{}, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
-	return *g, nil
+	return nil
 }
 
-// Gateways returns the registered gateways sorted by installation id.
+// Gateways returns the registered gateways sorted by installation id,
+// forgetting the revoked ones as Gateway does.
 func (s *Store) Gateways() []GatewayRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]GatewayRecord, 0, len(s.gateways))
-	for _, g := range s.gateways {
-		out = append(out, *g)
+	for inst, g := range s.gateways {
+		if !errors.Is(s.onDisk(inst), ErrNotRegistered) {
+			out = append(out, *g)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Installation < out[j].Installation })
 	return out
