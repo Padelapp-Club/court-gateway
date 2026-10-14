@@ -13,10 +13,14 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/update"
@@ -42,7 +46,7 @@ func main() {
 		fmt.Println(pub)
 		key, err := update.ParsePrivateKey(priv)
 		check(err)
-		fmt.Fprintln(os.Stderr, "for README.md, AGENTS.md and deploy/cloud-init.yaml:", update.AllowedSigner(key.Public().(ed25519.PublicKey)))
+		fmt.Fprintln(os.Stderr, "for README.md, AGENTS.md and deploy/cloud-init.yaml:", allowedSigner(key.Public().(ed25519.PublicKey)))
 	case "manifest":
 		fs := flag.NewFlagSet("manifest", flag.ExitOnError)
 		ver := fs.String("version", "", "release version")
@@ -60,7 +64,7 @@ func main() {
 		check(os.WriteFile(filepath.Join(*dist, "manifest.json.sig"), update.Sign(priv, m), 0o644))
 		sums, err := os.ReadFile(filepath.Join(*dist, "SHA256SUMS"))
 		check(err)
-		check(os.WriteFile(filepath.Join(*dist, "SHA256SUMS.sig"), update.SignSums(priv, sums), 0o644))
+		check(os.WriteFile(filepath.Join(*dist, "SHA256SUMS.sig"), signSums(priv, sums), 0o644))
 		fmt.Println("wrote", filepath.Join(*dist, "manifest.json"), "manifest.json.sig and SHA256SUMS.sig")
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
@@ -73,4 +77,35 @@ func check(err error) {
 		fmt.Fprintln(os.Stderr, "release:", err)
 		os.Exit(1)
 	}
+}
+
+// sumsNamespace is the namespace of the SSH signature of SHA256SUMS.
+const sumsNamespace = "court-gateway"
+
+// signSums returns SHA256SUMS.sig: the SSH signature of sums (the format
+// of ssh-keygen -Y sign, namespace sumsNamespace). A first install checks
+// it with ssh-keygen -Y verify against the release key the install docs
+// publish (allowedSigner), before it trusts any program it downloaded.
+func signSums(priv ed25519.PrivateKey, sums []byte) []byte {
+	hash := sha512.Sum512(sums)
+	fields := slices.Concat(str([]byte(sumsNamespace)), str(nil), str([]byte("sha512")))
+	sig := ed25519.Sign(priv, slices.Concat([]byte("SSHSIG"), fields, str(hash[:])))
+	pub := slices.Concat(str([]byte("ssh-ed25519")), str(priv.Public().(ed25519.PublicKey)))
+	blob := slices.Concat([]byte("SSHSIG"), binary.BigEndian.AppendUint32(nil, 1), str(pub), fields,
+		str(slices.Concat(str([]byte("ssh-ed25519")), str(sig))))
+	b64 := base64.StdEncoding.EncodeToString(blob)
+	out := "-----BEGIN SSH SIGNATURE-----\n"
+	for ; len(b64) > 70; b64 = b64[70:] {
+		out += b64[:70] + "\n"
+	}
+	return []byte(out + b64 + "\n-----END SSH SIGNATURE-----\n")
+}
+
+// str is b as an SSH wire string.
+func str(b []byte) []byte { return append(binary.BigEndian.AppendUint32(nil, uint32(len(b))), b...) }
+
+// allowedSigner is the release key as an ssh-keygen allowed_signers line,
+// as the install docs publish it.
+func allowedSigner(pub ed25519.PublicKey) string {
+	return sumsNamespace + " ssh-ed25519 " + base64.StdEncoding.EncodeToString(slices.Concat(str([]byte("ssh-ed25519")), str(pub)))
 }

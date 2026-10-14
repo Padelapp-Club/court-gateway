@@ -1,4 +1,4 @@
-package update_test
+package main
 
 import (
 	"crypto/ed25519"
@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
 // SHA256SUMS.sig is what ssh-keygen -Y verify accepts for the release key
@@ -25,14 +23,14 @@ func TestSumsSignatureVerifiesWithSSHKeygen(t *testing.T) {
 		}
 	}
 	sums := "0123  court-gateway-9.9.9-linux-amd64\n"
-	write("allowed_signers", update.AllowedSigner(pub)+"\n")
-	write("SHA256SUMS.sig", string(update.SignSums(priv, []byte(sums))))
+	write("allowed_signers", allowedSigner(pub)+"\n")
+	write("SHA256SUMS.sig", string(signSums(priv, []byte(sums))))
 	for _, c := range []struct {
 		sums string
 		ok   bool
 	}{{sums, true}, {"4567  court-gateway-9.9.9-linux-amd64\n", false}} {
 		write("SHA256SUMS", c.sums)
-		cmd := exec.Command(keygen, "-Y", "verify", "-f", "allowed_signers", "-I", update.SumsNamespace, "-n", update.SumsNamespace, "-s", "SHA256SUMS.sig")
+		cmd := exec.Command(keygen, "-Y", "verify", "-f", "allowed_signers", "-I", sumsNamespace, "-n", sumsNamespace, "-s", "SHA256SUMS.sig")
 		cmd.Dir = dir
 		in, _ := os.Open(filepath.Join(dir, "SHA256SUMS"))
 		cmd.Stdin = in
