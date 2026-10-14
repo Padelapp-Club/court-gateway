@@ -5,10 +5,14 @@
 //	go run ./tools/release manifest -version 0.1.0 -dist dist -key release.key \
 //	    -base-url https://github.com/Padelapp-Club/court-gateway/releases/download/v0.1.0
 //
+// keygen also prints, on stderr, the release key as the allowed_signers
+// line the install docs publish; manifest also signs dist/SHA256SUMS.
+//
 // The private key must never be committed (.gitignore lists *.key).
 package main
 
 import (
+	"crypto/ed25519"
 	"flag"
 	"fmt"
 	"os"
@@ -36,6 +40,9 @@ func main() {
 		check(err)
 		check(f.Close())
 		fmt.Println(pub)
+		key, err := update.ParsePrivateKey(priv)
+		check(err)
+		fmt.Fprintln(os.Stderr, "for README.md, AGENTS.md and deploy/cloud-init.yaml:", update.AllowedSigner(key.Public().(ed25519.PublicKey)))
 	case "manifest":
 		fs := flag.NewFlagSet("manifest", flag.ExitOnError)
 		ver := fs.String("version", "", "release version")
@@ -51,7 +58,10 @@ func main() {
 		check(err)
 		check(os.WriteFile(filepath.Join(*dist, "manifest.json"), m, 0o644))
 		check(os.WriteFile(filepath.Join(*dist, "manifest.json.sig"), update.Sign(priv, m), 0o644))
-		fmt.Println("wrote", filepath.Join(*dist, "manifest.json"), "and manifest.json.sig")
+		sums, err := os.ReadFile(filepath.Join(*dist, "SHA256SUMS"))
+		check(err)
+		check(os.WriteFile(filepath.Join(*dist, "SHA256SUMS.sig"), update.SignSums(priv, sums), 0o644))
+		fmt.Println("wrote", filepath.Join(*dist, "manifest.json"), "manifest.json.sig and SHA256SUMS.sig")
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)

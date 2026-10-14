@@ -18,8 +18,23 @@ import (
 
 // The install commands of README.md, AGENTS.md and deploy/cloud-init.yaml
 // are run as written, against a stand-in release (a script that records
-// its arguments) and stand-ins for the network and for sudo. With a wrong
-// checksum the program must never run; with the right one it must.
+// its arguments) and stand-ins for the network and for sudo; only the
+// release key they publish is swapped for a test key. With a wrong
+// checksum, or a SHA256SUMS the release key did not sign, the program must
+// never run; with both right it must.
+
+// docSigner is the release key the install docs publish (allowed_signers).
+const docSigner = "court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET"
+
+// The install docs publish one release key.
+func TestInstallDocsPublishOneReleaseKey(t *testing.T) {
+	for _, doc := range []string{"README.md", "AGENTS.md", "deploy/cloud-init.yaml"} {
+		text := readDoc(t, doc)
+		if n := strings.Count(text, "ssh-ed25519 "); n == 0 || n != strings.Count(text, docSigner) {
+			t.Errorf("%s: %d release keys, %d of them %q", doc, n, strings.Count(text, docSigner), docSigner)
+		}
+	}
+}
 
 // fencedBlock returns the first ```lang block after the line containing
 // marker in doc.
@@ -51,17 +66,23 @@ func readDoc(t *testing.T, name string) string {
 }
 
 type installWorld struct {
-	dir, bin, fixtures, mark string
-	env                      []string
+	dir, bin, fixtures, mark, signer string
+	env                              []string
 }
 
-// newInstallWorld puts a stand-in release file named release, and a
-// SHA256SUMS with its sum (or a wrong one), where the stand-in curl finds
-// them; sudo, runuser and the system tools are stand-ins too.
-func newInstallWorld(t *testing.T, release string, rightSum bool) *installWorld {
+// newInstallWorld puts a stand-in release file named release, a
+// SHA256SUMS with its sum (or a wrong one) and SHA256SUMS.sig, the
+// signature of it by a test release key (or of another SHA256SUMS), where
+// the stand-in curl finds them; sudo, runuser and the system tools are
+// stand-ins too. w.signer is the test key's allowed_signers line.
+func newInstallWorld(t *testing.T, release string, rightSum, signed bool) *installWorld {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell commands")
+	}
+	keygen, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skip("no ssh-keygen")
 	}
 	sum := ""
 	for _, tool := range []string{"sha256sum", "shasum"} {
@@ -92,7 +113,22 @@ func newInstallWorld(t *testing.T, release string, rightSum bool) *installWorld 
 		}
 	}
 	write(filepath.Join(w.fixtures, release), program, 0o644)
-	write(filepath.Join(w.fixtures, "SHA256SUMS"), hexSum+"  "+release+"\n"+strings.Repeat("1", 64)+"  court-gateway-9.9.9-other\n", 0o644)
+	sums := filepath.Join(w.fixtures, "SHA256SUMS")
+	write(sums, hexSum+"  "+release+"\n"+strings.Repeat("1", 64)+"  court-gateway-9.9.9-other\n", 0o644)
+	key := filepath.Join(w.dir, "release-key")
+	for _, args := range [][]string{{"-q", "-t", "ed25519", "-N", "", "-C", "", "-f", key}, {"-q", "-Y", "sign", "-f", key, "-n", "court-gateway", sums}} {
+		if out, err := exec.Command(keygen, args...).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen %v: %v\n%s", args, err, out)
+		}
+	}
+	pub, _ := os.ReadFile(key + ".pub")
+	w.signer = "court-gateway " + strings.TrimSpace(string(pub))
+	if !signed { // a SHA256SUMS that matches the file, but not the signature
+		write(sums, strings.Repeat("2", 64)+"  "+release+"\n", 0o644)
+		if rightSum {
+			write(sums, hexSum+"  "+release+"\n", 0o644)
+		}
+	}
 	// curl: the file named by the URL's last element, to -o or to its own name (-O)
 	write(filepath.Join(w.bin, "curl"), `#!/bin/sh
 out=""; url=""
@@ -125,6 +161,7 @@ cp "`+w.fixtures+`/$name" "${out:-$name}"
 // zsh is interactively) in dir and reports the exit code and output.
 func (w *installWorld) run(t *testing.T, shell, dir, script string) (int, string) {
 	t.Helper()
+	script = strings.ReplaceAll(script, docSigner, w.signer)
 	var cmd *exec.Cmd
 	switch shell {
 	case "zsh":
@@ -159,13 +196,14 @@ func TestReadmeInstallStopsOnChecksumMismatch(t *testing.T) {
 				continue
 			}
 			t.Run(c.name+"/"+shell, func(t *testing.T) {
-				bad := newInstallWorld(t, c.release, false)
-				rc, out := bad.run(t, shell, bad.dir, script)
-				if rc == 0 || bad.ran() != "" {
-					t.Fatalf("wrong checksum: exit %d, program ran %q\n%s", rc, bad.ran(), out)
+				for name, bad := range map[string]*installWorld{"wrong checksum": newInstallWorld(t, c.release, false, true),
+					"not signed": newInstallWorld(t, c.release, true, false)} {
+					if rc, out := bad.run(t, shell, bad.dir, script); rc == 0 || bad.ran() != "" {
+						t.Fatalf("%s: exit %d, program ran %q\n%s", name, rc, bad.ran(), out)
+					}
 				}
-				good := newInstallWorld(t, c.release, true)
-				rc, out = good.run(t, shell, good.dir, script)
+				good := newInstallWorld(t, c.release, true, true)
+				rc, out := good.run(t, shell, good.dir, script)
 				if rc != 0 || good.ran() != "setup\ninstall-service\ndoctor\n" {
 					t.Fatalf("right checksum: exit %d, program ran %q\n%s", rc, good.ran(), out)
 				}
@@ -182,7 +220,7 @@ func TestAgentsVerifyStepStopsOnChecksumMismatch(t *testing.T) {
 	} {
 		script := "F=" + c.release + "\n" + block[strings.Index(block, "\n")+1:]
 		for _, right := range []bool{false, true} {
-			w := newInstallWorld(t, c.release, right) // the block downloads both files itself
+			w := newInstallWorld(t, c.release, right, right) // the block downloads the files itself
 			rc, out := w.run(t, "sh", w.dir, script+"[ -x court-gateway ] && ./court-gateway version\n")
 			ok := strings.Contains(out, "checksum-ok")
 			if right != ok || right != (w.ran() == "version\n") || right != (rc == 0) {
@@ -205,18 +243,19 @@ func TestCloudInitStopsOnChecksumMismatchAndForgetsSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
-		name    string
-		right   bool
-		secrets string
-		wantRC  int
-		wantRan string
+		name          string
+		right, signed bool
+		secrets       string
+		wantRC        int
+		wantRan       string
 	}{
-		{"wrong checksum", false, "CRM_PASSWORD='x'\nGATEWAY_JOIN_CODE='y'\n", 1, ""},
-		{"no secrets: setup over SSH", true, doc.WriteFiles[0].Content, 0, ""},
-		{"secrets given", true, "CRM_PASSWORD='x'\nGATEWAY_JOIN_CODE='y'\n", 0, "setup --non-interactive --json --config DIR/gateway.yaml\ninstall-service -config DIR/gateway.yaml --run-as court-gateway\ndoctor -config DIR/gateway.yaml\n"},
+		{"wrong checksum", false, true, "CRM_PASSWORD='x'\nGATEWAY_JOIN_CODE='y'\n", 1, ""},
+		{"not signed", true, false, "CRM_PASSWORD='x'\nGATEWAY_JOIN_CODE='y'\n", 1, ""},
+		{"no secrets: setup over SSH", true, true, doc.WriteFiles[0].Content, 0, ""},
+		{"secrets given", true, true, "CRM_PASSWORD='x'\nGATEWAY_JOIN_CODE='y'\n", 0, "setup --non-interactive --json --config DIR/gateway.yaml\ninstall-service -config DIR/gateway.yaml --run-as court-gateway\ndoctor -config DIR/gateway.yaml\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			w := newInstallWorld(t, "court-gateway-9.9.9-linux-amd64", c.right)
+			w := newInstallWorld(t, "court-gateway-9.9.9-linux-amd64", c.right, c.signed)
 			root, cloud, run, opt := filepath.Join(w.dir, "root"), filepath.Join(w.dir, "cloud"), filepath.Join(w.dir, "run"), filepath.Join(w.dir, "opt")
 			for _, d := range []string{root, cloud, run} {
 				_ = os.MkdirAll(d, 0o755)
@@ -233,7 +272,7 @@ func TestCloudInitStopsOnChecksumMismatchAndForgetsSecrets(t *testing.T) {
 			_ = os.WriteFile(secrets, []byte(c.secrets), 0o600)
 			script := strings.NewReplacer("/opt/court-gateway", opt, "/root/", root+"/", "/var/lib/cloud/instance", cloud, "/run/cloud-init", run).Replace(doc.RunCmd[0][2])
 			rc, out := w.run(t, "sh", w.dir, script)
-			if rc != c.wantRC || w.ran() != strings.ReplaceAll(c.wantRan, "DIR", opt) {
+			if (rc == 0) != (c.wantRC == 0) || w.ran() != strings.ReplaceAll(c.wantRan, "DIR", opt) {
 				t.Fatalf("exit %d, program ran %q\n%s", rc, w.ran(), out)
 			}
 			for _, f := range append([]string{secrets}, userData...) {
@@ -256,13 +295,17 @@ func TestWindowsInstallBlocksCheckTheHashFirst(t *testing.T) {
 	for doc, marker := range map[string]string{"README.md": "### Windows", "AGENTS.md": "\nWindows:\n"} {
 		block := strings.TrimSpace(fencedBlock(t, doc, marker, "powershell"))
 		body := block[strings.Index(block, "& {"):]
-		check := strings.Index(body, "Get-FileHash")
-		if !strings.HasPrefix(body, "& {") || !strings.HasSuffix(body, "}") || check < 0 ||
-			!strings.Contains(body[check:strings.Index(body[check:], "\n")+check], "throw") {
-			t.Fatalf("%s: the hash check must throw inside one script block:\n%s", doc, block)
+		sig, check := strings.Index(body, "ssh-keygen -Y verify"), strings.Index(body, "Get-FileHash")
+		throws := func(i int) bool { // the line after i throws on failure
+			next := body[i:][strings.Index(body[i:], "\n")+1:]
+			return strings.Contains(next[:strings.Index(next, "\n")], "throw")
 		}
-		if doc == "AGENTS.md" && strings.Count(body[:check], "Invoke-WebRequest") != 2 {
-			t.Fatalf("%s: both files must be downloaded before the hash check:\n%s", doc, block)
+		if !strings.HasPrefix(body, "& {") || !strings.HasSuffix(body, "}") || sig < 0 || check < sig || !throws(sig) ||
+			!strings.Contains(body[check:strings.Index(body[check:], "\n")+check], "throw") || !strings.Contains(body, docSigner) {
+			t.Fatalf("%s: the signature check, then the hash check, must throw inside one script block:\n%s", doc, block)
+		}
+		if doc == "AGENTS.md" && strings.Count(body[:sig], "Invoke-WebRequest") != 3 {
+			t.Fatalf("%s: the files must be downloaded before the checks:\n%s", doc, block)
 		}
 		for _, use := range []string{"Move-Item", ".exe setup", "court-gateway.exe"} {
 			if i := strings.Index(body, use); i >= 0 && i < check {

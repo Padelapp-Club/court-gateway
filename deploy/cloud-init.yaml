@@ -55,8 +55,12 @@ runcmd:
       id court-gateway >/dev/null 2>&1 || useradd --system --home-dir "$DIR" --shell /usr/sbin/nologin court-gateway
       mkdir -p "$DIR"
       cd "$DIR"
-      # download; nothing runs unless the checksum matches (set -e)
+      # download; nothing runs unless SHA256SUMS is signed by the release
+      # key written here and the checksum matches (set -e)
       curl -fsSL --retry 5 -o SHA256SUMS "$BASE/SHA256SUMS"
+      curl -fsSL --retry 5 -o SHA256SUMS.sig "$BASE/SHA256SUMS.sig"
+      echo 'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' > allowed_signers
+      ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS
       FILE="$(awk '/-linux-'"$ARCH"'$/ {print $2}' SHA256SUMS)"
       curl -fsSL --retry 5 -o "$FILE" "$BASE/$FILE"
       grep " $FILE\$" SHA256SUMS | sha256sum -c -

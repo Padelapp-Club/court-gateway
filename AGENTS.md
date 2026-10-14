@@ -88,15 +88,19 @@ itself, and stops before writing any secret if it cannot.)
 
 Release page: `https://github.com/Padelapp-Club/court-gateway/releases/latest/download/<file>`.
 Set `F` to the release file name for the platform and run the one command for the OS: it downloads
-`SHA256SUMS` and the file, and renames the file (so it can be run) **only** if the download worked
-and its checksum matches — each step runs only if the previous one succeeded.
+`SHA256SUMS`, its signature `SHA256SUMS.sig` and the file, checks the signature with `ssh-keygen`
+against the release key written in the command (never take the key from the release page), and
+renames the file (so it can be run) **only** if the signature and the checksum match — each step
+runs only if the previous one succeeded.
 
 Linux and macOS:
 
 ```sh
 F=court-gateway-<v>-linux-amd64
 B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
-curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
+curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" && curl -fLO "$B/$F" &&
+  echo 'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' > allowed_signers &&
+  ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS &&
   grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi &&
   mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
 ```
@@ -110,7 +114,11 @@ Windows:
   $f = 'court-gateway-<v>-windows-amd64.exe'
   $b = 'https://github.com/Padelapp-Club/court-gateway/releases/latest/download'
   Invoke-WebRequest "$b/SHA256SUMS" -OutFile SHA256SUMS -ErrorAction Stop
+  Invoke-WebRequest "$b/SHA256SUMS.sig" -OutFile SHA256SUMS.sig -ErrorAction Stop
   Invoke-WebRequest "$b/$f" -OutFile $f -ErrorAction Stop
+  'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' | Set-Content allowed_signers -Encoding ascii
+  cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS'
+  if ($LASTEXITCODE -ne 0) { throw "SIGNATURE MISMATCH: do not run $f" }
   $want = (Select-String -Path SHA256SUMS -Pattern (' ' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
   if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "CHECKSUM MISMATCH: do not run $f" }
   Move-Item -Force $f court-gateway.exe
@@ -118,7 +126,8 @@ Windows:
 }
 ```
 
-Anything but `checksum-ok` (a `FAILED` line, `CHECKSUM MISMATCH`, no output): **stop**, delete the
+Anything but `checksum-ok` (`Could not verify signature`, `SIGNATURE MISMATCH`, a `FAILED` line,
+`CHECKSUM MISMATCH`, no output): **stop**, delete the
 downloaded file, never run it, and report to the human.
 
 On macOS, if the binary is quarantined: `xattr -d com.apple.quarantine court-gateway`.

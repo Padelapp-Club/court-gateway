@@ -4,13 +4,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -59,4 +62,35 @@ func BuildManifest(ver, dir, baseURL string, released time.Time) ([]byte, error)
 		m.Assets[p] = Asset{URL: strings.TrimRight(baseURL, "/") + "/" + name, SHA256: hex.EncodeToString(sum[:])}
 	}
 	return json.MarshalIndent(m, "", "  ")
+}
+
+// SumsNamespace is the namespace of the SSH signature of SHA256SUMS.
+const SumsNamespace = "court-gateway"
+
+// SignSums returns SHA256SUMS.sig: the SSH signature of sums (the format
+// of ssh-keygen -Y sign, namespace SumsNamespace). A first install checks
+// it with ssh-keygen -Y verify against the release key the install docs
+// publish (AllowedSigner), before it trusts any program it downloaded.
+func SignSums(priv ed25519.PrivateKey, sums []byte) []byte {
+	hash := sha512.Sum512(sums)
+	fields := slices.Concat(str([]byte(SumsNamespace)), str(nil), str([]byte("sha512")))
+	sig := ed25519.Sign(priv, slices.Concat([]byte("SSHSIG"), fields, str(hash[:])))
+	pub := slices.Concat(str([]byte("ssh-ed25519")), str(priv.Public().(ed25519.PublicKey)))
+	blob := slices.Concat([]byte("SSHSIG"), binary.BigEndian.AppendUint32(nil, 1), str(pub), fields,
+		str(slices.Concat(str([]byte("ssh-ed25519")), str(sig))))
+	b64 := base64.StdEncoding.EncodeToString(blob)
+	out := "-----BEGIN SSH SIGNATURE-----\n"
+	for ; len(b64) > 70; b64 = b64[70:] {
+		out += b64[:70] + "\n"
+	}
+	return []byte(out + b64 + "\n-----END SSH SIGNATURE-----\n")
+}
+
+// str is b as an SSH wire string.
+func str(b []byte) []byte { return append(binary.BigEndian.AppendUint32(nil, uint32(len(b))), b...) }
+
+// AllowedSigner is the release key as an ssh-keygen allowed_signers line,
+// as the install docs publish it.
+func AllowedSigner(pub ed25519.PublicKey) string {
+	return SumsNamespace + " ssh-ed25519 " + base64.StdEncoding.EncodeToString(slices.Concat(str([]byte("ssh-ed25519")), str(pub)))
 }

@@ -43,15 +43,16 @@
 
 Выпуски лежат на странице
 <https://github.com/Padelapp-Club/court-gateway/releases/latest>. Там же файл `SHA256SUMS` с
-контрольными суммами. Во всех вариантах шаги одинаковые: скачать → сверить сумму → `setup` →
-`install-service` → `doctor`. Команды ниже идут цепочкой: если сумма не сошлась, программа
-**не запускается**, и дальше ничего не выполняется.
+контрольными суммами и его подпись `SHA256SUMS.sig`; ключ выпусков, которым она сверяется, вписан в
+команды ниже, а не берётся со страницы выпуска. Во всех вариантах шаги одинаковые: скачать →
+сверить подпись и сумму → `setup` → `install-service` → `doctor`. Команды ниже идут цепочкой: если
+подпись или сумма не сошлась, программа **не запускается**, и дальше ничего не выполняется.
 
 ### Windows
 
 1. Создайте папку `C:\court-gateway` и скачайте в неё со страницы выпуска
    `court-gateway-<версия>-windows-amd64.exe` (Windows на ARM, например на процессоре Snapdragon, —
-   `windows-arm64.exe`) и `SHA256SUMS`. Сборка x64 работает и на Windows 11 для ARM через
+   `windows-arm64.exe`), `SHA256SUMS` и `SHA256SUMS.sig`. Сборка x64 работает и на Windows 11 для ARM через
    эмуляцию, но там лучше родная `arm64`. Если Windows предупредит о неизвестном издателе, нажмите
    «Подробнее» → «Выполнить в любом случае».
 2. Откройте **PowerShell от имени администратора** и выполните, вписав в строку `$f` версию (и
@@ -61,6 +62,9 @@
    cd C:\court-gateway
    & {
      $f = 'court-gateway-<версия>-windows-amd64.exe'
+     'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' | Set-Content allowed_signers -Encoding ascii
+     cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS'
+     if ($LASTEXITCODE -ne 0) { throw "Подпись SHA256SUMS не сошлась: не запускайте $f, скачайте файлы заново" }
      $want = (Select-String -Path SHA256SUMS -Pattern (' ' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
      if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "Контрольная сумма $f не совпала: не запускайте файл, скачайте его заново" }
      Move-Item -Force $f court-gateway.exe
@@ -87,7 +91,9 @@
 F=court-gateway-<версия>-linux-amd64
 B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
 mkdir -p ~/court-gateway && cd ~/court-gateway &&
-  curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/$F" &&
+  curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" && curl -fLO "$B/$F" &&
+  echo 'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' > allowed_signers &&
+  ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS &&
   grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi &&
   mv "$F" court-gateway && chmod +x court-gateway &&
   ./court-gateway setup &&
@@ -104,8 +110,8 @@ mkdir -p ~/court-gateway && cd ~/court-gateway &&
 
 Создайте самую маленькую машину с Ubuntu (1 vCPU, 512 МБ–1 ГБ). Белый IP и открытые порты не нужны.
 Вставьте весь текст [deploy/cloud-init.yaml](deploy/cloud-init.yaml) в поле «Пользовательские
-данные» (user data, cloud-init) при создании машины — он скачает программу, сверит её сумму и
-поставит. Через 2–3 минуты зайдите на машину по SSH и выполните:
+данные» (user data, cloud-init) при создании машины — он скачает программу, сверит подпись и сумму
+и поставит. Через 2–3 минуты зайдите на машину по SSH и выполните:
 
 ```sh
 sudo -u court-gateway /opt/court-gateway/court-gateway setup --config /opt/court-gateway/gateway.yaml &&
