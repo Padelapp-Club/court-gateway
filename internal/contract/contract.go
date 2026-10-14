@@ -51,6 +51,8 @@ type Env struct {
 	Logs func() string
 	// PrivacyMarkers must never appear in any response or log line.
 	PrivacyMarkers []string
+	// Advance moves the gateway's clock forward; nil skips what needs it.
+	Advance func(time.Duration)
 }
 
 // Setup builds a fresh Env for one subtest.
@@ -206,6 +208,7 @@ func Run(t *testing.T, setup Setup) {
 	t.Run("invalid booking requests", func(t *testing.T) { testInvalidBooking(t, setup(t)) })
 	t.Run("foreign booking cannot be cancelled", func(t *testing.T) { testForeignCancel(t, setup(t)) })
 	t.Run("another partner's booking cannot be cancelled", func(t *testing.T) { testOtherPartnerCancel(t, setup(t)) })
+	t.Run("a started booking cannot be cancelled", func(t *testing.T) { testStartedCancel(t, setup(t)) })
 	t.Run("payment follows capabilities", func(t *testing.T) { testPayment(t, setup(t)) })
 	t.Run("prices and quote", func(t *testing.T) { testPrices(t, setup(t)) })
 	t.Run("privacy: foreign data never leaks", func(t *testing.T) { testPrivacy(t, setup(t)) })
@@ -448,6 +451,25 @@ func testOtherPartnerCancel(t *testing.T, env *Env) {
 	id := r.JSON["id"].(string)
 	expect(t, c.do(http.MethodDelete, c.base()+"/bookings/"+id, env.OtherBookKey, nil), http.StatusForbidden, "NOT_OWNED")
 	expect(t, c.do(http.MethodDelete, c.base()+"/bookings/"+id, env.BookKey, nil), http.StatusNoContent, "")
+}
+
+// testStartedCancel: a booking that has started is not cancelled, with
+// its own code, and still occupies the court.
+func testStartedCancel(t *testing.T, env *Env) {
+	if env.Advance == nil {
+		t.Skip("the gateway's clock cannot be moved in this environment")
+	}
+	c := &client{t: t, env: env}
+	d, court := day(env), env.Courts[0]
+	start := at(d, 9, 0)
+	r := c.create(env.BookKey, court, start, start.Add(time.Hour), "game", "")
+	expect(t, r, http.StatusCreated, "")
+	id, _ := r.JSON["id"].(string)
+	env.Advance(time.Until(start) + time.Minute)
+	expect(t, c.do(http.MethodDelete, c.base()+"/bookings/"+id, env.BookKey, nil), http.StatusConflict, "BOOKING_STARTED")
+	if _, ok := findInterval(c.occupancy(d, d.AddDate(0, 0, 1), court), id); !ok {
+		t.Fatalf("the started booking %s no longer occupies the court", id)
+	}
 }
 
 func testPayment(t *testing.T, env *Env) {

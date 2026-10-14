@@ -2,11 +2,13 @@ package demo_test
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
@@ -46,8 +48,13 @@ var demoClub = testkit.Club("demo-club", "Демо-клуб", "Корт 1", "К�
 // no hub: what the API itself promises.
 func TestContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		b := contract.Build(t, testkit.DemoCRM, demoClub, nil, "demo", demo.New, nil)
-		return demoEnv(b.Handler(), "demo-club", nil, b.Server, b.Logs.String)
+		var mu sync.Mutex
+		now := time.Now()
+		clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+		b := contract.Build(t, testkit.DemoCRM, demoClub, nil, "demo", demo.New, func(c *driver.Config) { c.Now = clock })
+		env := demoEnv(b.Handler(), "demo-club", nil, b.Server, b.Logs.String)
+		env.Advance = func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+		return env
 	})
 }
 

@@ -684,27 +684,6 @@ func TestConcurrentCreatesOfOneRoom(t *testing.T) {
 	}
 }
 
-// A booking that has started is not cancelled, with its own code; the
-// record stays in the CRM.
-func TestCancelRefusedOnceTheBookingStarted(t *testing.T) {
-	start := futureDay().Add(9 * time.Hour)
-	clk := &clock{t: start.Add(-24 * time.Hour)}
-	f := newFixture(t, fixtureOpts{now: clk.now})
-	st, m, raw := call(t, f, http.MethodPost, "/v1/clubs/test-club/bookings", contract.BookKey, createBody(start, "game", ""))
-	if st != http.StatusCreated {
-		t.Fatalf("%d %s", st, raw)
-	}
-	id := m["id"].(string)
-	clk.add(24 * time.Hour) // the start itself
-	st, m, raw = call(t, f, http.MethodDelete, "/v1/clubs/test-club/bookings/"+id, contract.BookKey, "")
-	if st != http.StatusConflict || m["code"] != "BOOKING_STARTED" {
-		t.Fatalf("%d %s", st, raw)
-	}
-	if br := f.stub.Break(strings.TrimPrefix(id, "b-")); br == nil || br["canceled"] == true {
-		t.Fatalf("the started booking was cancelled: %v", br)
-	}
-}
-
 // A quote across a midnight the clocks skip, end to end through the Viva
 // driver and the API, finishes and charges the one hour that passes.
 func TestQuoteAcrossSkippedMidnight(t *testing.T) {

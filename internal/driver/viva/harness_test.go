@@ -176,14 +176,20 @@ var bookingService = map[string]map[string]any{"booking": {"direction": 12, "typ
 // service for games (exercises) and none for tournaments (breaks).
 func TestContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		return newFixture(t, fixtureOpts{services: bookingService}).env()
+		clk := &clock{t: time.Now()}
+		env := newFixture(t, fixtureOpts{services: bookingService, now: clk.now}).env()
+		env.Advance = clk.add
+		return env
 	})
 }
 
 // And again with no services at all: every booking becomes a break.
 func TestContractBreaksOnly(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		return newFixture(t, fixtureOpts{}).env()
+		clk := &clock{t: time.Now()}
+		env := newFixture(t, fixtureOpts{now: clk.now}).env()
+		env.Advance = clk.add
+		return env
 	})
 }
 
