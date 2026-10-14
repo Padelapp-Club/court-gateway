@@ -71,6 +71,9 @@ const (
 	UpstreamUnavailable UpstreamKind = iota
 	// UpstreamAuth: the CRM rejected the gateway's credentials.
 	UpstreamAuth
+	// UpstreamLogin: the CRM refused a login for another reason than the
+	// credentials (a 4xx that does not say so): retried like an outage.
+	UpstreamLogin
 	// UpstreamInvalid: the CRM answered with a body the driver cannot
 	// interpret. The core must never turn this into "everything is free".
 	UpstreamInvalid

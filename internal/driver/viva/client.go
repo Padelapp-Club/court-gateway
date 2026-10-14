@@ -24,9 +24,10 @@ const (
 	// After a login that failed for another reason than the password (the
 	// CRM unreachable, 5xx, a timeout) the next attempt waits loginRetry,
 	// doubling with every failure in a row up to loginRetryMax; until then
-	// calls fail fast with that error. A rejected login (wrong password)
-	// is not tried again at all until the password changes (setPassword),
-	// so a wrong password cannot get the account locked.
+	// calls fail fast with that error. A rejected login (Keycloak's
+	// invalid_grant: a wrong password) is not tried again at all until the
+	// password changes (setPassword), so a wrong password cannot get the
+	// account locked; any other refusal of the login is retried.
 	loginRetry    = 5 * time.Second
 	loginRetryMax = time.Minute
 )
@@ -97,6 +98,14 @@ func (c *client) setPassword(p string) {
 	c.rejected, c.loginErr, c.failures, c.retryAt = nil, nil, 0, time.Time{}
 }
 
+// rejectedPassword reports whether logins are stopped after the CRM
+// rejected the password.
+func (c *client) rejectedPassword() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rejected != nil
+}
+
 // studioList returns the account's studios: read once per evaluation
 // (driver.Shared), so the clubs of one readiness round or one config share
 // it, and never reused after it.
@@ -136,7 +145,13 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 	case core.IsRedirect(resp.StatusCode):
 		return "", redirected("login", resp.StatusCode)
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d", resp.StatusCode))
+		var kc struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &kc) == nil && kc.Error == "invalid_grant" {
+			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d (invalid_grant)", resp.StatusCode))
+		}
+		return "", driver.Upstream(driver.UpstreamLogin, fmt.Sprintf("login refused with HTTP %d", resp.StatusCode))
 	default:
 		return "", driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("login answered HTTP %d", resp.StatusCode))
 	}

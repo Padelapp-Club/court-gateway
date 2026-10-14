@@ -269,7 +269,7 @@ func classify(err error) (int, string, string) {
 		switch ue.Kind {
 		case driver.UpstreamInvalid:
 			return http.StatusBadGateway, "UPSTREAM_INVALID", "the club's CRM returned a response the gateway cannot interpret"
-		case driver.UpstreamAuth:
+		case driver.UpstreamAuth, driver.UpstreamLogin:
 			return http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM"
 		case driver.UpstreamRejected:
 			return http.StatusBadGateway, "UPSTREAM_REJECTED", "the club's CRM rejected the request"
@@ -321,6 +321,8 @@ func ReadyReason(err error) string {
 		switch ue.Kind {
 		case driver.UpstreamAuth:
 			return "CRM_AUTH_FAILED"
+		case driver.UpstreamLogin:
+			return "CRM_AUTH_ERROR"
 		case driver.UpstreamInvalid:
 			return "CRM_INVALID_RESPONSE"
 		case driver.UpstreamRejected:

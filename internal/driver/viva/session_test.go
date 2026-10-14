@@ -179,6 +179,44 @@ func TestUnavailableLoginIsTriedAgainWithinAMinute(t *testing.T) {
 	}
 }
 
+// Only Keycloak's invalid_grant is a rejected password. Any other refusal
+// of the login (a 400, 401 or 403 that does not say invalid_grant: a
+// proxy, a firewall, a changed client) is retried like an outage, with
+// readiness CRM_AUTH_ERROR, and does not stop the logins.
+func TestOnlyInvalidGrantStopsLogins(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+	clk := &clock{t: time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)}
+	acct, err := viva.NewAccount(driver.Config{
+		CRM:      driver.Params{"username": stubUser, "auth_url": srv.URL + "/token", "api_url": srv.URL + "/api/v1"},
+		Password: stubPass, HTTPClient: srv.Client(), Now: clk.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := acct.(driver.PasswordSetter)
+	for _, refusal := range []struct {
+		status int
+		body   string
+	}{{http.StatusUnauthorized, `{"error":"unauthorized_client"}`}, {http.StatusForbidden, `<html>blocked</html>`}, {http.StatusBadRequest, `{"error":"invalid_request"}`}} {
+		stub.FailNext("POST", "/token", refusal.status, refusal.body)
+		before := stub.LoginAttempts()
+		if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_ERROR" || ps.PasswordRejected() {
+			t.Fatalf("HTTP %d %s: %s, rejected %v", refusal.status, refusal.body, core.ReadyReason(err), ps.PasswordRejected())
+		}
+		clk.add(time.Minute)
+		if err := acct.CheckLogin(context.Background()); err != nil || stub.LoginAttempts() != before+2 {
+			t.Fatalf("HTTP %d: not logged in again after the wait: %v", refusal.status, err)
+		}
+		stub.RevokeTokens()
+	}
+	ps.SetPassword("wrong-password-0000") // the stub answers invalid_grant
+	if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" || !ps.PasswordRejected() {
+		t.Fatalf("invalid_grant: %v, rejected %v", err, ps.PasswordRejected())
+	}
+}
+
 // A club's studio and rooms are checked against the account when the
 // hub's config is applied: a club that does not match is refused with its
 // reason, the others are served. A club whose time zone is not the

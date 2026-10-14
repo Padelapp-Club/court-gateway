@@ -43,6 +43,9 @@ func NewAccount(cfg driver.Config) (driver.Account, error) {
 // club driver sharing its session.
 func (a *Account) SetPassword(p string) { a.c.setPassword(p) }
 
+// PasswordRejected implements driver.PasswordSetter.
+func (a *Account) PasswordRejected() bool { return a.c.rejectedPassword() }
+
 // CheckLogin implements driver.Account: it logs in if needed and makes
 // one cheap call (GET /studios), so a cached token the CRM no longer
 // accepts, or an unreachable API, is noticed even while no club is

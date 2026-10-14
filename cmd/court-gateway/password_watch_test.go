@@ -18,6 +18,8 @@ type passwordAccount struct {
 
 func (a *passwordAccount) SetPassword(p string) { a.set = append(a.set, p) }
 
+func (*passwordAccount) PasswordRejected() bool { return false }
+
 func (*passwordAccount) CheckLogin(context.Context) error { return nil }
 
 // The running service re-reads the CRM password when set-password rewrites

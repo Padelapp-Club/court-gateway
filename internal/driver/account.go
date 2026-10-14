@@ -21,9 +21,11 @@ type Account interface {
 
 // PasswordSetter is implemented by accounts that take a new CRM password
 // while running (the gateway re-reads .env after set-password): it ends a
-// stop after a rejected login.
+// stop after a rejected login. PasswordRejected reports that stop: the
+// CRM rejected the password, and nothing logs in until it changes.
 type PasswordSetter interface {
 	SetPassword(password string)
+	PasswordRejected() bool
 }
 
 // AccountFactory builds an Account. Config carries CRM, Password, Logger,
