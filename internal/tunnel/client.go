@@ -188,10 +188,6 @@ func (c *Client) Connected() bool { return c.okPolls.Load() > 0 }
 // Unauthorized reports whether the hub's last answer rejected the secret.
 func (c *Client) Unauthorized() bool { return c.authFail.Load() }
 
-// Refused counts the requests and configs refused because the hub did
-// not sign them for this gateway (heartbeats report it).
-func (c *Client) Refused() int64 { return c.refused.Load() }
-
 // Duplicate reports whether the hub's last answer refused this copy
 // because another one with the same secret is connected.
 func (c *Client) Duplicate() bool { return c.dup.Load() }
