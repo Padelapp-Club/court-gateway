@@ -138,6 +138,17 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 				last = dateTo
 			}
 			part, whole, err := d.list(ctx, kind, f, last)
+			if err == nil && !whole && last.After(f) {
+				// a page-sized list may be a first page: asked once more day
+				// by day, it is whole when no day's list is page-sized
+				part, whole = nil, true
+				for g := f; err == nil && !g.After(last); g = g.AddDate(0, 0, 1) {
+					var p []slot
+					var w bool
+					p, w, err = d.list(ctx, kind, g, g)
+					part, whole = append(part, p...), whole && w
+				}
+			}
 			if err != nil {
 				return driver.Occupancy{}, err
 			}

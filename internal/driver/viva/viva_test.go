@@ -762,10 +762,10 @@ func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 	}
 }
 
-// Viva's lists are taken to be whole; a list exactly as long as a page a
-// paging CRM would cut it to may be a first page, so the occupancy is
-// incomplete and nothing is booked on it.
-func TestPageSizedListIsIncomplete(t *testing.T) {
+// Viva's lists are taken to be whole. A list exactly as long as a page a
+// paging CRM would cut it to may be a first page: it is asked again day by
+// day, and the occupancy is complete only when no day's list is as long.
+func TestPageSizedListIsAskedAgainByDay(t *testing.T) {
 	d := futureMidnight()
 	from, to := d.Add(12*time.Hour), d.Add(13*time.Hour)
 	list := func(n int) string {
@@ -777,11 +777,16 @@ func TestPageSizedListIsIncomplete(t *testing.T) {
 		}
 		return "[" + strings.Join(items, ",") + "]"
 	}
-	for n, complete := range map[int]bool{99: true, 100: false, 101: true} {
+	for _, c := range []struct {
+		answers  []int // the range's list, then the days' (the rest empty)
+		complete bool
+	}{{[]int{99}, true}, {[]int{101}, true}, {[]int{100}, true}, {[]int{100, 100}, false}} {
 		f := newFixture(t, fixtureOpts{})
-		f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, list(n))
-		if st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to)+"&court=court-1", contract.ReadKey, ""); st != http.StatusOK || m["complete"] != complete {
-			t.Fatalf("a list of %d: %d %.200s, want complete %v", n, st, raw, complete)
+		for _, n := range c.answers {
+			f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, list(n))
+		}
+		if st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to)+"&court=court-1", contract.ReadKey, ""); st != http.StatusOK || m["complete"] != c.complete {
+			t.Fatalf("lists of %v: %d %.200s, want complete %v", c.answers, st, raw, c.complete)
 		}
 	}
 }
