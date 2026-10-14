@@ -30,8 +30,9 @@ human. Do not improvise around a failure.
    commit or upload `gateway.yaml` or `.env` anywhere.
 5. Use the official release binary and verify its checksum (step 2). Build from source only if the
    human asks.
-6. The machine's clock should be roughly right (automatic time on): the gateway tolerates up to an
-   hour off the hub; further off it reports `CLOCK_SKEW` — tell the human to fix the clock.
+6. The machine's clock should be roughly right (automatic time on): every decision on "now" uses
+   the hub's signed time, so up to an hour off is harmless; further off the gateway reports
+   `CLOCK_SKEW` and runs nothing the hub sends — tell the human to fix the clock.
 
 **Success** = `court-gateway doctor --json` exits `0` with no `fail` (a `warn` on
 `VERSION_CURRENT` or `SECRETS_FILE` is acceptable; `CRM_OCCUPANCY` is `skip` until the operator

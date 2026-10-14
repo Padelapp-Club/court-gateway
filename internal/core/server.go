@@ -25,11 +25,13 @@ const driverTimeout = 30 * time.Second
 // Server is the partner API of one club around its driver. Clubs serves
 // every club of an installation and adds health, auth and the club list.
 type Server struct {
-	cfg  *Settings
-	drv  driver.Driver
-	log  *slog.Logger
-	now  func() time.Time
-	caps driver.Capabilities
+	cfg *Settings
+	drv driver.Driver
+	log *slog.Logger
+	// clock is the hub's time (driver.Config.Clock): "now" of every
+	// booking decision
+	clock driver.Clock
+	caps  driver.Capabilities
 	// mismatch: the last readiness check found the club's config does not
 	// match its CRM; partners get 503 until a check passes again.
 	mismatch atomic.Bool
@@ -54,11 +56,7 @@ func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	now := cfg.Driver.Now
-	if now == nil {
-		now = time.Now
-	}
-	return &Server{cfg: cfg, drv: drv, log: log, now: now, caps: drv.Capabilities()}
+	return &Server{cfg: cfg, drv: drv, log: log, clock: cfg.Driver.DecisionClock(), caps: drv.Capabilities()}
 }
 
 func (s *Server) Settings() *Settings { return s.cfg }
@@ -257,6 +255,8 @@ func classify(err error) (int, string, string) {
 		return http.StatusForbidden, "NOT_OWNED", "the booking was not created through this gateway by this partner"
 	case errors.Is(err, driver.ErrCourtNotConfigured):
 		return http.StatusConflict, "COURT_NOT_CONFIGURED", "the booking is on a court that is not configured for this club"
+	case errors.Is(err, driver.ErrClockUnknown):
+		return http.StatusServiceUnavailable, "CLOCK_UNKNOWN", "the club's gateway does not know the hub's time yet, retry"
 	case errors.Is(err, driver.ErrStarted):
 		return http.StatusConflict, "BOOKING_STARTED", "the booking has already started and cannot be cancelled"
 	case errors.Is(err, driver.ErrSlotUnavailable):

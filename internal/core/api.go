@@ -318,7 +318,13 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end must be on the club's slot grid")
 		return
 	}
-	if !start.After(s.now()) {
+	now, known := s.clock()
+	if !known {
+		w.Header().Set("Retry-After", "5")
+		s.driverError(w, r, "create", driver.ErrClockUnknown)
+		return
+	}
+	if !start.After(now) {
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start must be in the future")
 		return
 	}

@@ -108,9 +108,11 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 	if err != nil {
 		return driver.Occupancy{}, err
 	}
-	occ := driver.Occupancy{Complete: true}
+	// without the hub's time the CRM's "today" is not known: incomplete
+	now, known := d.clock()
+	occ := driver.Occupancy{Complete: known}
 	for _, kind := range []string{"exercises", "breaks"} {
-		dateFrom, dateTo, complete := d.window(kind, loc, q.From, q.To, d.now())
+		dateFrom, dateTo, complete := d.window(kind, loc, q.From, q.To, now)
 		occ.Complete = occ.Complete && complete
 		step := listDays
 		if kind == "breaks" {
@@ -203,7 +205,8 @@ func (d *Driver) Ready(ctx context.Context) error {
 	if alert != nil && !errors.As(alert, &ca) {
 		return alert
 	}
-	today := day(d.now(), d.zone(st))
+	now, _ := d.clock()
+	today := day(now, d.zone(st))
 	rooms := map[string]string{d.courts[0].room: ""}
 	for _, kind := range []string{"exercises", "breaks"} {
 		items, err := d.list(ctx, kind, today, today)

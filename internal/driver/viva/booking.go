@@ -213,9 +213,14 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	if err := d.checkOwnership(kind, raw, partner); err != nil {
 		return err
 	}
-	if start, ok := parseTime(s.TimeFrom); !ok {
+	start, ok := parseTime(s.TimeFrom)
+	now, known := d.clock()
+	switch {
+	case !ok:
 		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no valid timeFrom")
-	} else if !start.After(d.now()) {
+	case !known:
+		return driver.ErrClockUnknown
+	case !start.After(now):
 		return driver.ErrStarted
 	}
 	status, _, err := d.c.do(ctx, http.MethodDelete, "/"+kind+"/"+uuid, nil, nil)

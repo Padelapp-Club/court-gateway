@@ -67,7 +67,7 @@ type Driver struct {
 	byCourt    map[string]court
 	services   map[driver.Kind]*service
 	log        *slog.Logger
-	now        func() time.Time
+	clock      driver.Clock // the hub's time, for every decision on "now"
 }
 
 var _ driver.Driver = (*Driver)(nil)
@@ -153,7 +153,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		byCourt:    map[string]court{},
 		services:   map[driver.Kind]*service{},
 		log:        cfg.Logger,
-		now:        c.now,
+		clock:      cfg.DecisionClock(),
 	}
 	if d.log == nil {
 		d.log = slog.New(slog.DiscardHandler)
@@ -297,7 +297,8 @@ func (d *Driver) check(st *vivaStudio) error {
 	if len(problems) > 0 {
 		return &driver.MisconfigError{Problems: problems}
 	}
-	if at, differ := driver.ZonesDiffer(d.loc, d.zone(st), d.now(), driver.ZoneHorizon); differ {
+	now, _ := d.clock()
+	if at, differ := driver.ZonesDiffer(d.loc, d.zone(st), now, driver.ZoneHorizon); differ {
 		want := cmp.Or(zoneForOffset(st.Offset), fmt.Sprintf("UTC%+g", *st.Offset))
 		return &driver.ConfigAlert{Code: "TIMEZONE_MISMATCH", Problems: []string{fmt.Sprintf(
 			"timezone: часовой пояс клуба %s с %s расходится со студией Viva (UTC%+g): занятость и цены шлюз читает по студии, а время партнёрам показывает в %s — задайте клубу пояс студии (%s) или зону города с тем же смещением круглый год",

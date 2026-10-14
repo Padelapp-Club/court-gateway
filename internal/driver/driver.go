@@ -31,7 +31,17 @@ var (
 	// ErrCourtNotConfigured: the booking is on a court (a CRM room) that
 	// is not a court of the club's config, e.g. one removed from it.
 	ErrCourtNotConfigured = errors.New("booking is on a court that is not configured")
+	// ErrClockUnknown: the time now is not known (Clock), so a decision
+	// that depends on it is not made.
+	ErrClockUnknown = errors.New("the hub's time is not known yet")
 )
+
+// Clock is the time every booking decision is made on: the hub's, as the
+// hub last signed it (tunnel.Verifier.Now), so a club computer whose clock
+// is off decides as the hub does. known is false until the gateway knows
+// it; now is then this computer's time, and a decision that depends on it
+// is not made (ErrClockUnknown) or its answer is incomplete.
+type Clock func() (now time.Time, known bool)
 
 // MisconfigError says, in Russian, what in a club's config does not match
 // the CRM (a studio or a room that is not in the account, another time
@@ -196,12 +206,28 @@ type Config struct {
 	// Proxy when that is set.
 	HTTPClient *http.Client
 	Proxy      func(*http.Request) (*url.URL, error)
-	// Now is optional; drivers use time.Now when nil.
+	// Now is this computer's clock, for durations (a login token's
+	// lifetime); time.Now when nil.
 	Now func() time.Time
+	// Clock is the time of booking decisions; nil takes Now as known
+	// (tests and the local commands, which make none). See DecisionClock.
+	Clock Clock
 	// Account is the installation's CRM account, when there is one: a
 	// club's driver may share its CRM session, so the account and all its
 	// clubs log in once.
 	Account Account
+}
+
+// DecisionClock is c.Clock, or c.Now (time.Now) taken as known.
+func (c Config) DecisionClock() Clock {
+	if c.Clock != nil {
+		return c.Clock
+	}
+	now := c.Now
+	if now == nil {
+		now = time.Now
+	}
+	return func() (time.Time, bool) { return now(), true }
 }
 
 // Factory builds a driver or returns a config error with a message for the

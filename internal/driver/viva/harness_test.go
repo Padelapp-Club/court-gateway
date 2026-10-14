@@ -67,8 +67,10 @@ type fixtureOpts struct {
 	services   map[string]map[string]any // nil = none
 	password   string                    // CRM_PASSWORD; empty = the stub's
 	now        func() time.Time
-	installCRM string         // more installation-level crm keys, YAML
-	clubCRM    map[string]any // more club-level crm keys
+	crmNow     func() time.Time // the stub's own clock, when it is not now
+	clock      driver.Clock     // the hub's time; nil takes now
+	installCRM string           // more installation-level crm keys, YAML
+	clubCRM    map[string]any   // more club-level crm keys
 }
 
 // crmYAML is the installation's crm section.
@@ -97,8 +99,8 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	stub.AddRoom(room2, "Room two")
 	stub.AddRoom(roomOther, "Room elsewhere")
 	stub.SetPricing(priceList, pricingJSON)
-	if o.now != nil {
-		stub.Now = o.now
+	if stub.Now = o.now; o.crmNow != nil {
+		stub.Now = o.crmNow
 	}
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
@@ -108,6 +110,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 		if o.now != nil {
 			c.Now = o.now
 		}
+		c.Clock = o.clock
 	})
 	return &fixture{stub: stub, srv: srv, built: b, drv: b.Driver.(*viva.Driver)}
 }

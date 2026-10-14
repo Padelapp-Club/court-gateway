@@ -95,6 +95,14 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	canUpdate := vers.Writable()
 
 	s.Driver.Logger = log
+	// the hub's signed time: what the tunnel checks signatures against and
+	// the clubs take "now" from
+	verifier, err := tunnel.NewVerifier(s.Hub.Key, s.Hub.Installation, s.Hub.Secret, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
+		return 2
+	}
+	s.Driver.Clock = verifier.Now
 	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
@@ -118,7 +126,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		return 2
 	}
 	client, err := tunnel.NewClient(tunnel.ClientConfig{
-		HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
+		HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation, Verifier: verifier,
 		Polls: s.Hub.Polls, Handler: clubs.TunnelHandler(),
 		Version: version, Build: build(), Platform: update.Platform(), Logger: log,
 		Transport: tunnel.NewTransport(roots, s.Hub.Proxy), OnConfigVersion: syncer.Notify,
@@ -160,7 +168,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		clockSkewed := false
 		for {
 			password.check()
-			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset()}
+			_, clockKnown := verifier.Now()
+			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown}
 			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
 				clockSkewed = skewed
 				if skewed {
@@ -378,6 +387,7 @@ type hubState struct {
 	configRefused bool          // a club of the hub's config does not load
 	configBehind  time.Duration // how long the hub's config version has not been applied
 	clockOffset   time.Duration // the hub's clock minus this computer's, as the hub signed it
+	clockKnown    bool          // the hub's time is known (tunnel.Verifier.Now)
 }
 
 func (h hubState) String() string {
@@ -400,6 +410,9 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "DUPLICATE_GATEWAY"
 	case h.clockOffset.Abs() > tunnel.MaxClockSkew:
 		return false, "CLOCK_SKEW"
+	case h.connected && !h.clockKnown:
+		return false, "CLOCK_UNKNOWN" // the hub sends no signed time: nothing is booked
+
 	case !h.connected && h.silentFor > hubOfflineAfter:
 		return false, "HUB_UNREACHABLE"
 	case h.configBehind > configPendingAfter:

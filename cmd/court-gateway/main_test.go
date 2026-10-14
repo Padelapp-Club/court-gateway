@@ -113,7 +113,7 @@ func TestHubExampleConfigIsValid(t *testing.T) {
 // than the hub's offline threshold, a club config refused, or a clock too
 // far off the hub's to be corrected.
 func TestReadinessIncludesTheHub(t *testing.T) {
-	ok := hubState{connected: true}
+	ok := hubState{connected: true, clockKnown: true}
 	cases := []struct {
 		name     string
 		crmReady bool
@@ -127,11 +127,12 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		{"another copy serves", true, hubState{duplicate: true}, false, "DUPLICATE_GATEWAY"},
 		{"hub gone briefly", true, hubState{silentFor: time.Minute}, true, ""},
 		{"hub gone for long", true, hubState{silentFor: hubOfflineAfter + time.Second}, false, "HUB_UNREACHABLE"},
-		{"config refused", true, hubState{connected: true, configRefused: true}, false, "CONFIG_REFUSED"},
-		{"config not pulled briefly", true, hubState{connected: true, configBehind: time.Minute}, true, ""},
-		{"config not pulled for long", true, hubState{connected: true, configBehind: configPendingAfter + time.Second}, false, "CONFIG_PENDING"},
-		{"clock a little off", true, hubState{connected: true, clockOffset: -10 * time.Minute}, true, ""},
+		{"config refused", true, hubState{connected: true, clockKnown: true, configRefused: true}, false, "CONFIG_REFUSED"},
+		{"config not pulled briefly", true, hubState{connected: true, clockKnown: true, configBehind: time.Minute}, true, ""},
+		{"config not pulled for long", true, hubState{connected: true, clockKnown: true, configBehind: configPendingAfter + time.Second}, false, "CONFIG_PENDING"},
+		{"clock a little off", true, hubState{connected: true, clockKnown: true, clockOffset: -10 * time.Minute}, true, ""},
 		{"clock far off", true, hubState{connected: true, clockOffset: -2 * time.Hour}, false, "CLOCK_SKEW"},
+		{"no signed hub time", true, hubState{connected: true}, false, "CLOCK_UNKNOWN"},
 	}
 	for _, c := range cases {
 		reason := ""
