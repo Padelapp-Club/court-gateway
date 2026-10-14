@@ -1,20 +1,55 @@
 package viva_test
 
 import (
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
+	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
-// The privacy suite (and the rest of the contract) through the hub: a club
-// booking full of personal data sits in the CRM stub, and nothing of it may
-// reach a partner or a log line on the gateway or the hub.
-func TestContractThroughHub(t *testing.T) {
+// The contract, privacy included, through the hub for an installation with
+// two clubs configured on the hub: the CRM login is the installation's,
+// each club adds its own studio, courts and services. The suite runs
+// against one club while the other is served by the same gateway.
+func TestContractMultiClubThroughHub(t *testing.T) {
 	contract.Run(t, func(t *testing.T) *contract.Env {
-		f := newFixture(t, fixtureOpts{services: bookingService})
-		env := f.env()
-		env.Handler, env.Logs = testkit.ThroughHub(t, f.built)
-		return env
+		stub := vivastub.New(stubUser, stubPass, studio)
+		stub.AddRoom(room1, "Room one")
+		stub.AddRoom(room2, "Room two")
+		stub.AddRoom(roomOther, "Room elsewhere")
+		stub.SetPricing(priceList, pricingJSON)
+		srv := httptest.NewServer(stub)
+		t.Cleanup(srv.Close)
+		h := testkit.StartHub(t, "poll_wait: 2s\n"+testkit.OperatorYAML+testkit.HubPartnersYAML, testkit.HubEnv(), hub.Options{})
+		main := testClub(fixtureOpts{services: bookingService})
+		other := core.ClubSpec{ID: "other-club", Name: "Другой клуб", Timezone: "Europe/Moscow", SlotMinutes: 60, Hours: main.Hours,
+			CRM:    map[string]any{"studio": studio},
+			Courts: []core.CourtSpec{{ID: "court-1", Name: "Корт", Params: map[string]any{"viva_room": roomOther}}}}
+		in := testkit.StartInstallation(t, h, "viva-net", testkit.InstallationOptions{
+			CRMYAML: "crm: { type: viva, username: " + stubUser + ", auth_url: " + srv.URL + "/token, api_url: " + srv.URL + "/api/v1 }\n",
+			Env:     map[string]string{"CRM_PASSWORD": stubPass}, CRMType: "viva", Factory: viva.New, Account: viva.NewAccount,
+			Hook:  func(c *driver.Config) { c.HTTPClient = srv.Client() },
+			Clubs: []core.ClubSpec{main, other},
+		})
+		f := &fixture{stub: stub, srv: srv}
+		s, _ := in.Clubs.Server("test-club")
+		return &contract.Env{
+			Handler: h.Forwarder(t), Club: "test-club", OtherClubs: []string{"other-club"},
+			ReadKey: contract.ReadKey, BookKey: contract.BookKey, OtherBookKey: contract.OtherBookKey,
+			Courts: []string{"court-1", "court-2"}, Location: s.Settings().Location, SlotMinutes: 30,
+			SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
+				return "e-" + f.seedClubBooking(roomFor(court), start, end)
+			},
+			Price:          priceCase,
+			Logs:           func() string { return in.Logs.String() + h.Logs.String() },
+			PrivacyMarkers: privacyMarkers,
+		}
 	})
 }

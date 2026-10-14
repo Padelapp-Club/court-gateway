@@ -25,12 +25,17 @@ const (
 	bookKey = "book-key-0123456789abcdef"
 )
 
+func writeStatus(w http.ResponseWriter, _ *http.Request, status int, code, _ string) {
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(code))
+}
+
 func setup(t *testing.T, clk *fakeClock) http.Handler {
 	t.Helper()
 	a, err := New([]Partner{
 		{Name: "reader", Key: readKey, Scopes: []Scope{ScopeRead}},
 		{Name: "booker", Key: bookKey, Scopes: []Scope{ScopeRead, ScopeBook}, WritesPerMinute: 3},
-	}, Options{Now: clk.now})
+	}, Options{Now: clk.now, WriteError: writeStatus})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,8 +126,53 @@ func TestNewRejectsBadPartners(t *testing.T) {
 		{{Name: "a", Key: "k"}, {Name: "b", Key: "k"}},
 	}
 	for i, ps := range bad {
-		if _, err := New(ps, Options{}); err == nil {
+		if _, err := New(ps, Options{WriteError: writeStatus}); err == nil {
 			t.Fatalf("case %d accepted", i)
 		}
+	}
+}
+
+// One key may have only so many requests in flight, reads included; the
+// next one is refused at once (429), other keys are not affected, and a
+// finished request frees its place.
+func TestRequestsInFlightPerKey(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 10)
+	a, err := New([]Partner{
+		{Name: "reader", Key: readKey, Scopes: []Scope{ScopeRead}},
+		{Name: "booker", Key: bookKey, Scopes: []Scope{ScopeRead, ScopeBook}},
+	}, Options{WriteError: writeStatus})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := a.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			entered <- struct{}{}
+			<-release
+		}
+	}))
+	get := func(key, path string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < maxInFlight; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); get(readKey, "/slow") }()
+		<-entered
+	}
+	if code := get(readKey, "/fast"); code != http.StatusTooManyRequests {
+		t.Fatalf("one request of the same key too many: %d", code)
+	}
+	if code := get(bookKey, "/fast"); code != http.StatusOK {
+		t.Fatalf("another key: %d", code)
+	}
+	close(release)
+	wg.Wait()
+	if code := get(readKey, "/fast"); code != http.StatusOK {
+		t.Fatalf("after the slow ones finished: %d", code)
 	}
 }

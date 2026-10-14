@@ -3,21 +3,18 @@
 package update
 
 import (
-	"os"
+	"context"
 	"syscall"
 )
 
-// ErrRestartRequired is returned by Exec where a process cannot replace
-// itself; the caller exits and the service manager starts the new binary.
-var ErrRestartRequired = errorString("restart required to run the new binary")
+// Handover replaces the current process with path (the same pid for the
+// service manager). It returns only when that fails.
+func Handover(_ context.Context, path string, args, env []string) (int, error) {
+	return 0, syscall.Exec(path, append([]string{path}, args...), env)
+}
 
-type errorString string
-
-func (e errorString) Error() string { return string(e) }
-
-// Exec replaces the current process with path, keeping the arguments and
-// the environment plus extra variables.
-func Exec(path string, args []string, extraEnv ...string) error {
-	argv := append([]string{path}, args...)
-	return syscall.Exec(path, argv, append(os.Environ(), extraEnv...))
+// Restart starts the installed binary again in place of this process; it
+// then runs the version that is current. It returns only when that fails.
+func Restart(installed string, args []string) error {
+	return syscall.Exec(installed, append([]string{installed}, args...), baseEnv())
 }

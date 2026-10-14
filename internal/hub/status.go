@@ -21,25 +21,22 @@ import (
 //	status.json  {"ts":"…","ok":true|false,"version":"…","checks":[{"check":"<name>","ok":true|false,"detail":"<text>"}, …]}
 //	metrics      key=number lines
 //
-// A metric key matches [a-z][a-z0-9_]*, a value is a plain decimal number
-// with at most 15 digits, and no key repeats. The checker decides how and
-// where to alert; the hub only reports. Nothing secret is written: details
-// are built from the club id and name, times, the gateway's version and
-// build and fixed reason codes.
+// A metric key matches [a-z][a-z0-9_]* and no key repeats: keys are built
+// by MetricKey from installation ids, which cannot collide, and values are
+// integers. The checker decides how and where to alert; the hub only
+// reports. Nothing secret is written: details are built from the
+// installation id and name, times, the gateway's version and build and
+// fixed reason codes.
 const (
 	StatusFile  = "status.json"
 	MetricsFile = "metrics"
 )
 
-var (
-	metricKeyRe   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-	metricValueRe = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
-	keyBadChars   = regexp.MustCompile(`[^a-z0-9_]`)
-)
+var keyBadChars = regexp.MustCompile(`[^a-z0-9_]`)
 
 // MetricKey turns parts into a metric or check name: lower case, every
-// character outside [a-z0-9_] becomes "_". Club ids hold only [a-z0-9-],
-// so "club_" + id is injective over valid ids.
+// character outside [a-z0-9_] becomes "_". Installation ids hold only
+// [a-z0-9-], so "installation_" + id is injective over valid ids.
 func MetricKey(parts ...string) string {
 	k := keyBadChars.ReplaceAllString(strings.ToLower(strings.Join(parts, "_")), "_")
 	if k == "" || k[0] < 'a' || k[0] > 'z' {
@@ -61,28 +58,12 @@ type statusDoc struct {
 	Checks  []statusCheck `json:"checks"`
 }
 
-// metricSet collects metrics in order and keeps only well-formed,
-// first-seen keys.
-type metricSet struct {
-	lines   []string
-	seen    map[string]bool
-	dropped []string
-}
+// metricSet collects metric lines in order.
+type metricSet struct{ lines []string }
 
-func (s *metricSet) add(key string, value string) {
-	digits := strings.NewReplacer("-", "", ".", "").Replace(value)
-	if !metricKeyRe.MatchString(key) || !metricValueRe.MatchString(value) || len(digits) > 15 || s.seen[key] {
-		s.dropped = append(s.dropped, key)
-		return
-	}
-	if s.seen == nil {
-		s.seen = map[string]bool{}
-	}
-	s.seen[key] = true
-	s.lines = append(s.lines, key+"="+value)
+func (s *metricSet) addInt(key string, v int64) {
+	s.lines = append(s.lines, key+"="+strconv.FormatInt(v, 10))
 }
-
-func (s *metricSet) addInt(key string, v int64) { s.add(key, strconv.FormatInt(v, 10)) }
 
 func (s *metricSet) addBool(key string, v bool) {
 	if v {
@@ -93,23 +74,14 @@ func (s *metricSet) addBool(key string, v bool) {
 }
 
 func (s *metricSet) bytes() []byte {
-	if len(s.lines) == 0 {
-		return nil
-	}
 	return []byte(strings.Join(s.lines, "\n") + "\n")
 }
 
 // buildStatus renders both files' contents.
-func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []byte, []string) {
+func buildStatus(now time.Time, o statusOptions, views []installationView) ([]byte, []byte) {
 	doc := statusDoc{TS: now.UTC().Format(time.RFC3339), OK: true, Version: o.version, Checks: []statusCheck{}}
 	var ms metricSet
-	checkNames := map[string]bool{}
 	check := func(name string, ok bool, detail string) {
-		if checkNames[name] {
-			ms.dropped = append(ms.dropped, name)
-			return
-		}
-		checkNames[name] = true
 		doc.Checks = append(doc.Checks, statusCheck{Check: name, OK: ok, Detail: detail})
 		if !ok {
 			doc.OK = false
@@ -119,10 +91,11 @@ func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []by
 	var online, ready int64
 	for _, v := range views {
 		st := v.state
-		id := MetricKey("club", v.Club)
+		id := MetricKey("installation", v.Installation)
 		isOnline := st != StateOffline
 		check(id+"_online", isOnline, onlineDetail(v, now, o.offlineAfter))
 		check(id+"_ready", st != StateNotReady, readyDetail(v, o.readyFailures))
+		check(id+"_single", !v.duplicate, singleDetail(v))
 		if isOnline {
 			online++
 		}
@@ -132,18 +105,19 @@ func buildStatus(now time.Time, o statusOptions, views []clubView) ([]byte, []by
 		if !v.lastBeat.IsZero() {
 			ms.addInt(id+"_last_seen_age_seconds", int64(now.Sub(v.lastBeat)/time.Second))
 		}
+		ms.addInt(id+"_refused_requests", v.refused)
 		ms.addBool(id+"_outdated", o.latest != "" && v.version != "" && version.Compare(v.version, o.latest) < 0)
 	}
-	ms.addInt("clubs_total", int64(len(views)))
-	ms.addInt("clubs_online", online)
-	ms.addInt("clubs_ready", ready)
+	ms.addInt("installations_total", int64(len(views)))
+	ms.addInt("installations_online", online)
+	ms.addInt("installations_ready", ready)
 	ms.addBool("status_ok", doc.OK)
 	ms.addInt("run_last_utc_epoch", now.Unix())
 	data, _ := json.Marshal(doc)
-	return append(data, '\n'), ms.bytes(), ms.dropped
+	return append(data, '\n'), ms.bytes()
 }
 
-func onlineDetail(v clubView, now time.Time, offlineAfter time.Duration) string {
+func onlineDetail(v installationView, now time.Time, offlineAfter time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "«%s»: ", v.Name)
 	if v.lastBeat.IsZero() {
@@ -166,28 +140,43 @@ func onlineDetail(v clubView, now time.Time, offlineAfter time.Duration) string 
 	return b.String()
 }
 
-func readyDetail(v clubView, readyFailures int) string {
+func readyDetail(v installationView, readyFailures int) string {
 	switch {
 	case v.state == StatePending:
 		return "unknown: waiting for the first heartbeat"
 	case v.state == StateOffline && v.beats == 0:
 		return "unknown: no heartbeat"
 	case v.state == StateOffline:
-		return "unknown while offline; last report: " + readyWord(v.clubHealth)
+		return "unknown while offline; last report: " + readyWord(v.installationHealth)
 	case v.state == StateNotReady:
-		return fmt.Sprintf("not ready: %s, %d heartbeats in a row (limit %d)", v.reason, v.notReady, readyFailures)
+		return fmt.Sprintf("not ready: %s, %d heartbeats in a row (limit %d)", reasonText(v.installationHealth), v.notReady, readyFailures)
 	case !v.ready:
-		return fmt.Sprintf("ready; last report not ready: %s, %d of %d heartbeats in a row before it counts", v.reason, v.notReady, readyFailures)
+		return fmt.Sprintf("ready; last report not ready: %s, %d of %d heartbeats in a row before it counts", reasonText(v.installationHealth), v.notReady, readyFailures)
 	default:
 		return "ready: CRM login and occupancy check passed"
 	}
 }
 
-func readyWord(h clubHealth) string {
+func singleDetail(v installationView) string {
+	if !v.duplicate {
+		return "one copy of the gateway"
+	}
+	return fmt.Sprintf("«%s»: a second copy with the same secret was refused at %s; only one copy may run", v.Name, v.refusedAt.UTC().Format(time.RFC3339))
+}
+
+func readyWord(h installationHealth) string {
 	if h.ready {
 		return "ready"
 	}
-	return "not ready " + h.reason
+	return "not ready " + reasonText(h)
+}
+
+// reasonText is the reason code with the clubs it is about, if any.
+func reasonText(h installationHealth) string {
+	if len(h.clubs) == 0 {
+		return h.reason
+	}
+	return h.reason + " (clubs: " + strings.Join(h.clubs, ", ") + ")"
 }
 
 type statusOptions struct {
@@ -197,15 +186,14 @@ type statusOptions struct {
 	readyFailures int
 }
 
-// writeStatus writes both files into dir, each atomically. Malformed or
-// repeated keys are left out of the files and returned for the log.
-func writeStatus(dir string, now time.Time, o statusOptions, views []clubView) ([]string, error) {
-	status, metrics, dropped := buildStatus(now, o, views)
+// writeStatus writes both files into dir, each atomically.
+func writeStatus(dir string, now time.Time, o statusOptions, views []installationView) error {
+	status, metrics := buildStatus(now, o, views)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return dropped, err
+		return err
 	}
 	if err := core.WriteFileAtomic(filepath.Join(dir, MetricsFile), metrics, 0o644); err != nil {
-		return dropped, err
+		return err
 	}
-	return dropped, core.WriteFileAtomic(filepath.Join(dir, StatusFile), status, 0o644)
+	return core.WriteFileAtomic(filepath.Join(dir, StatusFile), status, 0o644)
 }

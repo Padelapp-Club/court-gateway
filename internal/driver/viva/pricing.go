@@ -10,18 +10,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // Price list model, as far as the driver reads it.
 //
 // [ASSUMPTION] valueFrom of a base price and value of a FIXED time impact
-// are rubles PER HOUR. Basis: the existing daily price reconciliation
-// compares valueFrom, for every 30-minute cell, directly against the
-// club's hourly price in the booking app and against hourly service
-// prices of another CRM, and reports equality when they match. A
-// per-slot or per-booking price would never match an hourly price.
-// Fractional values are kept to the kopeck.
+// are rubles PER HOUR (they match clubs' hourly prices; a per-slot or
+// per-booking price would not). Fractional values are kept to the kopeck.
 type pricing struct {
 	BasePrices   []basePrice `json:"basePrices"`
 	PriceImpacts *struct {
@@ -52,11 +49,14 @@ var weekdays = map[string]int{
 	"MONDAY": 0, "TUESDAY": 1, "WEDNESDAY": 2, "THURSDAY": 3, "FRIDAY": 4, "SATURDAY": 5, "SUNDAY": 6,
 }
 
-// PriceTable implements driver.Driver.
 func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTable, error) {
 	c, ok := d.byCourt[courtID]
 	if !ok || c.priceList == "" {
 		return driver.PriceTable{}, fmt.Errorf("price list of court %q: %w", courtID, driver.ErrNotFound)
+	}
+	loc, err := d.zoneNow(ctx) // the rules' times are the studio's
+	if err != nil {
+		return driver.PriceTable{}, err
 	}
 	status, data, err := d.c.do(ctx, http.MethodGet, "/pricing/"+c.priceList, nil, nil)
 	if err != nil {
@@ -67,14 +67,16 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 	case http.StatusNotFound:
 		return driver.PriceTable{}, fmt.Errorf("price list of court %q: %w", courtID, driver.ErrNotFound)
 	default:
-		return driver.PriceTable{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing/{id} answered HTTP %d", status), nil)
+		return driver.PriceTable{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing/{id} answered HTTP %d", status))
 	}
-	return parsePricing(data)
+	t, err := parsePricing(data)
+	t.Zone = loc
+	return t, err
 }
 
 func parsePricing(data []byte) (driver.PriceTable, error) {
 	invalid := func(what string) (driver.PriceTable, error) {
-		return driver.PriceTable{}, driver.Upstream(driver.UpstreamInvalid, "GET /pricing/{id}: "+what, nil)
+		return driver.PriceTable{}, driver.Upstream(driver.UpstreamInvalid, "GET /pricing/{id}: "+what)
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -85,6 +87,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 		return invalid("malformed price list")
 	}
 	var t driver.PriceTable
+	var defaults []driver.PriceRule // NONE: only where no TIME rule applies
 	for _, b := range p.BasePrices {
 		if b.Condition == nil {
 			return invalid("base price without condition")
@@ -95,7 +98,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 		}
 		switch b.Condition.Type {
 		case "NONE":
-			t.Base = append(t.Base, driver.PriceRule{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: v})
+			defaults = append(defaults, driver.PriceRule{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: v})
 		case "TIME":
 			spans, ok := timeSpans(b.Condition)
 			if !ok {
@@ -110,6 +113,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 			return invalid("unsupported base price condition " + strconv.Quote(b.Condition.Type))
 		}
 	}
+	t.Base = append(t.Base, defaults...) // the core takes the first rule that covers a minute
 	if p.PriceImpacts != nil {
 		for _, im := range p.PriceImpacts.Time {
 			if im.ImpactType != "FIXED" {
@@ -119,8 +123,7 @@ func parsePricing(data []byte) (driver.PriceTable, error) {
 			if !ok || im.Condition == nil {
 				return invalid("time impact without value or condition")
 			}
-			// [ASSUMPTION] DISCOUNT subtracts; any other direction adds,
-			// as in the existing reconciliation.
+			// [ASSUMPTION] DISCOUNT subtracts; any other direction adds.
 			if im.ImpactDirection == "DISCOUNT" {
 				v = -v
 			}
@@ -153,9 +156,9 @@ func timeSpans(c *condition) ([]span, bool) {
 		}
 		days[i] = true
 	}
-	from, ok1 := clock(c.TimeStart)
-	to, ok2 := clock(c.TimeEnd)
-	if !ok1 || !ok2 {
+	from, ok1 := core.ParseClock(c.TimeStart)
+	to, ok2 := core.ParseClock(c.TimeEnd)
+	if !ok1 || !ok2 || from == 1440 || to == 1440 {
 		return nil, false
 	}
 	if to == 0 {
@@ -171,20 +174,6 @@ func timeSpans(c *condition) ([]span, bool) {
 		}
 	}
 	return []span{{days: days, from: from, to: 1440}, {days: next, from: 0, to: to}}, true
-}
-
-// clock parses "HH:MM" or "HH:MM:SS" into minutes.
-func clock(s string) (int, bool) {
-	parts := strings.Split(strings.TrimSpace(s), ":")
-	if len(parts) < 2 || len(parts) > 3 {
-		return 0, false
-	}
-	h, err1 := strconv.Atoi(parts[0])
-	m, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
-		return 0, false
-	}
-	return h*60 + m, true
 }
 
 // kopecks reads a JSON number or numeric string as an amount in kopecks.

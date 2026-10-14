@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var dayKeys = []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
@@ -45,9 +46,25 @@ func parseDays(key string) ([]int, error) {
 	return out, nil
 }
 
-// parseClock parses "HH:MM"; "24:00" is allowed as an end of day.
-func parseClock(s string) (int, bool) {
-	h, m, ok := strings.Cut(strings.TrimSpace(s), ":")
+// ParseClock reads "HH:MM" as minutes since midnight; seconds (dropped)
+// and a UTC offset may follow, "HH:MM:SS+03:00" (the clock is already
+// local). "24:00" (1440) is an end of day. The one clock parser of the
+// gateway: drivers use it for the CRM's clock times.
+func ParseClock(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "+-"); i >= 0 {
+		if _, err := time.Parse("-07:00", s[i:]); err != nil {
+			return 0, false
+		}
+		s = s[:i]
+	}
+	if len(s) == 8 && s[5] == ':' {
+		if sec, err := strconv.Atoi(s[6:]); err != nil || sec < 0 || sec > 59 {
+			return 0, false
+		}
+		s = s[:5]
+	}
+	h, m, ok := strings.Cut(s, ":")
 	if !ok || len(h) == 0 || len(h) > 2 || len(m) != 2 {
 		return 0, false
 	}
@@ -59,12 +76,13 @@ func parseClock(s string) (int, bool) {
 	return hh*60 + mm, true
 }
 
-func formatClock(min int) string {
+// FormatClock writes minutes since midnight as "HH:MM".
+func FormatClock(min int) string {
 	return fmt.Sprintf("%02d:%02d", min/60, min%60)
 }
 
-func parseHours(m map[string]string) ([7]*DayHours, []string) {
-	var hours [7]*DayHours
+func parseHours(path string, m map[string]string) ([7]*[2]int, []string) {
+	var hours [7]*[2]int
 	var defined [7]bool
 	var errs []string
 	keys := make([]string, 0, len(m))
@@ -76,27 +94,27 @@ func parseHours(m map[string]string) ([7]*DayHours, []string) {
 		v := strings.TrimSpace(m[k])
 		days, err := parseDays(k)
 		if err != nil {
-			errs = append(errs, "venue.hours: "+err.Error())
+			errs = append(errs, path+": "+err.Error())
 			continue
 		}
-		var dh *DayHours
+		var dh *[2]int
 		if lv := strings.ToLower(v); lv != "closed" {
 			a, b, ok := strings.Cut(v, "-")
-			open, ok1 := parseClock(a)
-			closeAt, ok2 := parseClock(b)
+			open, ok1 := ParseClock(a)
+			closeAt, ok2 := ParseClock(b)
 			if !ok || !ok1 || !ok2 || open >= 1440 {
-				errs = append(errs, fmt.Sprintf("venue.hours.%s: «%s» — ожидается время вида \"07:00-23:00\" (конец дня — 24:00) или closed", k, v))
+				errs = append(errs, fmt.Sprintf("%s.%s: «%s» — ожидается время вида \"07:00-23:00\" (конец дня — 24:00) или closed", path, k, v))
 				continue
 			}
 			if closeAt <= open {
-				errs = append(errs, fmt.Sprintf("venue.hours.%s: «%s» — закрытие должно быть позже открытия; работа после полуночи пока не поддерживается, укажите 24:00", k, v))
+				errs = append(errs, fmt.Sprintf("%s.%s: «%s» — закрытие должно быть позже открытия; работа после полуночи пока не поддерживается, укажите 24:00", path, k, v))
 				continue
 			}
-			dh = &DayHours{Open: open, Close: closeAt}
+			dh = &[2]int{open, closeAt}
 		}
 		for _, d := range days {
 			if defined[d] {
-				errs = append(errs, fmt.Sprintf("venue.hours: часы на %s указаны дважды", dayNamesRu[d]))
+				errs = append(errs, fmt.Sprintf("%s: часы на %s указаны дважды", path, dayNamesRu[d]))
 				continue
 			}
 			defined[d] = true
@@ -105,13 +123,8 @@ func parseHours(m map[string]string) ([7]*DayHours, []string) {
 	}
 	for i, ok := range defined {
 		if !ok {
-			errs = append(errs, fmt.Sprintf("venue.hours: не указаны часы на %s (если клуб не работает — укажите closed)", dayNamesRu[i]))
+			errs = append(errs, fmt.Sprintf("%s: не указаны часы на %s (если клуб не работает — укажите closed)", path, dayNamesRu[i]))
 		}
 	}
 	return hours, errs
-}
-
-func sortedStrings(s []string) []string {
-	sort.Strings(s)
-	return s
 }

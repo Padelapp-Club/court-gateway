@@ -1,37 +1,67 @@
-// Package tunnel carries partner requests from the hub to a gateway over a
-// connection that the GATEWAY opens. The gateway never listens: it keeps a
-// few HTTPS long-poll requests open to the hub, the hub answers a poll with
-// a queued partner request, and the gateway posts the response back.
+// Package tunnel carries partner requests from the hub to a gateway over
+// connections the GATEWAY opens: a few HTTPS long polls the hub answers
+// with a queued request, the response posted back. Plain HTTPS passes any
+// proxy that passes HTTPS, and each request's timeout notices a broken path.
 //
-// Why long-polling over plain HTTPS rather than WebSocket: it needs nothing
-// but the standard library, it passes every corporate proxy and middlebox
-// that passes ordinary HTTPS, HTTP/2 multiplexes all polls over one TCP
-// connection, and every exchange is a self-contained request with its own
-// timeout, so a broken network path is noticed by the next request instead
-// of by a keep-alive protocol layered on top.
-//
-// Trust: the gateway authenticates the hub by its TLS certificate (system
-// roots, or a CA file for self-hosted hubs and tests) and the hub
-// authenticates the gateway by its per-gateway secret (Bearer). A request
-// that arrives in a poll response is therefore known to come from the hub;
-// that is what "requests from the hub are signed" means for this design.
+// Trust: TLS to the hub (system roots, or only hub.ca_file's CA), no
+// redirects, the gateway's secret as Bearer. Requests and club configs are
+// signed by the hub's ed25519 key, pinned at registration after an
+// out-of-band check, so a TLS-inspecting proxy the club's computer trusts
+// cannot make the gateway write to its CRM (sign.go).
 package tunnel
+
+import (
+	"encoding/json"
+	"time"
+)
 
 // Endpoints on the hub.
 const (
-	PathRegister  = "/tunnel/register"
+	PathRegister = "/tunnel/register"
+	// PathHubKey returns the hub's public signing key, unauthenticated.
+	PathHubKey    = "/tunnel/hub-key"
 	PathPoll      = "/tunnel/poll"
 	PathReply     = "/tunnel/reply"
 	PathWhoami    = "/tunnel/whoami"
 	PathHeartbeat = "/tunnel/heartbeat"
+	// PathConfig returns the installation's club configuration.
+	PathConfig = "/tunnel/config"
+	// PathRelease: a gateway that stops tells the hub, so that the copy
+	// started after it is not refused as a duplicate.
+	PathRelease = "/tunnel/release"
 )
+
+// PathDiscover is served by the GATEWAY (through the tunnel): the hub's
+// operator API asks the gateway to read its CRM and draft a club config.
+const PathDiscover = "/gateway/discover"
 
 // Headers a gateway sends with every poll, and the hub's update hint.
 const (
-	HeaderVersion    = "X-Gateway-Version"
-	HeaderBuild      = "X-Gateway-Build" // BuildRelease or BuildSelf
-	HeaderPlatform   = "X-Gateway-Platform"
+	HeaderVersion  = "X-Gateway-Version"
+	HeaderBuild    = "X-Gateway-Build" // BuildRelease or BuildSelf
+	HeaderPlatform = "X-Gateway-Platform"
+	// HeaderPolls is how many polls the gateway keeps open.
+	HeaderPolls = "X-Gateway-Polls"
+	// HeaderInstance is a random id of the running gateway process. The
+	// hub serves one instance per registration and refuses another copy
+	// that runs with the same secret (409 DUPLICATE_GATEWAY).
+	HeaderInstance   = "X-Gateway-Instance"
 	HeaderUpdateHint = "X-Update-Hint"
+	// HeaderConfigVersion is set by the hub with HeaderHubTime, which
+	// signs it: the current version of the installation's club
+	// configuration. A gateway that runs another version pulls PathConfig;
+	// an unsigned one is ignored.
+	HeaderConfigVersion = "X-Config-Version"
+	// HeaderConfigEpoch is random per hub start and signed with the
+	// version ("<version> <epoch>"): a hub restored from a backup cannot
+	// announce a version a gateway applied with other clubs.
+	HeaderConfigEpoch = "X-Config-Epoch"
+	// HeaderNonce is a fresh random value of each poll, and HeaderHubTime
+	// the hub's answer to it: its clock, signed with the nonce and the
+	// HeaderConfigVersion value (SignTime), so an old answer cannot be
+	// passed off as new. A request the poll takes is signed with it too.
+	HeaderNonce   = "X-Gateway-Nonce"
+	HeaderHubTime = "X-Hub-Time"
 )
 
 // Build kinds reported by a gateway.
@@ -44,11 +74,23 @@ const (
 const (
 	// MaxRequestBody caps a partner request body forwarded to a gateway.
 	MaxRequestBody = 1 << 20
+	// MaxRequestTimeout caps the time a gateway gives one request; a longer
+	// timeout from the hub is cut to it.
+	MaxRequestTimeout = 3 * time.Minute
 	// MaxResponseBody caps a gateway response body.
 	MaxResponseBody = 4 << 20
 	// maxEnvelope bounds an encoded envelope: base64 grows the body by 4/3.
 	maxEnvelope = MaxResponseBody*4/3 + 64<<10
 )
+
+// ExecTimeout is the time a gateway gives a request whose TimeoutMS is
+// timeoutMS: within [1s, MaxRequestTimeout], 30s when unset.
+func ExecTimeout(timeoutMS int) time.Duration {
+	if timeoutMS <= 0 {
+		return 30 * time.Second
+	}
+	return min(max(time.Duration(timeoutMS)*time.Millisecond, time.Second), MaxRequestTimeout)
+}
 
 // Request is a partner request handed to a gateway in a poll response.
 type Request struct {
@@ -61,9 +103,14 @@ type Request struct {
 	Query     string            `json:"query,omitempty"`
 	Header    map[string]string `json:"header,omitempty"`
 	Body      []byte            `json:"body,omitempty"`
-	// Partner is the partner the hub authenticated.
-	Partner   string `json:"partner,omitempty"`
-	TimeoutMS int    `json:"timeout_ms"`
+	// Partner is the partner the hub authenticated, Scopes its scopes.
+	Partner   string   `json:"partner,omitempty"`
+	Scopes    []string `json:"scopes,omitempty"`
+	TimeoutMS int      `json:"timeout_ms"`
+	Seal
+	// run is the hub run (config epoch) the signed time of the poll answer
+	// that carried the request names; it is not sent.
+	run string
 }
 
 // Response is what a gateway posts back.
@@ -80,24 +127,45 @@ type RegisterRequest struct {
 	Version string `json:"version,omitempty"`
 }
 
-// RegisterResponse carries the long-lived secret. It is shown once.
+// RegisterResponse carries the long-lived secret (shown once) and HubKey,
+// the hub's public signing key (base64) the gateway pins, which signs the
+// whole answer for its join code (Signature).
 type RegisterResponse struct {
-	Club     string `json:"club"`
-	ClubName string `json:"club_name"`
-	Secret   string `json:"secret"`
+	Installation string `json:"installation_id"`
+	Name         string `json:"name"`
+	Secret       string `json:"secret"`
+	HubKey       string `json:"hub_key"`
+	Signature    []byte `json:"signature,omitempty"`
 }
 
 // Whoami is the hub's view of the calling gateway.
 type Whoami struct {
-	Club      string `json:"club"`
-	Connected bool   `json:"connected"`
-	LastSeen  string `json:"last_seen,omitempty"`
-	Latest    string `json:"latest_version,omitempty"`
+	Installation string `json:"installation_id"`
+	Connected    bool   `json:"connected"`
+	LastSeen     string `json:"last_seen,omitempty"`
+	// ConfigVersion is the hub's current club configuration version;
+	// Clubs are the clubs in it.
+	ConfigVersion int64    `json:"config_version"`
+	Clubs         []string `json:"clubs"`
+	// Applied* is what the gateway reported in its last heartbeat.
+	AppliedConfigVersion int64    `json:"applied_config_version"`
+	ConfigError          string   `json:"config_error,omitempty"`
+	ClubsServed          []string `json:"clubs_served"`
 }
 
-// forwardedHeaders are the only request/response headers carried through
-// the tunnel. Authorization never is: partner keys stay on the hub.
-var forwardedHeaders = []string{"Content-Type", "Accept", "Retry-After"}
+// RemoteConfig is an installation's club configuration (PathConfig); Clubs
+// are core.ClubSpec objects, raw so the tunnel does not depend on the core.
+type RemoteConfig struct {
+	Version int64             `json:"version"`
+	Epoch   string            `json:"epoch,omitempty"`
+	Clubs   []json.RawMessage `json:"clubs"`
+	Seal
+}
 
-// ForwardedHeaders returns the header names carried through the tunnel.
-func ForwardedHeaders() []string { return append([]string(nil), forwardedHeaders...) }
+// The only headers carried through the tunnel, each way: RequestHeaders
+// from the partner to the gateway, ResponseHeaders back. Authorization
+// never is: partner keys stay on the hub.
+var (
+	RequestHeaders  = []string{"Content-Type", "Accept"}
+	ResponseHeaders = []string{"Content-Type", "Retry-After", "Cache-Control", "Location"}
+)

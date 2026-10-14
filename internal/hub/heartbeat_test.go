@@ -5,9 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,28 +67,19 @@ func (d *countingDriver) Calls() []time.Time {
 	return append([]time.Time(nil), d.calls...)
 }
 
-type recorded struct {
-	path string
-	body string
-}
-
-// fakeWebhook records what the optional webhook sink posts.
-func fakeWebhook(t *testing.T) (*httptest.Server, func() []recorded) {
-	var mu sync.Mutex
-	var got []recorded
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		got = append(got, recorded{r.URL.Path, string(b)})
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
-	return srv, func() []recorded {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]recorded(nil), got...)
+// events returns the state changes the hub logged, in order.
+func (w *beatWorld) events() []string {
+	var out []string
+	for _, line := range strings.Split(w.hub.Logs.String(), "\n") {
+		var rec struct {
+			Msg   string `json:"msg"`
+			Event string `json:"event"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "gateway state changed" {
+			out = append(out, rec.Event)
+		}
 	}
+	return out
 }
 
 // beatWorld is a hub on a fake clock with one registered gateway whose
@@ -110,7 +99,7 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 	w := &beatWorld{clock: newFakeClock(), status: filepath.Join(t.TempDir(), "status")}
 	opts.Now = w.clock.Now
 	if env == nil {
-		env = hubEnv()
+		env = testkit.HubEnv()
 	}
 	w.hub = testkit.StartHub(t, hubYAML+"status_dir: "+w.status+"\n"+extraYAML, env, opts)
 	w.crm = &countingDriver{clock: w.clock}
@@ -119,14 +108,19 @@ func newBeatWorld(t *testing.T, extraYAML string, env map[string]string, opts hu
 		w.crm.Driver = d
 		return w.crm, err
 	}
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", factory, nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", factory, nil)
 	w.secret = w.hub.Register("demo-club", "Демо-клуб")
-	w.gw = testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), w.secret, b.Server.TunnelHandler(), nil)
+	cfg := w.hub.ClientConfig("demo-club", w.secret, b.Clubs.TunnelHandler(), nil)
+	cfg.Instance = beatInstance
+	w.gw = testkit.StartGateway(t, cfg)
 	testkit.WaitFor(t, "connected", 10*time.Second, func() bool { return w.hub.Server().Broker().Connected("demo-club") })
 	w.check = &tunnel.SelfCheck{Ready: w.crm.Ready, Reason: core.ReadyReason, Interval: time.Minute,
 		Now: w.clock.Now, Version: "1.0.0", Build: tunnel.BuildRelease}
 	return w
 }
+
+// beatInstance is the instance id of the beatWorld's gateway.
+const beatInstance = "beat-world-gateway"
 
 // beat sends one heartbeat over HTTP, as a gateway does.
 func (w *beatWorld) beat(t *testing.T, ready bool, reason string) {
@@ -143,41 +137,37 @@ func (w *beatWorld) state(t *testing.T) string {
 }
 
 func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
-	hook, alerts := fakeWebhook(t)
-	env := hubEnv()
-	env["HOOK_URL"] = hook.URL + "/hook?token=webhook-secret-value"
-	w := newBeatWorld(t, "alerts: { webhook_url_env: HOOK_URL }\n", env, hub.Options{SinkClient: hook.Client()})
+	w := newBeatWorld(t, "", nil, hub.Options{})
 	mon := w.hub.Server().Monitor()
-	ctx := context.Background()
 
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StatePending {
 		t.Fatalf("before the first heartbeat: %s", st)
 	}
 	w.beat(t, true, "")
-	mon.Tick(ctx)
+	mon.Tick()
 	if hl := mon.Health("demo-club"); hl.State != hub.StateOnline || !hl.Ready || hl.Version != "1.0.0" {
 		t.Fatalf("after a heartbeat: %+v", hl)
 	}
 
 	// heartbeats stop: offline only after MORE than offline_after (3m)
 	w.clock.Advance(3 * time.Minute)
-	mon.Tick(ctx)
-	if st := w.state(t); st != hub.StateOnline || len(alerts()) != 0 {
-		t.Fatalf("at exactly 3m: %s %+v", st, alerts())
+	mon.Tick()
+	if st := w.state(t); st != hub.StateOnline || len(w.events()) != 0 {
+		t.Fatalf("at exactly 3m: %s %+v", st, w.events())
 	}
 	w.clock.Advance(time.Second)
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StateOffline {
 		t.Fatalf("after 3m1s: %s", st)
 	}
-	if got := alerts(); len(got) != 1 || !strings.Contains(got[0].body, "НЕТ СВЯЗИ") || !strings.Contains(got[0].body, `"event":"offline"`) {
-		t.Fatalf("offline alert: %+v", got)
+	if got := w.events(); len(got) != 1 || got[0] != hub.EventOffline {
+		t.Fatalf("offline: %+v", got)
 	}
 	w.clock.Advance(time.Minute)
-	mon.Tick(ctx)
-	if n := len(alerts()); n != 1 {
-		t.Fatalf("offline alert repeated: %d", n)
+	mon.Tick()
+	if n := len(w.events()); n != 1 {
+		t.Fatalf("offline logged again: %d", n)
 	}
 	// the tunnel alone does not make a club online: only heartbeats do
 	if !w.hub.Server().Broker().Connected("demo-club") || w.state(t) != hub.StateOffline {
@@ -186,8 +176,8 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 
 	// recovery
 	w.beat(t, true, "")
-	mon.Tick(ctx)
-	if got := alerts(); w.state(t) != hub.StateOnline || len(got) != 2 || !strings.Contains(got[1].body, "снова на связи") {
+	mon.Tick()
+	if got := w.events(); w.state(t) != hub.StateOnline || len(got) != 2 || got[1] != hub.EventOnline {
 		t.Fatalf("recovery: %s %+v", w.state(t), got)
 	}
 
@@ -195,41 +185,47 @@ func TestHeartbeatOfflineNotReadyAndRecovery(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		w.clock.Advance(time.Minute)
 		w.beat(t, false, "CRM_AUTH_FAILED")
-		mon.Tick(ctx)
+		mon.Tick()
 	}
-	if st := w.state(t); st != hub.StateOnline || len(alerts()) != 2 {
-		t.Fatalf("after 2 not-ready heartbeats: %s %d", st, len(alerts()))
+	if st := w.state(t); st != hub.StateOnline || len(w.events()) != 2 {
+		t.Fatalf("after 2 not-ready heartbeats: %s %d", st, len(w.events()))
 	}
 	w.clock.Advance(time.Minute)
 	w.beat(t, false, "CRM_AUTH_FAILED")
-	mon.Tick(ctx)
-	if got := alerts(); w.state(t) != hub.StateNotReady || len(got) != 3 || !strings.Contains(got[2].body, "НЕ ГОТОВ: CRM_AUTH_FAILED") {
+	mon.Tick()
+	if got := w.events(); w.state(t) != hub.StateNotReady || len(got) != 3 || got[2] != hub.EventNotReady {
 		t.Fatalf("not ready: %s %+v", w.state(t), got)
 	}
 	// one good heartbeat resets the streak
 	w.clock.Advance(time.Minute)
 	w.beat(t, true, "")
-	mon.Tick(ctx)
-	if got := alerts(); w.state(t) != hub.StateOnline || len(got) != 4 || !strings.Contains(got[3].body, "снова готов") {
+	mon.Tick()
+	if got := w.events(); w.state(t) != hub.StateOnline || len(got) != 4 || got[3] != hub.EventReady {
 		t.Fatalf("ready again: %s %+v", w.state(t), got)
 	}
 	w.beat(t, false, "CRM_UNREACHABLE")
 	w.beat(t, false, "CRM_UNREACHABLE")
 	w.beat(t, true, "")
 	w.beat(t, false, "CRM_UNREACHABLE")
-	mon.Tick(ctx)
+	mon.Tick()
 	if st := w.state(t); st != hub.StateOnline {
 		t.Fatalf("an interrupted streak counted as not ready: %s", st)
 	}
-
-	// nothing secret in alerts or the hub log
-	all := w.hub.Logs.String()
-	for _, a := range alerts() {
-		all += a.body
+	// heartbeats sent for a new config repeat the last self-check: one
+	w.clock.Advance(time.Minute)
+	for range 3 {
+		w.beat(t, false, "CRM_UNREACHABLE")
 	}
-	for _, s := range []string{"webhook-secret-value", w.secret, operatorKey, contract.ReadKey, contract.BookKey} {
+	mon.Tick()
+	if st := w.state(t); st != hub.StateOnline {
+		t.Fatalf("one self-check sent three times counted as three: %s", st)
+	}
+
+	// nothing secret in the hub log
+	all := w.hub.Logs.String()
+	for _, s := range []string{w.secret, testkit.OperatorKey, contract.ReadKey, contract.BookKey} {
 		if strings.Contains(all, s) {
-			t.Fatalf("secret %q leaked into alerts or logs", s[:8])
+			t.Fatalf("secret %q leaked into the log", s[:8])
 		}
 	}
 }
@@ -242,7 +238,7 @@ func TestHeartbeatSilenceCountsFromStartOrRegistration(t *testing.T) {
 	mon := w.hub.Server().Monitor()
 	w.clock.Advance(10 * time.Minute)
 	w.hub.Register("late-club", "Поздний клуб")
-	mon.Tick(context.Background())
+	mon.Tick()
 	if st := mon.Health("late-club").State; st != hub.StatePending {
 		t.Fatalf("a club registered a moment ago: %s", st)
 	}
@@ -255,10 +251,8 @@ func TestHeartbeatSilenceCountsFromStartOrRegistration(t *testing.T) {
 	}
 }
 
-// The regression for the old design, where the hub probed /health/ready
-// through the tunnel on top of the gateway's own check: over ten simulated
-// minutes the CRM sees at most one readiness check per minute per gateway,
-// all of them from the gateway's own self-check.
+// Over ten simulated minutes the CRM sees at most one readiness check per
+// minute per gateway: the gateway's own self-check, nothing else.
 func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 	w := newBeatWorld(t, "", nil, hub.Options{})
 	mon := w.hub.Server().Monitor()
@@ -274,7 +268,7 @@ func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 			beats++
 		}
 		if step%30 == 0 { // the hub's 60-second evaluation
-			mon.Tick(ctx)
+			mon.Tick()
 		}
 	}
 	calls := w.crm.Calls()
@@ -295,7 +289,7 @@ func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 	}
 
 	// a failing CRM is reported by the same single check
-	w.crm.setErr(driver.Upstream(driver.UpstreamAuth, "test", nil))
+	w.crm.setErr(driver.Upstream(driver.UpstreamAuth, "test"))
 	for i := 0; i < 3; i++ {
 		w.clock.Advance(time.Minute)
 		hb, due := w.check.Step(ctx)
@@ -306,7 +300,7 @@ func TestAtMostOneCRMCheckPerMinute(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	mon.Tick(ctx)
+	mon.Tick()
 	if hl := mon.Health("demo-club"); hl.State != hub.StateNotReady || hl.Reason != "CRM_AUTH_FAILED" {
 		t.Fatalf("health: %+v", hl)
 	}
@@ -319,6 +313,7 @@ func TestHeartbeatEndpoint(t *testing.T) {
 		if secret != "" {
 			req.Header.Set("Authorization", "Bearer "+secret)
 		}
+		req.Header.Set(tunnel.HeaderInstance, beatInstance)
 		resp, err := (&http.Client{Transport: w.hub.Transport()}).Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -335,7 +330,7 @@ func TestHeartbeatEndpoint(t *testing.T) {
 	if code := post(w.secret, `not json`); code != http.StatusBadRequest {
 		t.Fatalf("malformed: %d", code)
 	}
-	if code := post(w.secret, `{"ready":false,"reason":"`+strings.Repeat("A", 5000)+`"}`); code != http.StatusBadRequest {
+	if code := post(w.secret, `{"ready":false,"reason":"`+strings.Repeat("A", 70000)+`"}`); code != http.StatusBadRequest {
 		t.Fatalf("oversized: %d", code)
 	}
 	if st := w.state(t); st != hub.StatePending {
@@ -349,7 +344,7 @@ func TestHeartbeatEndpoint(t *testing.T) {
 	if hl := w.hub.Server().Monitor().Health("demo-club"); hl.Reason != "NOT_READY" || hl.Version != "" || hl.Build != "" {
 		t.Fatalf("unsanitised heartbeat: %+v", hl)
 	}
-	w.hub.Server().Monitor().Tick(context.Background())
+	w.hub.Server().Monitor().Tick()
 	for _, f := range []string{hub.StatusFile, hub.MetricsFile} {
 		data, err := os.ReadFile(filepath.Join(w.status, f))
 		if err != nil {
@@ -438,43 +433,43 @@ func TestStatusFilesFormat(t *testing.T) {
 	mon := w.hub.Server().Monitor()
 	w.hub.Register("club-2b", "Второй клуб") // never sends a heartbeat
 	w.beat(t, true, "")
-	mon.Tick(context.Background())
+	mon.Tick()
 
 	checks, metrics := validateStatusFiles(t, w.status)
-	for _, name := range []string{"club_demo_club_online", "club_demo_club_ready", "club_club_2b_online", "club_club_2b_ready"} {
+	for _, name := range []string{"installation_demo_club_online", "installation_demo_club_ready", "installation_club_2b_online", "installation_club_2b_ready"} {
 		if checks[name] == nil {
 			t.Fatalf("missing check %s; have %v", name, checks)
 		}
 	}
-	if d := checks["club_demo_club_online"]["detail"].(string); !strings.Contains(d, "Демо-клуб") || !strings.Contains(d, "version 1.0.0") ||
+	if d := checks["installation_demo_club_online"]["detail"].(string); !strings.Contains(d, "Демо-клуб") || !strings.Contains(d, "version 1.0.0") ||
 		!strings.Contains(d, "last heartbeat") {
 		t.Fatalf("online detail: %s", d)
 	}
 	want := map[string]string{
-		"clubs_total": "2", "clubs_online": "2", "clubs_ready": "1",
-		"club_demo_club_last_seen_age_seconds": "0", "club_demo_club_outdated": "1", "club_club_2b_outdated": "0",
-		"check_club_demo_club_online": "1", "status_ok": "1",
+		"installations_total": "2", "installations_online": "2", "installations_ready": "1",
+		"installation_demo_club_last_seen_age_seconds": "0", "installation_demo_club_outdated": "1", "installation_club_2b_outdated": "0",
+		"check_installation_demo_club_online": "1", "status_ok": "1",
 	}
 	for k, v := range want {
 		if metrics[k] != v {
 			t.Fatalf("metric %s = %q, want %q; all: %v", k, metrics[k], v, metrics)
 		}
 	}
-	if _, ok := metrics["club_club_2b_last_seen_age_seconds"]; ok {
+	if _, ok := metrics["installation_club_2b_last_seen_age_seconds"]; ok {
 		t.Fatal("an age for a club never seen")
 	}
 
 	// demo-club goes silent, club-2b stays silent: both offline, ok=false
 	w.clock.Advance(4 * time.Minute)
-	mon.Tick(context.Background())
+	mon.Tick()
 	checks, metrics = validateStatusFiles(t, w.status)
-	if checks["club_demo_club_online"]["ok"] != false || metrics["clubs_online"] != "0" || metrics["status_ok"] != "0" ||
-		metrics["club_demo_club_last_seen_age_seconds"] != "240" {
+	if checks["installation_demo_club_online"]["ok"] != false || metrics["installations_online"] != "0" || metrics["status_ok"] != "0" ||
+		metrics["installation_demo_club_last_seen_age_seconds"] != "240" {
 		t.Fatalf("after 4 silent minutes: %v %v", checks, metrics)
 	}
 	// readiness of an offline club is not a second alarm
-	if checks["club_demo_club_ready"]["ok"] != true || !strings.Contains(checks["club_demo_club_ready"]["detail"].(string), "unknown") {
-		t.Fatalf("ready while offline: %v", checks["club_demo_club_ready"])
+	if checks["installation_demo_club_ready"]["ok"] != true || !strings.Contains(checks["installation_demo_club_ready"]["detail"].(string), "unknown") {
+		t.Fatalf("ready while offline: %v", checks["installation_demo_club_ready"])
 	}
 
 	// nothing secret in either file, and no leftover temporary files
@@ -484,7 +479,7 @@ func TestStatusFilesFormat(t *testing.T) {
 	}
 	for _, f := range []string{hub.StatusFile, hub.MetricsFile} {
 		data, _ := os.ReadFile(filepath.Join(w.status, f))
-		for _, s := range []string{w.secret, "cgs_", operatorKey, contract.ReadKey, contract.BookKey} {
+		for _, s := range []string{w.secret, "cgs_", testkit.OperatorKey, contract.ReadKey, contract.BookKey} {
 			if bytes.Contains(data, []byte(s)) {
 				t.Fatalf("%s holds a secret", f)
 			}
@@ -499,7 +494,7 @@ func TestStatusFilesAtomic(t *testing.T) {
 		w.hub.Register("club-"+string(rune('a'+i%26))+string(rune('a'+i/26)), strings.Repeat("Клуб ", 20))
 	}
 	mon := w.hub.Server().Monitor()
-	mon.Tick(context.Background())
+	mon.Tick()
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -510,7 +505,7 @@ func TestStatusFilesAtomic(t *testing.T) {
 				return
 			default:
 				w.clock.Advance(time.Second)
-				mon.Tick(context.Background())
+				mon.Tick()
 			}
 		}
 	}()
@@ -543,22 +538,22 @@ func TestStatusFilesAtomic(t *testing.T) {
 func TestStatusAPI(t *testing.T) {
 	w := newBeatWorld(t, "latest_version: 1.1.0\n", nil, hub.Options{})
 	w.beat(t, true, "")
-	w.hub.Server().Monitor().Tick(context.Background())
+	w.hub.Server().Monitor().Tick()
 	if r := call(t, w.hub, http.MethodGet, "/hub/status", contract.ReadKey, ""); r.status != http.StatusUnauthorized {
 		t.Fatalf("status with a partner key: %d", r.status)
 	}
-	r := call(t, w.hub, http.MethodGet, "/hub/status", operatorKey, "")
+	r := call(t, w.hub, http.MethodGet, "/hub/status", testkit.OperatorKey, "")
 	if r.status != http.StatusOK {
 		t.Fatalf("status: %d %s", r.status, r.body)
 	}
 	var st struct {
-		Clubs []hub.ClubStatus `json:"clubs"`
+		Gateways []hub.GatewayStatus `json:"gateways"`
 	}
-	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Clubs) != 1 {
+	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Gateways) != 1 {
 		t.Fatalf("status body: %s", r.body)
 	}
-	c := st.Clubs[0]
-	if c.Club != "demo-club" || !c.Connected || c.State != hub.StateOnline || c.Version != "1.0.0" || c.Build != "release" ||
+	c := st.Gateways[0]
+	if c.Installation != "demo-club" || !c.Connected || c.State != hub.StateOnline || c.Version != "1.0.0" || c.Build != "release" ||
 		!c.Outdated || c.Ready == nil || !*c.Ready || c.LastSeen == "" || c.LastHeartbeat == "" {
 		t.Fatalf("row: %+v", c)
 	}
@@ -567,26 +562,86 @@ func TestStatusAPI(t *testing.T) {
 	}
 }
 
-func TestWebhookErrorsDoNotLeakURL(t *testing.T) {
-	sink := &hub.WebhookSink{URL: "http://127.0.0.1:1/hook?token=webhook-secret-value", Client: &http.Client{Timeout: time.Second}}
-	err := sink.Send(context.Background(), hub.Alert{Text: "x"})
-	if err == nil || strings.Contains(err.Error(), "webhook-secret-value") || strings.Contains(err.Error(), "127.0.0.1") {
-		t.Fatalf("error: %v", err)
+// A not-ready reason about clubs (TIMEZONE_MISMATCH) names them in the
+// status files and in /hub/status, so the alert says which club to fix;
+// only valid ids pass.
+func TestNotReadyReasonNamesTheClubs(t *testing.T) {
+	w := newBeatWorld(t, "", nil, hub.Options{})
+	mon := w.hub.Server().Monitor()
+	for range 3 {
+		w.clock.Advance(time.Minute)
+		hb := tunnel.Heartbeat{Version: "1.0.0", Build: tunnel.BuildRelease, Reason: "TIMEZONE_MISMATCH",
+			ReasonClubs: []string{"club-north", "Not An Id!"}, CheckedAt: w.clock.Now()}
+		if err := w.gw.Client.SendHeartbeat(context.Background(), hb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mon.Tick()
+	checks, _ := validateStatusFiles(t, w.status)
+	if d, _ := checks["installation_demo_club_ready"]["detail"].(string); !strings.Contains(d, "TIMEZONE_MISMATCH (clubs: club-north)") || strings.Contains(d, "Not An Id") {
+		t.Fatalf("ready detail: %q", d)
+	}
+	r := call(t, w.hub, http.MethodGet, "/hub/status", testkit.OperatorKey, "")
+	var st struct {
+		Gateways []hub.GatewayStatus `json:"gateways"`
+	}
+	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Gateways) != 1 || strings.Join(st.Gateways[0].ReadyReasonClubs, ",") != "club-north" {
+		t.Fatalf("status: %s", r.body)
 	}
 }
 
-func TestHubConfigAlerts(t *testing.T) {
-	env := func(k string) string { return hubEnv()[k] }
-	// no sink unless a webhook is configured
-	s, err := hub.Load([]byte("state_dir: /tmp/x\n"), env)
-	if err != nil || s.WebhookURL != "" || len(hub.SinksFromSettings(s, nil)) != 0 {
-		t.Fatalf("default sinks: %v %v", s, err)
-	}
-	// there is no built-in chat sender: any such section is an unknown key
-	if _, err := hub.Load([]byte("state_dir: /tmp/x\nalerts:\n  chat_bot: { token_env: X, chat_env: Y }\n"), env); err == nil {
-		t.Fatal("a removed alert section was accepted silently")
-	}
+func TestStatusDirMustDifferFromStateDir(t *testing.T) {
+	env := func(k string) string { return testkit.HubEnv()[k] }
 	if _, err := hub.Load([]byte("state_dir: /tmp/x\nstatus_dir: /tmp/x/\n"), env); err == nil {
 		t.Fatal("status_dir equal to state_dir was accepted")
+	}
+}
+
+// A gateway reports the requests it refused for their signature in its
+// heartbeats; the hub logs it and shows it to the operator and the
+// external checker.
+func TestRefusedRequestsAreReported(t *testing.T) {
+	w := newBeatWorld(t, "", nil, hub.Options{})
+	w.gw.Client.Execute(context.Background(), tunnel.Request{ID: "forged", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"}, testkit.PollNonce)
+	w.beat(t, true, "")
+	var st struct {
+		Gateways []hub.GatewayStatus `json:"gateways"`
+	}
+	if err := json.Unmarshal(w.hub.MustOperator(t, http.StatusOK, http.MethodGet, "/hub/status", nil), &st); err != nil || st.Gateways[0].RefusedRequests != 1 {
+		t.Fatalf("/hub/status: %+v %v", st, err)
+	}
+	w.hub.Server().Monitor().Tick()
+	metrics, _ := os.ReadFile(filepath.Join(w.status, hub.MetricsFile))
+	if !strings.Contains(string(metrics), "installation_demo_club_refused_requests=1\n") || !strings.Contains(w.hub.Logs.String(), "not signed by the hub") {
+		t.Fatalf("not reported:\n%s", metrics)
+	}
+}
+
+// A gateway revoked on disk (`hub gateway revoke`, which a running hub
+// does not hear of) leaves the status files at the next pass, even when
+// nothing asks for it in between: an offline gateway sends nothing.
+func TestRevokedGatewayLeavesTheStatusFiles(t *testing.T) {
+	dir := t.TempDir()
+	st, err := hub.OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc, err := hub.CreateJoinCode(dir, "inst-r", "", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Redeem(jc.Code); err != nil {
+		t.Fatal(err)
+	}
+	status := filepath.Join(dir, "status")
+	m := hub.NewMonitor(st, nil, hub.MonitorConfig{StatusDir: status, OfflineAfter: time.Minute})
+	m.Tick()
+	if err := hub.RevokeGateway(dir, "inst-r"); err != nil {
+		t.Fatal(err)
+	}
+	m.Tick()
+	metrics, err := os.ReadFile(filepath.Join(status, hub.MetricsFile))
+	if err != nil || !strings.Contains(string(metrics), "installations_total=0\n") || strings.Contains(string(metrics), "inst_r") {
+		t.Fatalf("metrics after the revocation (%v):\n%s", err, metrics)
 	}
 }

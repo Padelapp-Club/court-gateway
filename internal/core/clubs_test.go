@@ -1,0 +1,114 @@
+package core
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+)
+
+// slowDriver answers Ready after a delay.
+type slowDriver struct {
+	driver.Driver
+	delay time.Duration
+	err   error
+}
+
+func (d slowDriver) Capabilities() driver.Capabilities { return driver.Capabilities{} }
+
+func (d slowDriver) Ready(ctx context.Context) error {
+	select {
+	case <-time.After(d.delay):
+		return d.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func clubsOf(t *testing.T, drivers ...driver.Driver) *Clubs {
+	t.Helper()
+	c := NewClubs(ClubsOptions{})
+	var servers []*Server
+	for i, d := range drivers {
+		servers = append(servers, NewServer(&Settings{ClubID: string(rune('a' + i))}, d, nil))
+	}
+	c.Set("", servers)
+	return c
+}
+
+// Readiness checks the clubs in parallel, each club within its own time
+// limit (ReadyTimeout): twenty-four clubs that each take a second are
+// ready, although four at a time they take six; a club that is slower
+// than its limit is not. The reported error is the first club's, naming it.
+func TestClubsReadyInParallel(t *testing.T) {
+	t.Run("each within its limit", func(t *testing.T) {
+		t.Parallel()
+		var ds []driver.Driver
+		for i := 0; i < 24; i++ {
+			ds = append(ds, slowDriver{delay: time.Second})
+		}
+		if err := clubsOf(t, ds...).Ready(context.Background()); err != nil {
+			t.Fatalf("clubs, each within its limit, are not ready: %v", err)
+		}
+	})
+	t.Run("one slower", func(t *testing.T) {
+		t.Parallel()
+		if err := clubsOf(t, slowDriver{}, slowDriver{delay: ReadyTimeout + time.Second}).Ready(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a club slower than its limit: %v", err)
+		}
+	})
+	first, second := errors.New("first"), errors.New("second")
+	if err := clubsOf(t, slowDriver{err: first, delay: 20 * time.Millisecond}, slowDriver{err: second}).Ready(context.Background()); !errors.Is(err, first) || fmt.Sprint(ReadyClubs(err)) != "[a]" {
+		t.Fatalf("err = %v, want the first club's", err)
+	}
+}
+
+// strayDriver reads a booking on a court the club's config does not have.
+type strayDriver struct{ slowDriver }
+
+func (strayDriver) Get(context.Context, string) (driver.Booking, error) {
+	return driver.Booking{ID: "e-00000000-0000-4000-8000-0000000000e1", Court: "removed-court", Start: time.Now(), End: time.Now().Add(time.Hour)}, nil
+}
+
+// A booking the driver places on a court the config does not have (one
+// removed from it) is 409 COURT_NOT_CONFIGURED, not exposed.
+func TestGetOfABookingOnAnUnknownCourt(t *testing.T) {
+	srv := NewServer(&Settings{ClubID: "club-a", Location: time.UTC, Courts: []Court{{ID: "court-1", Name: "C1"}}}, strayDriver{}, nil)
+	r := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-a/bookings/e-00000000-0000-4000-8000-0000000000e1", nil)
+	r = r.WithContext(auth.WithPartnerName(r.Context(), "reader"))
+	w := httptest.NewRecorder()
+	srv.APIHandler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "COURT_NOT_CONFIGURED") || strings.Contains(w.Body.String(), "removed-court") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// euroDriver prices every hour at 10.00 in euros.
+type euroDriver struct{ slowDriver }
+
+func (euroDriver) Capabilities() driver.Capabilities { return driver.Capabilities{Currency: "EUR"} }
+
+func (euroDriver) PriceTable(context.Context, string) (driver.PriceTable, error) {
+	return driver.PriceTable{Base: []driver.PriceRule{{Days: driver.AllWeekdays, From: 0, To: 1440, PerHour: 1000}}}, nil
+}
+
+// The currency of prices and quotes is the driver's, not the core's.
+func TestCurrencyComesFromTheDriver(t *testing.T) {
+	srv := NewServer(&Settings{ClubID: "club-a", Location: time.UTC, SlotMinutes: 60, Courts: []Court{{ID: "court-1", Name: "C1"}}}, euroDriver{}, nil)
+	for _, path := range []string{"/prices?court=court-1&date=2030-01-07", "/quote?court=court-1&start=2030-01-07T10:00:00Z&end=2030-01-07T11:00:00Z"} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-a"+path, nil)
+		r = r.WithContext(auth.WithPartnerName(r.Context(), "reader"))
+		w := httptest.NewRecorder()
+		srv.APIHandler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"currency":"EUR"`) {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+	}
+}

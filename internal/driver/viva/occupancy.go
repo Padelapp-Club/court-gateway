@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,84 +23,91 @@ type slot struct {
 	Room     *struct {
 		ID string `json:"id"`
 	} `json:"room"`
+	Studio *struct {
+		ID string `json:"id"`
+	} `json:"studio"`
 	Canceled *bool `json:"canceled"`
 }
 
-// parseTime accepts RFC3339 and, as an assumption, a zone-less ISO
-// timestamp, which is taken as UTC (what the API returned to the previous
-// integration, whose host ran in UTC).
+// parseTime accepts RFC3339 only. A timestamp without a zone is refused
+// (the answer is invalid): nothing observed says which zone it would be in.
 func parseTime(s string) (time.Time, bool) {
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, true
-	}
-	if t, err := time.ParseInLocation("2006-01-02T15:04:05.999999999", s, time.UTC); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t, err == nil
 }
 
 // formatTime writes UTC with milliseconds, like JavaScript toISOString().
 func formatTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-func utcDay(t time.Time) time.Time {
-	t = t.UTC()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+// day is local midnight of t in the studio's zone loc.
+func day(t time.Time, loc *time.Location) time.Time {
+	t = t.In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 }
 
-// listWindow computes the whole-UTC-day window to request for [from, to),
-// and whether the answer can be complete.
-//
-// The list endpoints filter by whole UTC days, so a booking that starts on
-// the previous UTC day may still overlap the range: we ask one extra day on
-// each side and cut the overlap ourselves. But the endpoints return an
-// EMPTY list for past dates. Two consequences:
-//   - a range that starts before today (UTC) is reported incomplete;
-//   - for a range that starts today or later, the margin day is never moved
-//     into the past: asking with a past dateFrom could empty the whole answer
-//     (only fully past ranges were observed), and an empty answer reads as
-//     "everything is free". The price is a documented residual: a booking that
-//     began yesterday (UTC) and runs past midnight is not seen by a query
-//     starting today.
-func listWindow(from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
-	today := utcDay(now)
-	complete = !from.Before(today)
-	dateFrom = utcDay(from).AddDate(0, 0, -1)
-	if complete && dateFrom.Before(today) {
-		dateFrom = today
+// crmClockLead is how far the CRM's clock may run ahead of the gateway's:
+// near midnight the CRM's "today" may already be the gateway's tomorrow.
+const crmClockLead = 5 * time.Minute
+
+// listDays is the longest date range asked in one list request: a club's
+// month of exercises in one answer would be large, so long ranges are
+// asked a week at a time.
+const listDays = 7
+
+// window computes the dates to list for [from, to) in the studio's zone
+// loc and whether the answer can be complete. Viva selects list records by
+// their start date in the studio's day and leaves out exercises of past
+// days (docs/hub.md, completeness bounds). So exercises are listed from
+// the day before the range; a range before the CRM's today (crmClockLead
+// ahead of ours) plus overnight_minutes is incomplete; breaks are listed
+// break_lookback_days back.
+func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
+	// a record that starts after to's day cannot overlap; one day more in
+	// case Viva reads dateTo as exclusive
+	dateTo = day(to, loc).AddDate(0, 0, 1)
+	if kind == "breaks" {
+		return day(from, loc).AddDate(0, 0, -d.lookback), dateTo, true
 	}
-	dateTo = utcDay(to).AddDate(0, 0, 1)
-	return dateFrom, dateTo, complete
+	today := day(now.Add(crmClockLead), loc)
+	return day(from, loc).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
-func (d *Driver) list(ctx context.Context, kind string, room string, dateFrom, dateTo time.Time) ([]slot, error) {
+// pageSizes are list lengths a CRM that cut its lists into pages would
+// answer with. [ASSUMPTION] Viva's lists are not paged: they are a bare
+// JSON array (a paging envelope is not one, and is refused); a list of
+// exactly one of these lengths may still be a first page, so the answer
+// is taken as incomplete.
+var pageSizes = map[int]bool{50: true, 100: true, 200: true, 250: true, 500: true, 1000: true}
+
+// list reads one kind for the whole studio; whole is false when the list
+// may be one page of a longer one (pageSizes). Rooms are filtered here
+// (intervals), never upstream: a break without a room closes the whole
+// studio, and what a room filter on the CRM side leaves out is not known.
+func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Time) (items []slot, whole bool, err error) {
 	q := url.Values{
 		"studioId":        {d.studio},
 		"dateFrom":        {dateFrom.Format("2006-01-02")},
 		"dateTo":          {dateTo.Format("2006-01-02")},
 		"includeCanceled": {"false"},
 	}
-	if room != "" {
-		q.Set("roomId", room)
-	}
 	status, data, err := d.c.do(ctx, http.MethodGet, "/"+kind, q, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", kind, status), nil)
+		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", kind, status))
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": response is not a JSON array", nil)
+		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": response is not a JSON array")
 	}
 	var out []slot
 	if err := json.Unmarshal(trimmed, &out); err != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": malformed item", nil)
+		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": malformed item")
 	}
-	return out, nil
+	return out, !pageSizes[len(out)], nil
 }
 
-// Occupancy implements driver.Driver.
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
 	rooms := map[string]string{}
 	for _, cid := range q.Courts {
@@ -109,77 +117,129 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		rooms[c.room] = cid
 	}
-	roomFilter := ""
-	if len(q.Courts) == 1 {
-		roomFilter = d.byCourt[q.Courts[0]].room
+	loc, err := d.zoneNow(ctx)
+	if err != nil {
+		return driver.Occupancy{}, err
 	}
-	dateFrom, dateTo, complete := listWindow(q.From, q.To, d.now())
-
-	occ := driver.Occupancy{Complete: complete}
+	// without the hub's time the CRM's "today" is not known: incomplete
+	now, known := d.clock()
+	occ := driver.Occupancy{Complete: known}
 	for _, kind := range []string{"exercises", "breaks"} {
-		items, err := d.list(ctx, kind, roomFilter, dateFrom, dateTo)
-		if err != nil {
-			return driver.Occupancy{}, err
+		dateFrom, dateTo, complete := d.window(kind, loc, q.From, q.To, now)
+		occ.Complete = occ.Complete && complete
+		step := listDays
+		if kind == "breaks" {
+			step = 1 << 20 // breaks are few: one request, however long the look-back
+		}
+		var items []slot
+		for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
+			last := f.AddDate(0, 0, step-1)
+			if last.After(dateTo) {
+				last = dateTo
+			}
+			part, whole, err := d.list(ctx, kind, f, last)
+			if err == nil && !whole && last.After(f) {
+				// a page-sized list may be a first page: asked once more day
+				// by day, it is whole when no day's list is page-sized
+				part, whole = nil, true
+				for g := f; err == nil && !g.After(last); g = g.AddDate(0, 0, 1) {
+					var p []slot
+					var w bool
+					p, w, err = d.list(ctx, kind, g, g)
+					part, whole = append(part, p...), whole && w
+				}
+			}
+			if err != nil {
+				return driver.Occupancy{}, err
+			}
+			occ.Complete = occ.Complete && whole
+			items = append(items, part...)
 		}
 		prefix := "e-"
 		if kind == "breaks" {
 			prefix = "b-"
 		}
 		for _, it := range items {
-			iv, keep, err := d.interval(kind, prefix, it, rooms)
+			ivs, err := d.intervals(kind, prefix, it, rooms)
 			if err != nil {
 				return driver.Occupancy{}, err
 			}
-			if keep && iv.Start.Before(q.To) && iv.End.After(q.From) {
-				occ.Intervals = append(occ.Intervals, iv)
+			for _, iv := range ivs {
+				if iv.Start.Before(q.To) && iv.End.After(q.From) {
+					occ.Intervals = append(occ.Intervals, iv)
+				}
 			}
 		}
 	}
 	return occ, nil
 }
 
-// interval validates one list item. Anything structurally wrong makes the
+// intervals validates one list item and returns the courts it occupies
+// among rooms (room id -> court). Anything structurally wrong makes the
 // whole answer invalid: silently dropping an item would show a busy court
-// as free.
-func (d *Driver) interval(kind, prefix string, it slot, rooms map[string]string) (driver.Interval, bool, error) {
-	bad := func(what string) (driver.Interval, bool, error) {
-		return driver.Interval{}, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": item "+what, nil)
+// as free. A break without a room closes the whole studio, so it occupies
+// every court asked about; an exercise without one is invalid.
+func (d *Driver) intervals(kind, prefix string, it slot, rooms map[string]string) ([]driver.Interval, error) {
+	bad := func(what string) ([]driver.Interval, error) {
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": item "+what)
 	}
 	if !uuidRe.MatchString(it.ID) {
 		return bad("has no valid id")
 	}
-	if it.Room == nil || it.Room.ID == "" {
+	roomless := it.Room == nil || it.Room.ID == ""
+	if roomless && kind != "breaks" {
 		return bad("has no room")
 	}
 	start, ok1 := parseTime(it.TimeFrom)
 	end, ok2 := parseTime(it.TimeTo)
 	if !ok1 || !ok2 {
-		return bad("has unparseable timeFrom/timeTo")
+		return bad("has unparseable or zone-less timeFrom/timeTo")
 	}
 	if !end.After(start) {
 		return bad("ends before it starts")
 	}
 	if it.Canceled != nil && *it.Canceled {
-		return driver.Interval{}, false, nil
+		return nil, nil
 	}
-	court, ok := rooms[strings.ToLower(it.Room.ID)]
-	if !ok {
-		return driver.Interval{}, false, nil // a room that is not a configured court
+	iv := driver.Interval{ID: prefix + strings.ToLower(it.ID), Start: start, End: end}
+	var out []driver.Interval
+	for room, court := range rooms {
+		if roomless || room == strings.ToLower(it.Room.ID) {
+			iv.Court = court
+			out = append(out, iv)
+		}
 	}
-	return driver.Interval{ID: prefix + strings.ToLower(it.ID), Court: court, Start: start, End: end}, true, nil
+	return out, nil // a room that is not a configured court occupies none
 }
 
-// Ready logs in (or reuses the cached token) and makes a narrow occupancy
-// read on the first court.
+// Ready checks the club's config against the account (CheckConfig, which
+// logs in) and reads today's exercises and breaks of the first court,
+// validating every item as occupancy does: an answer occupancy would
+// refuse is not ready. A config alert is returned only when the reads
+// pass.
 func (d *Driver) Ready(ctx context.Context) error {
-	if _, err := d.c.accessToken(ctx); err != nil {
+	st, err := d.studioOf(ctx)
+	if err != nil {
 		return err
 	}
-	now := d.now()
-	_, err := d.Occupancy(ctx, driver.OccupancyQuery{
-		Courts: []string{d.courts[0].id},
-		From:   now,
-		To:     now.Add(time.Duration(d.slot) * time.Minute),
-	})
-	return err
+	alert := d.check(st)
+	var ca *driver.ConfigAlert
+	if alert != nil && !errors.As(alert, &ca) {
+		return alert
+	}
+	now, _ := d.clock()
+	today := day(now, d.zone(st))
+	rooms := map[string]string{d.courts[0].room: ""}
+	for _, kind := range []string{"exercises", "breaks"} {
+		items, _, err := d.list(ctx, kind, today, today)
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			if _, err := d.intervals(kind, "", it, rooms); err != nil {
+				return err
+			}
+		}
+	}
+	return alert
 }

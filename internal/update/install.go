@@ -20,74 +20,20 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/version"
 )
 
-// Installer switches binaries.
-type Installer interface {
-	// StagingDir is where downloads go (same filesystem as the target, so
-	// the final step is an atomic rename).
-	StagingDir() string
-	// Install moves the verified file into place and returns the binary
-	// to execute next.
-	Install(path, version string) (string, error)
-	// Rollback restores the previous binary.
-	Rollback() error
-	// Current is the binary to execute now.
-	Current() string
-}
-
-// InPlace replaces the running executable, keeping the previous one next
-// to it as <exe>.prev. Renaming a running executable is allowed on Linux,
-// macOS and Windows; the running process keeps its old image.
-type InPlace struct {
-	Exe string
-}
-
-// StagingDir implements Installer.
-func (i *InPlace) StagingDir() string { return filepath.Dir(i.Exe) }
-
-// Current implements Installer.
-func (i *InPlace) Current() string { return i.Exe }
-
-// Install implements Installer.
-func (i *InPlace) Install(path, _ string) (string, error) {
-	prev := i.Exe + ".prev"
-	_ = os.Remove(prev)
-	if err := os.Rename(i.Exe, prev); err != nil {
-		return "", err
-	}
-	if err := os.Rename(path, i.Exe); err != nil {
-		_ = os.Rename(prev, i.Exe)
-		return "", err
-	}
-	return i.Exe, nil
-}
-
-// Rollback implements Installer.
-func (i *InPlace) Rollback() error {
-	prev := i.Exe + ".prev"
-	if _, err := os.Stat(prev); err != nil {
-		return fmt.Errorf("no previous binary to roll back to: %w", err)
-	}
-	failed := i.Exe + ".failed"
-	_ = os.Remove(failed)
-	if err := os.Rename(i.Exe, failed); err != nil {
-		return err
-	}
-	if err := os.Rename(prev, i.Exe); err != nil {
-		_ = os.Rename(failed, i.Exe)
-		return err
-	}
-	return nil
-}
-
-// CacheDir keeps updated binaries in a writable directory when the shipped
-// executable is read-only (the container image): <dir>/bin holds
-// court-gateway-<version> files and current.json points at the one to run.
-// At start the shipped binary calls Launch, which runs the newest verified
-// cached binary, and falls back to itself when there is none.
-type CacheDir struct {
+// Versions keeps verified updates in the state directory and never touches
+// the installed binary, the one the service manager starts. That binary
+// is a stable launcher: at start it hands over to the newest verified
+// version in <state>/versions (Launch), and runs itself when there is
+// none. Every step of an update is a new file or an atomic rename inside
+// <state>/versions, so an interruption at any point leaves the installed
+// binary in place and runnable, and at most an unused file behind.
+//
+//	versions/court-gateway-<version>[.exe]  verified binaries
+//	versions/current.json                   the version to run
+//	versions/previous.json                  the one before it (rollback)
+type Versions struct {
+	// Dir is the state directory.
 	Dir string
-	// Shipped is the read-only binary that came with the installation.
-	Shipped string
 }
 
 type pointer struct {
@@ -96,17 +42,23 @@ type pointer struct {
 	SHA256  string `json:"sha256"`
 }
 
-func (c *CacheDir) bin() string { return filepath.Join(c.Dir, "bin") }
+func (v *Versions) dir() string { return filepath.Join(v.Dir, "versions") }
 
-// StagingDir implements Installer.
-func (c *CacheDir) StagingDir() string { return c.bin() }
+func (v *Versions) file(name string) string { return filepath.Join(v.dir(), name) }
 
-// Current implements Installer.
-func (c *CacheDir) Current() string {
-	if p, err := readPointer(filepath.Join(c.bin(), "current.json")); err == nil {
-		return p.Path
+// Writable reports whether updates can be kept (the state directory is
+// writable).
+func (v *Versions) Writable() bool {
+	if err := os.MkdirAll(v.dir(), 0o700); err != nil {
+		return false
 	}
-	return c.Shipped
+	f, err := os.CreateTemp(v.dir(), ".probe-*")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return true
 }
 
 func readPointer(path string) (pointer, error) {
@@ -132,121 +84,167 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// Install implements Installer.
-func (c *CacheDir) Install(path, ver string) (string, error) {
+// step is called before every step of Install (tests interrupt there).
+var step = func(string) error { return nil }
+
+// Install moves a verified download into the versions and makes it
+// current; the current one becomes previous.
+func (v *Versions) Install(path, ver string) error {
 	name := "court-gateway-" + ver
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	final := filepath.Join(c.bin(), name)
+	final := v.file(name)
 	sum, err := fileSHA256(path)
 	if err != nil {
-		return "", err
+		return err
+	}
+	if err := step("place"); err != nil {
+		return err
 	}
 	if err := os.Rename(path, final); err != nil {
-		return "", err
+		return err
 	}
-	cur := filepath.Join(c.bin(), "current.json")
-	if data, err := os.ReadFile(cur); err == nil {
-		_ = core.WriteFileAtomic(filepath.Join(c.bin(), "previous.json"), data, 0o600)
-	} else {
-		_ = os.Remove(filepath.Join(c.bin(), "previous.json")) // previous is the shipped binary
+	if err := step("previous"); err != nil {
+		return err
+	}
+	if data, err := os.ReadFile(v.file("current.json")); err == nil {
+		if err := core.WriteFileAtomic(v.file("previous.json"), data, 0o600); err != nil {
+			return err
+		}
+	} else if err := os.Remove(v.file("previous.json")); err != nil && !os.IsNotExist(err) {
+		return err // the previous one is the installed binary
+	}
+	if err := step("current"); err != nil {
+		return err
 	}
 	data, _ := json.Marshal(pointer{Version: ver, Path: final, SHA256: sum})
-	if err := core.WriteFileAtomic(cur, data, 0o600); err != nil {
-		return "", err
+	if err := core.WriteFileAtomic(v.file("current.json"), data, 0o600); err != nil {
+		return err
 	}
-	c.prune(final)
-	return final, nil
+	if err := step("prune"); err != nil {
+		return err
+	}
+	v.prune()
+	return nil
 }
 
-// prune removes cached binaries other than the current and previous ones.
-func (c *CacheDir) prune(keep string) {
-	prev, _ := readPointer(filepath.Join(c.bin(), "previous.json"))
-	entries, _ := os.ReadDir(c.bin())
+// prune removes version files that neither pointer names, and stray
+// downloads.
+func (v *Versions) prune() {
+	keep := map[string]bool{}
+	for _, f := range []string{"current.json", "previous.json"} {
+		if p, err := readPointer(v.file(f)); err == nil {
+			keep[p.Path] = true
+		}
+	}
+	entries, _ := os.ReadDir(v.dir())
 	for _, e := range entries {
-		p := filepath.Join(c.bin(), e.Name())
-		if strings.HasPrefix(e.Name(), "court-gateway-") && p != keep && p != prev.Path {
+		p := v.file(e.Name())
+		if (strings.HasPrefix(e.Name(), "court-gateway-") || strings.HasPrefix(e.Name(), ".court-gateway-download-")) && !keep[p] {
 			_ = os.Remove(p)
 		}
 	}
 }
 
-// Rollback implements Installer.
-func (c *CacheDir) Rollback() error {
-	cur := filepath.Join(c.bin(), "current.json")
-	prev := filepath.Join(c.bin(), "previous.json")
-	if data, err := os.ReadFile(prev); err == nil {
-		if err := core.WriteFileAtomic(cur, data, 0o600); err != nil {
+// Rollback makes the previous version current again, or, with none, goes
+// back to the installed binary.
+func (v *Versions) Rollback() error {
+	if data, err := os.ReadFile(v.file("previous.json")); err == nil {
+		if err := core.WriteFileAtomic(v.file("current.json"), data, 0o600); err != nil {
 			return err
 		}
-		return os.Remove(prev)
+		return os.Remove(v.file("previous.json"))
 	}
-	err := os.Remove(cur) // back to the shipped binary
+	err := os.Remove(v.file("current.json"))
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
 }
 
-// LaunchedEnv is set on a process started by Launch, so it never launches
-// again.
-const LaunchedEnv = "COURT_GATEWAY_LAUNCHED"
-
-// Launch returns the cached binary the shipped binary should hand over to:
-// newer than own, unchanged since it was verified, not marked bad. "" means
-// run the shipped binary.
-func (c *CacheDir) Launch(own string, now time.Time) string {
-	if os.Getenv(LaunchedEnv) != "" {
-		return ""
+// Launch returns the version the installed binary (version own) should
+// hand over to: the current one, or else the previous one, that is newer
+// than own, still has the checksum it was verified with and has not
+// failed here recently. "" means run the installed binary itself.
+func (v *Versions) Launch(own string, now time.Time) string {
+	for _, f := range []string{"current.json", "previous.json"} {
+		p, err := readPointer(v.file(f))
+		if err != nil || !version.Newer(p.Version, own) || filepath.Dir(p.Path) != v.dir() || isBad(v.Dir, p.Version, now) {
+			continue
+		}
+		if sum, err := fileSHA256(p.Path); err == nil && sum == p.SHA256 {
+			return p.Path
+		}
 	}
-	p, err := readPointer(filepath.Join(c.bin(), "current.json"))
-	if err != nil || !version.Newer(p.Version, own) {
-		return ""
-	}
-	if filepath.Dir(p.Path) != c.bin() {
-		return ""
-	}
-	if t, bad := BadVersions(c.Dir)[p.Version]; bad && now.Sub(t) < BadVersionTTL {
-		return ""
-	}
-	sum, err := fileSHA256(p.Path)
-	if err != nil || sum != p.SHA256 {
-		return ""
-	}
-	return p.Path
+	return ""
 }
 
-// ShippedEnv carries the path of the shipped binary into a cached binary
-// started by Launch, so the cached binary keeps using the cache.
-const ShippedEnv = "COURT_GATEWAY_SHIPPED"
-
-// ChooseInstaller replaces the executable in place when its directory is
-// writable, and otherwise caches updates in stateDir. ok is false when
-// neither works (updates stay off and the hub shows the old version).
-func ChooseInstaller(exe, stateDir string) (Installer, bool) {
-	if shipped := os.Getenv(ShippedEnv); shipped != "" {
-		return &CacheDir{Dir: stateDir, Shipped: shipped}, true
+// RunningVersion is the version the service of stateDir runs: the one it
+// last wrote to its health file, else the verified version the installed
+// binary (version own) hands over to at start, else own.
+func RunningVersion(stateDir, own string, now time.Time) string {
+	if st, err := core.ReadHealthStatus(stateDir); err == nil && st.Version != "" {
+		return st.Version
 	}
-	if f, err := os.CreateTemp(filepath.Dir(exe), ".court-gateway-probe-*"); err == nil {
-		name := f.Name()
-		f.Close()
-		os.Remove(name)
-		return &InPlace{Exe: exe}, true
+	v := &Versions{Dir: stateDir}
+	if path := v.Launch(own, now); path != "" {
+		for _, f := range []string{"current.json", "previous.json"} {
+			if p, err := readPointer(v.file(f)); err == nil && p.Path == path {
+				return p.Version
+			}
+		}
 	}
-	if runtime.GOOS == "windows" {
-		return nil, false
-	}
-	c := &CacheDir{Dir: stateDir, Shipped: exe}
-	if err := os.MkdirAll(c.bin(), 0o700); err != nil {
-		return nil, false
-	}
-	return c, true
+	return own
 }
 
-// SelfCheckTransientExit is the exit code of `selfcheck` when the
-// environment (CRM, hub) rather than the binary failed.
-const SelfCheckTransientExit = 10
+// LaunchedEnv is set on a version started by the installed binary, so it
+// does not hand over again. InstalledEnv carries the installed binary's
+// path into it.
+const (
+	LaunchedEnv  = "COURT_GATEWAY_LAUNCHED"
+	InstalledEnv = "COURT_GATEWAY_INSTALLED"
+)
+
+// InstalledPath is the binary the service manager starts: the running
+// executable, or, in a version it handed over to, the one it names.
+func InstalledPath() string {
+	if p := os.Getenv(InstalledEnv); p != "" {
+		return p
+	}
+	exe, _ := os.Executable()
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	return exe
+}
+
+// LaunchEnv is the environment of a version the installed binary hands
+// over to.
+func LaunchEnv(installed string) []string {
+	return append(baseEnv(), LaunchedEnv+"=1", InstalledEnv+"="+installed)
+}
+
+// baseEnv is this process's environment without the hand-over variables:
+// also the environment for starting the installed binary again, which
+// then picks the version to run.
+func baseEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, LaunchedEnv+"=") && !strings.HasPrefix(kv, InstalledEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// Exit codes of `selfcheck` other than 0 (passed) and 1 (broken):
+// SelfCheckTransientExit when the environment (CRM, hub) rather than the
+// binary failed, SelfCheckNotRunExit when the CRM rejected the password.
+const (
+	SelfCheckTransientExit = 10
+	SelfCheckNotRunExit    = 11
+)
 
 // ChildCheck runs the downloaded binary before the switch: `version` must
 // name the version from the signed manifest, and `selfcheck` with the live
@@ -273,6 +271,8 @@ func ChildCheck(configPath string) func(ctx context.Context, path, ver string) e
 			return nil
 		case errors.As(err, &ee) && ee.ExitCode() == SelfCheckTransientExit:
 			return fmt.Errorf("%w: %s", ErrTransient, firstLine(stderr.String()))
+		case errors.As(err, &ee) && ee.ExitCode() == SelfCheckNotRunExit:
+			return ErrNotRun
 		case cctx.Err() != nil:
 			return fmt.Errorf("%w: self-check timed out", ErrTransient)
 		default:

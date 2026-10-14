@@ -1,6 +1,7 @@
 // Package auth is a self-contained HTTP middleware for partner API keys:
-// bearer-key authentication with constant-time comparison, read/book scopes
-// and a per-key token bucket on write requests. It knows nothing about the
+// bearer-key authentication with constant-time comparison, read/book scopes,
+// a per-key token bucket on write requests and a cap on the requests one
+// key has in flight. It knows nothing about the
 // handler it protects, so it can be placed in front of the same API handler
 // wherever that handler is served.
 package auth
@@ -9,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -44,7 +44,13 @@ type Partner struct {
 // refusal so the protected API keeps one error format.
 type ErrorWriter func(w http.ResponseWriter, r *http.Request, status int, code, message string)
 
-// Options tune the middleware.
+// maxInFlight caps the requests of one key being served at once, reads
+// included, over all its clubs together. It bounds the load one key puts
+// on the server; a club's gateway is guarded by the hub's own per-gateway
+// cap.
+const maxInFlight = 16
+
+// Options tune the middleware. WriteError is required.
 type Options struct {
 	WriteError ErrorWriter
 	Now        func() time.Time
@@ -56,6 +62,7 @@ type partner struct {
 	read   bool
 	book   bool
 	bucket *bucket
+	slots  chan struct{} // one per request in flight
 }
 
 // Authenticator holds the configured keys.
@@ -67,13 +74,10 @@ type Authenticator struct {
 
 // New validates the partner list and builds an Authenticator.
 func New(partners []Partner, opts Options) (*Authenticator, error) {
-	if len(partners) == 0 {
-		return nil, errors.New("auth: at least one partner is required")
+	if len(partners) == 0 || opts.WriteError == nil {
+		return nil, errors.New("auth: at least one partner and an error writer are required")
 	}
 	a := &Authenticator{writeErr: opts.WriteError, now: opts.Now}
-	if a.writeErr == nil {
-		a.writeErr = defaultWriteError
-	}
 	if a.now == nil {
 		a.now = time.Now
 	}
@@ -92,7 +96,7 @@ func New(partners []Partner, opts Options) (*Authenticator, error) {
 			return nil, fmt.Errorf("auth: partners %q and %q share a key", other, p.Name)
 		}
 		seen[d] = p.Name
-		ip := &partner{name: p.Name, digest: d}
+		ip := &partner{name: p.Name, digest: d, slots: make(chan struct{}, maxInFlight)}
 		for _, s := range p.Scopes {
 			switch s {
 			case ScopeRead:
@@ -140,7 +144,8 @@ func (a *Authenticator) lookup(key string) *partner {
 	return found
 }
 
-func bearer(r *http.Request) (string, bool) {
+// Bearer returns the token of an "Authorization: Bearer" header.
+func Bearer(r *http.Request) (string, bool) {
 	h := r.Header.Get("Authorization")
 	const prefix = "bearer "
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
@@ -150,18 +155,20 @@ func bearer(r *http.Request) (string, bool) {
 	return k, k != ""
 }
 
-func isWrite(method string) bool {
+// Needs is the scope method needs: read for GET, HEAD and OPTIONS, book
+// for the rest. The hub and the gateway decide alike.
+func Needs(method string) Scope {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return false
+		return ScopeRead
 	}
-	return true
+	return ScopeBook
 }
 
 // Wrap protects next.
 func (a *Authenticator) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key, ok := bearer(r)
+		key, ok := Bearer(r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
 			a.writeErr(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "missing or malformed Authorization: Bearer header")
@@ -173,7 +180,7 @@ func (a *Authenticator) Wrap(next http.Handler) http.Handler {
 			a.writeErr(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "unknown API key")
 			return
 		}
-		write := isWrite(r.Method)
+		write := Needs(r.Method) == ScopeBook
 		if (write && !p.book) || (!write && !p.read) {
 			a.writeErr(w, r, http.StatusForbidden, "FORBIDDEN", "the API key has no scope for this operation")
 			return
@@ -184,6 +191,14 @@ func (a *Authenticator) Wrap(next http.Handler) http.Handler {
 				a.writeErr(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many write requests for this API key")
 				return
 			}
+		}
+		select {
+		case p.slots <- struct{}{}:
+			defer func() { <-p.slots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			a.writeErr(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests in flight for this API key")
+			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithPartnerName(r.Context(), p.name)))
 	})
@@ -216,10 +231,4 @@ func (b *bucket) take(now time.Time) (time.Duration, bool) {
 		return 0, true
 	}
 	return time.Duration((1 - b.tokens) / b.perSec * float64(time.Second)), false
-}
-
-func defaultWriteError(w http.ResponseWriter, _ *http.Request, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
 }

@@ -2,15 +2,21 @@ package core
 
 import (
 	"bytes"
+	"cmp"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base32"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,10 +28,6 @@ import (
 
 // PasswordEnv is the environment variable holding the CRM password.
 const PasswordEnv = "CRM_PASSWORD"
-
-// DefaultListen is used when the config has neither `listen` nor `hub`.
-// With a hub the local port stays closed unless `listen` is set.
-const DefaultListen = ":8080"
 
 // DefaultHubSecretEnv holds the gateway's secret for the hub.
 const DefaultHubSecretEnv = "GATEWAY_HUB_SECRET"
@@ -41,23 +43,22 @@ const StateDirEnv = "GATEWAY_STATE_DIR"
 // does not set one.
 const DefaultWritesPerMinute = 60
 
-// minKeyLength is the minimum partner key length accepted from the
-// environment.
-const minKeyLength = 24
+// MinKeyLength is the minimum length of a partner or operator key taken
+// from the environment.
+const MinKeyLength = 24
 
-// fileConfig mirrors gateway.yaml. Driver-specific keys of `crm`, of each
-// court and of `services` are kept as raw maps and handed to the driver.
+// fileConfig mirrors gateway.yaml: the installation only (its clubs are on
+// the hub); `crm` driver keys are handed to the driver raw.
 type fileConfig struct {
-	Club struct {
-		ID   string `yaml:"id"`
-		Name string `yaml:"name"`
-	} `yaml:"club"`
-	Listen string `yaml:"listen"`
-	Hub    *struct {
-		URL       string `yaml:"url"`
-		CAFile    string `yaml:"ca_file"`
-		SecretEnv string `yaml:"secret_env"`
-		Polls     int    `yaml:"polls"`
+	Hub *struct {
+		URL          string `yaml:"url"`
+		Installation string `yaml:"installation"`
+		Key          string `yaml:"key"`
+		CAFile       string `yaml:"ca_file"`
+		SecretEnv    string `yaml:"secret_env"`
+		Polls        int    `yaml:"polls"`
+		ProxyURL     string `yaml:"proxy_url"`
+		NoProxy      string `yaml:"no_proxy"`
 	} `yaml:"hub"`
 	Update *struct {
 		Enabled     *bool  `yaml:"enabled"`
@@ -68,23 +69,81 @@ type fileConfig struct {
 		Type string         `yaml:"type"`
 		Rest map[string]any `yaml:",inline"`
 	} `yaml:"crm"`
-	Venue struct {
-		Timezone    string            `yaml:"timezone"`
-		SlotMinutes int               `yaml:"slot_minutes"`
-		Hours       map[string]string `yaml:"hours"`
-	} `yaml:"venue"`
-	Courts []struct {
-		ID   string         `yaml:"id"`
-		Name string         `yaml:"name"`
-		Rest map[string]any `yaml:",inline"`
-	} `yaml:"courts"`
-	Services map[string]map[string]any `yaml:"services"`
-	Partners []struct {
-		Name            string   `yaml:"name"`
-		KeyEnv          string   `yaml:"key_env"`
-		Scopes          []string `yaml:"scopes"`
-		WritesPerMinute *int     `yaml:"writes_per_minute"`
-	} `yaml:"partners"`
+}
+
+// PartnerEntry is a partner as hub.yaml lists it.
+type PartnerEntry struct {
+	Name            string   `yaml:"name"`
+	KeyEnv          string   `yaml:"key_env"`
+	Scopes          []string `yaml:"scopes"`
+	WritesPerMinute *int     `yaml:"writes_per_minute"`
+}
+
+// ParsePartners validates partner entries and reads their keys with getenv
+// (problems to add, in Russian); it returns them and the keys to redact.
+func ParsePartners(entries []PartnerEntry, getenv func(string) string, add func(string, ...any)) ([]auth.Partner, []string) {
+	var out []auth.Partner
+	var keys []string
+	seenName := map[string]bool{}
+	seenKey := map[string]string{}
+	for i, p := range entries {
+		path := fmt.Sprintf("partners[%d]", i)
+		name := strings.TrimSpace(p.Name)
+		switch {
+		case name == "":
+			add("%s.name: параметр обязателен", path)
+		case !partnerNameRe.MatchString(name):
+			add("%s.name: «%s» — допустимы строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
+		case seenName[name]:
+			add("%s.name: партнёр «%s» указан дважды", path, name)
+		}
+		seenName[name] = true
+		var key string
+		envName := strings.TrimSpace(p.KeyEnv)
+		switch {
+		case envName == "":
+			add("%s.key_env: параметр обязателен — имя переменной окружения с ключом партнёра (например PARTNER_KEY_1)", path)
+		case !envNameRe.MatchString(envName):
+			add("%s.key_env: «%s» — имя переменной окружения пишется заглавными латинскими буквами, цифрами и _", path, envName)
+		case envName == PasswordEnv:
+			add("%s.key_env: переменная %s занята паролем CRM", path, PasswordEnv)
+		default:
+			key = strings.TrimSpace(getenv(envName))
+			switch {
+			case key == "":
+				add("%s.key_env: переменная окружения %s не задана или пуста", path, envName)
+			case len(key) < MinKeyLength:
+				add("%s.key_env: ключ в %s слишком короткий — нужно не меньше %d символов", path, envName, MinKeyLength)
+			default:
+				if other, dup := seenKey[key]; dup {
+					add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
+				}
+				seenKey[key] = name
+				keys = append(keys, key)
+			}
+		}
+		var scopes []auth.Scope
+		if len(p.Scopes) == 0 {
+			add("%s.scopes: укажите права: [read] — только сверка, [read, book] — сверка и бронирование", path)
+		}
+		for _, sc := range p.Scopes {
+			switch auth.Scope(sc) {
+			case auth.ScopeRead, auth.ScopeBook:
+				scopes = append(scopes, auth.Scope(sc))
+			default:
+				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
+			}
+		}
+		rate := DefaultWritesPerMinute
+		if p.WritesPerMinute != nil {
+			rate = *p.WritesPerMinute
+			if rate < 1 || rate > 6000 {
+				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
+			}
+		}
+		out = append(out, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
+	}
+	return out, keys
 }
 
 // Court is a configured court as exposed by the API.
@@ -93,19 +152,18 @@ type Court struct {
 	Name string
 }
 
-// DayHours are the opening hours of one weekday in minutes since local
-// midnight; Close may be 1440.
-type DayHours struct {
-	Open  int
-	Close int
-}
-
 // HubSettings configure the outbound connection to the hub.
 type HubSettings struct {
-	URL    string
-	CAFile string
-	Secret string
-	Polls  int
+	URL string
+	// Installation and Key (the hub's public signing key) are pinned at
+	// registration: the gateway acts only on what that key signed for it.
+	Installation string
+	Key          ed25519.PublicKey
+	CAFile       string
+	Secret       string
+	// Proxy, when set, routes every outbound request (ProxyFunc).
+	Proxy ProxyFunc
+	Polls int
 }
 
 // UpdateSettings configure automatic updates.
@@ -116,15 +174,13 @@ type UpdateSettings struct {
 	ManifestURL string
 }
 
-// Settings is a validated configuration.
+// Settings is a validated configuration: the installation and, after
+// WithClub, one club configured on the hub.
 type Settings struct {
 	ClubID   string
 	ClubName string
-	// Listen is the local HTTP address; empty means no local port.
-	Listen string
-	// Hub is nil when the gateway is not connected to a hub.
-	Hub    *HubSettings
-	Update UpdateSettings
+	Hub      *HubSettings
+	Update   UpdateSettings
 	// StateDir holds the health status file and update bookkeeping. It
 	// never holds CRM data.
 	StateDir     string
@@ -133,15 +189,16 @@ type Settings struct {
 	Location     *time.Location
 	SlotMinutes  int
 	// Hours is indexed by ISO weekday (0 = Monday); nil means closed.
-	Hours    [7]*DayHours
-	Courts   []Court
-	Partners []auth.Partner
+	Hours  [7]*[2]int // per ISO weekday: opening and closing minute (up to 1440); nil closed
+	Courts []Court
 	// Driver is the input for the driver factory.
 	Driver driver.Config
 	// Secrets are values that must never appear in logs.
 	Secrets []string
 
-	stateDirDefaulted bool
+	// installCRM is the crm section of gateway.yaml without type; a club's
+	// own crm keys go over it.
+	installCRM driver.Params
 }
 
 // CourtByID returns a configured court.
@@ -155,7 +212,7 @@ func (s *Settings) CourtByID(id string) (Court, bool) {
 }
 
 var (
-	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
 	partnerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 	envNameRe     = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )
@@ -170,20 +227,36 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.stateDirDefaulted {
-		s.StateDir = defaultStateDir(path, s.ClubID)
-	}
+	s.StateDir = StateDir(path, getenv)
 	return s, nil
 }
 
-// defaultStateDir is a "state" directory next to the config file: stable
-// for every process that reads the same config (service, healthcheck,
-// doctor), unlike the per-user temporary directory.
-func defaultStateDir(cfgPath, club string) string {
-	if abs, err := filepath.Abs(cfgPath); err == nil {
-		return filepath.Join(filepath.Dir(abs), "state")
+// StateDir is the state directory of the config at cfgPath, read without
+// secrets: $GATEWAY_STATE_DIR (also from the .env, as serve reads it), else
+// state_dir, else "state" next to it. An unreadable .env stops serve too.
+func StateDir(cfgPath string, getenv func(string) string) string {
+	if e, err := EnvWithDotEnv(cfgPath, getenv); err == nil {
+		getenv = e
+	} else if getenv == nil {
+		getenv = os.Getenv
 	}
-	return filepath.Join(os.TempDir(), "court-gateway-"+club)
+	if d := strings.TrimSpace(getenv(StateDirEnv)); d != "" {
+		return d
+	}
+	var c struct {
+		StateDir string `yaml:"state_dir"`
+	}
+	if data, err := os.ReadFile(cfgPath); err == nil {
+		_ = yaml.Unmarshal(data, &c)
+	}
+	if d := strings.TrimSpace(c.StateDir); d != "" {
+		return d
+	}
+	abs, err := filepath.Abs(cfgPath)
+	if err != nil {
+		abs = cfgPath
+	}
+	return filepath.Join(filepath.Dir(abs), "state")
 }
 
 // Load parses and validates config bytes. All problems found are reported
@@ -210,26 +283,23 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 
 	s := &Settings{}
 
-	// club
-	s.ClubID = strings.TrimSpace(fc.Club.ID)
-	s.ClubName = strings.TrimSpace(fc.Club.Name)
-	switch {
-	case s.ClubID == "":
-		add("club.id: параметр обязателен (короткое имя латиницей, например my-club)")
-	case !slugRe.MatchString(s.ClubID):
-		add("club.id: «%s» — допустимы строчные латинские буквы, цифры и дефис, до 63 символов", s.ClubID)
-	}
-	if s.ClubName == "" {
-		add("club.name: параметр обязателен (название клуба)")
-	}
-
-	// hub
-	if fc.Hub != nil {
+	// hub: the only way partners reach a gateway
+	if fc.Hub == nil {
+		add("hub: раздел обязателен — шлюз работает только через хаб; выполните court-gateway setup с кодом подключения")
+	} else {
 		h := &HubSettings{URL: strings.TrimSpace(fc.Hub.URL), CAFile: strings.TrimSpace(fc.Hub.CAFile), Polls: fc.Hub.Polls}
 		if h.URL == "" {
 			add("hub.url: параметр обязателен (адрес хаба, например https://hub.example.com)")
 		} else if err := CheckHTTPSURL("hub.url", h.URL); err != nil {
 			add("%s", err.Error())
+		}
+		if h.Installation = strings.TrimSpace(fc.Hub.Installation); !ValidID(h.Installation) {
+			add("hub.installation: параметр обязателен (идентификатор установки) — выполните court-gateway setup с новым кодом подключения")
+		}
+		if k, err := ParseHubKey(fc.Hub.Key); err != nil {
+			add("hub.key: открытый ключ хаба отсутствует или неверен — выполните court-gateway setup с новым кодом подключения")
+		} else {
+			h.Key = k
 		}
 		if h.Polls == 0 {
 			h.Polls = DefaultHubPolls
@@ -249,18 +319,15 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			s.Secrets = append(s.Secrets, h.Secret)
 		}
 		s.Hub = h
-	}
-
-	// listen
-	s.Listen = strings.TrimSpace(fc.Listen)
-	if s.Listen == "" && s.Hub == nil {
-		s.Listen = DefaultListen
-	}
-	if s.Listen != "" {
-		if _, port, err := net.SplitHostPort(s.Listen); err != nil {
-			add("listen: «%s» — ожидается адрес вида :8080 или 127.0.0.1:8080", s.Listen)
-		} else if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
-			add("listen: неверный порт «%s»", port)
+		// a corporate proxy: gateway.yaml, else HTTPS_PROXY / NO_PROXY
+		// (also from .env, which a service reads and a shell export is not)
+		if raw := cmp.Or(strings.TrimSpace(fc.Hub.ProxyURL), getenv("HTTPS_PROXY"), getenv("https_proxy")); raw != "" {
+			p, secrets, err := parseProxy(raw, cmp.Or(fc.Hub.NoProxy, getenv("NO_PROXY"), getenv("no_proxy")))
+			if err != nil {
+				add("hub.proxy_url: %v", err)
+			}
+			s.Secrets = append(s.Secrets, secrets...)
+			h.Proxy, s.Driver.Proxy = p, p
 		}
 	}
 
@@ -278,11 +345,8 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		}
 	}
 
-	// state_dir
-	s.StateDir = strings.TrimSpace(getenv(StateDirEnv))
-	if s.StateDir == "" {
-		s.StateDir = strings.TrimSpace(fc.StateDir)
-	}
+	// state_dir (LoadFile defaults it to the config's directory)
+	s.StateDir = cmp.Or(strings.TrimSpace(getenv(StateDirEnv)), strings.TrimSpace(fc.StateDir))
 
 	// crm
 	s.CRMType = strings.TrimSpace(fc.CRM.Type)
@@ -290,138 +354,12 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("crm.type: параметр обязателен (тип CRM клуба)")
 	}
 
-	// venue
-	s.TimezoneName = strings.TrimSpace(fc.Venue.Timezone)
-	if s.TimezoneName == "" {
-		add("venue.timezone: параметр обязателен (например Europe/Moscow)")
-	} else if loc, err := time.LoadLocation(s.TimezoneName); err != nil {
-		add("venue.timezone: неизвестный часовой пояс «%s» (пример: Europe/Moscow)", s.TimezoneName)
-	} else {
-		s.Location = loc
+	// every club comes from the hub (WithClub)
+	s.installCRM = driver.Params(fc.CRM.Rest)
+	if s.installCRM == nil {
+		s.installCRM = driver.Params{}
 	}
-	s.SlotMinutes = fc.Venue.SlotMinutes
-	slotOK := true
-	if s.SlotMinutes < 5 || s.SlotMinutes > 240 || 1440%s.SlotMinutes != 0 {
-		add("venue.slot_minutes: %d — шаг сетки в минутах, от 5 до 240, и сутки должны делиться на него без остатка (например 30 или 60)", s.SlotMinutes)
-		slotOK = false
-	}
-	if len(fc.Venue.Hours) == 0 {
-		add("venue.hours: параметр обязателен (часы работы по дням недели, например mon-fri: \"07:00-23:00\")")
-	} else {
-		hours, herrs := parseHours(fc.Venue.Hours)
-		errs = append(errs, herrs...)
-		s.Hours = hours
-		if slotOK && len(herrs) == 0 {
-			for i, h := range hours {
-				if h != nil && (h.Open%s.SlotMinutes != 0 || h.Close%s.SlotMinutes != 0) {
-					add("venue.hours: часы работы в %s не совпадают с сеткой %d мин", dayNamesRu[i], s.SlotMinutes)
-				}
-			}
-		}
-	}
-
-	// courts
-	if len(fc.Courts) == 0 {
-		add("courts: нужен хотя бы один корт")
-	}
-	seenCourt := map[string]bool{}
-	for i, c := range fc.Courts {
-		path := fmt.Sprintf("courts[%d]", i)
-		id := strings.TrimSpace(c.ID)
-		name := strings.TrimSpace(c.Name)
-		switch {
-		case id == "":
-			add("%s.id: параметр обязателен (например court-1)", path)
-		case !slugRe.MatchString(id):
-			add("%s.id: «%s» — допустимы строчные латинские буквы, цифры и дефис", path, id)
-		case seenCourt[id]:
-			add("%s.id: корт «%s» указан дважды", path, id)
-		}
-		seenCourt[id] = true
-		if name == "" {
-			add("%s.name: параметр обязателен (название корта)", path)
-		}
-		s.Courts = append(s.Courts, Court{ID: id, Name: name})
-		s.Driver.Courts = append(s.Driver.Courts, driver.CourtConfig{ID: id, Name: name, Params: driver.Params(c.Rest)})
-	}
-
-	// services
-	s.Driver.Services = map[string]driver.Params{}
-	for k, v := range fc.Services {
-		if k != "booking" && k != "tournament" {
-			add("services: неизвестная услуга «%s» (допустимы booking и tournament)", k)
-			continue
-		}
-		if v == nil {
-			continue
-		}
-		s.Driver.Services[k] = driver.Params(v)
-	}
-
-	// partners: with a hub, partner keys live on the hub; a local list is
-	// needed only to open the API on the local port.
-	if len(fc.Partners) == 0 && s.Hub == nil {
-		add("partners: нужен хотя бы один партнёр с ключом доступа (или раздел hub — тогда ключи партнёров хранит хаб)")
-	}
-	seenName := map[string]bool{}
-	seenKey := map[string]string{}
-	for i, p := range fc.Partners {
-		path := fmt.Sprintf("partners[%d]", i)
-		name := strings.TrimSpace(p.Name)
-		switch {
-		case name == "":
-			add("%s.name: параметр обязателен", path)
-		case !partnerNameRe.MatchString(name):
-			add("%s.name: «%s» — допустимы строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
-		case seenName[name]:
-			add("%s.name: партнёр «%s» указан дважды", path, name)
-		}
-		seenName[name] = true
-		var key string
-		envName := strings.TrimSpace(p.KeyEnv)
-		switch {
-		case envName == "":
-			add("%s.key_env: параметр обязателен — имя переменной окружения с ключом партнёра (например PARTNER_KEY_1)", path)
-		case !envNameRe.MatchString(envName):
-			add("%s.key_env: «%s» — имя переменной окружения пишется заглавными латинскими буквами, цифрами и _", path, envName)
-		case envName == PasswordEnv:
-			add("%s.key_env: переменная %s занята паролем CRM", path, PasswordEnv)
-		default:
-			key = strings.TrimSpace(getenv(envName))
-			switch {
-			case key == "":
-				add("%s.key_env: переменная окружения %s не задана или пуста", path, envName)
-			case len(key) < minKeyLength:
-				add("%s.key_env: ключ в %s слишком короткий — нужно не меньше %d символов", path, envName, minKeyLength)
-			default:
-				if other, dup := seenKey[key]; dup {
-					add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
-				}
-				seenKey[key] = name
-				s.Secrets = append(s.Secrets, key)
-			}
-		}
-		var scopes []auth.Scope
-		if len(p.Scopes) == 0 {
-			add("%s.scopes: укажите права: [read] — только сверка, [read, book] — сверка и бронирование", path)
-		}
-		for _, sc := range p.Scopes {
-			switch auth.Scope(sc) {
-			case auth.ScopeRead, auth.ScopeBook:
-				scopes = append(scopes, auth.Scope(sc))
-			default:
-				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
-			}
-		}
-		rate := DefaultWritesPerMinute
-		if p.WritesPerMinute != nil {
-			rate = *p.WritesPerMinute
-			if rate < 1 || rate > 6000 {
-				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
-			}
-		}
-		s.Partners = append(s.Partners, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
-	}
+	s.Driver.CRM = maps.Clone(s.installCRM)
 
 	password := getenv(PasswordEnv)
 	if password != "" {
@@ -430,17 +368,6 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 
 	if len(errs) > 0 {
 		return nil, &ConfigError{Problems: errs}
-	}
-	if s.StateDir == "" {
-		s.stateDirDefaulted = true
-		s.StateDir = filepath.Join(os.TempDir(), "court-gateway-"+s.ClubID)
-	}
-
-	s.Driver.Timezone = s.Location
-	s.Driver.SlotMinutes = s.SlotMinutes
-	s.Driver.CRM = driver.Params(fc.CRM.Rest)
-	if s.Driver.CRM == nil {
-		s.Driver.CRM = driver.Params{}
 	}
 	s.Driver.Password = password
 	return s, nil
@@ -459,11 +386,8 @@ func (e *ConfigError) Error() string {
 func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Driver, error) {
 	f, ok := factories[s.CRMType]
 	if !ok {
-		known := make([]string, 0, len(factories))
-		for k := range factories {
-			known = append(known, k)
-		}
-		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s» (поддерживаются: %s)", s.CRMType, strings.Join(sortedStrings(known), ", "))}}
+		known := slices.Sorted(maps.Keys(factories))
+		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s» (поддерживаются: %s)", s.CRMType, strings.Join(known, ", "))}}
 	}
 	d, err := f(s.Driver)
 	if err != nil {
@@ -474,6 +398,20 @@ func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Drive
 		return nil, &ConfigError{Problems: strings.Split(err.Error(), "\n")}
 	}
 	return d, nil
+}
+
+// BuildAccount runs the account factory registered for the configured
+// CRM type on cfg (normally s.Driver). Errors are *ConfigError.
+func BuildAccount(s *Settings, accounts map[string]driver.AccountFactory, cfg driver.Config) (driver.Account, error) {
+	f, ok := accounts[s.CRMType]
+	if !ok {
+		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s»", s.CRMType)}}
+	}
+	a, err := f(cfg)
+	if err != nil {
+		return nil, &ConfigError{Problems: strings.Split(err.Error(), "\n")}
+	}
+	return a, nil
 }
 
 var (
@@ -516,12 +454,53 @@ func goTypeRu(t string) string {
 	}
 }
 
-// CheckHTTPSURL accepts https URLs, and plain http only for loopback hosts
-// (local test doubles and development).
+// EncodeHubKey writes the hub's public signing key as gateway.yaml and the
+// registration answer carry it.
+func EncodeHubKey(k ed25519.PublicKey) string { return base64.StdEncoding.EncodeToString(k) }
+
+// ParseHubKey reads a key written by EncodeHubKey.
+func ParseHubKey(s string) (ed25519.PublicKey, error) {
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, errors.New("not an ed25519 public key")
+	}
+	return ed25519.PublicKey(b), nil
+}
+
+// HubKeyFingerprint checks the hub's key out of band (shown with the join
+// code): the key's SHA-256, first 16 bytes, base32 in groups of four.
+func HubKeyFingerprint(k ed25519.PublicKey) string {
+	sum := sha256.Sum256(k)
+	s := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:16])
+	var groups []string
+	for ; len(s) > 4; s = s[4:] {
+		groups = append(groups, s[:4])
+	}
+	return strings.Join(append(groups, s), "-")
+}
+
+// NormalizeFingerprint upper-cases a typed fingerprint and drops the
+// dashes and spaces; "" when it is not a fingerprint's 26 base32 letters.
+func NormalizeFingerprint(s string) string {
+	s = strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(s))
+	if len(s) != 26 || strings.Trim(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") != "" {
+		return ""
+	}
+	return s
+}
+
+// CheckHTTPSURL accepts https URLs, plain http only for loopback hosts, and
+// neither user, password (they would reach files and logs) nor fragment;
+// an error never repeats such a URL.
 func CheckHTTPSURL(path, raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	switch {
+	case strings.Contains(raw, "@") && (err != nil || u.User != nil):
+		return fmt.Errorf("%s: в адресе не должно быть имени пользователя и пароля (…@)", path)
+	case err != nil || u.Host == "":
 		return fmt.Errorf("%s: «%s» — неверный адрес", path, raw)
+	case u.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%s: «%s» — в адресе не должно быть «#»", path, raw)
 	}
 	switch u.Scheme {
 	case "https":
@@ -536,37 +515,4 @@ func CheckHTTPSURL(path, raw string) error {
 		}
 	}
 	return fmt.Errorf("%s: «%s» — адрес должен начинаться с https://", path, raw)
-}
-
-// StatePath returns the health status file and update bookkeeping
-// directory derived from a config file without loading secrets. It is what
-// `healthcheck` uses, so it must agree with Load.
-func StatePath(cfgPath string, getenv func(string) string) (stateDir, listen string, hub bool) {
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	var c struct {
-		Club struct {
-			ID string `yaml:"id"`
-		} `yaml:"club"`
-		Listen   string    `yaml:"listen"`
-		StateDir string    `yaml:"state_dir"`
-		Hub      yaml.Node `yaml:"hub"`
-	}
-	if data, err := os.ReadFile(cfgPath); err == nil {
-		_ = yaml.Unmarshal(data, &c)
-	}
-	hub = !c.Hub.IsZero()
-	listen = strings.TrimSpace(c.Listen)
-	if listen == "" && !hub {
-		listen = DefaultListen
-	}
-	stateDir = strings.TrimSpace(getenv(StateDirEnv))
-	if stateDir == "" {
-		stateDir = strings.TrimSpace(c.StateDir)
-	}
-	if stateDir == "" {
-		stateDir = defaultStateDir(cfgPath, strings.TrimSpace(c.Club.ID))
-	}
-	return stateDir, listen, hub
 }

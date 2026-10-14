@@ -2,8 +2,10 @@ package viva
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
@@ -16,22 +18,31 @@ func ts(s string) time.Time {
 	return t
 }
 
-func TestListWindow(t *testing.T) {
-	now := ts("2030-03-10T12:00:00Z")
+func TestWindow(t *testing.T) {
+	msk, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Driver{overnight: 4 * time.Hour, lookback: 7}
 	cases := []struct {
-		name, from, to   string
-		wantFrom, wantTo string
-		complete         bool
+		name, kind, now, from, to string
+		wantFrom, wantTo          string
+		complete                  bool
 	}{
-		{"future range gets a day of margin on both sides", "2030-03-12T09:00:00Z", "2030-03-12T18:00:00Z", "2030-03-11", "2030-03-13", true},
-		{"range starting today never asks for a past day", "2030-03-10T13:00:00Z", "2030-03-10T15:00:00Z", "2030-03-10", "2030-03-11", true},
-		{"local midnight before UTC midnight is still today's margin", "2030-03-11T21:00:00Z", "2030-03-12T21:00:00Z", "2030-03-10", "2030-03-13", true},
-		{"range touching yesterday is incomplete", "2030-03-09T22:00:00Z", "2030-03-10T15:00:00Z", "2030-03-08", "2030-03-11", false},
-		{"fully past range is incomplete", "2030-03-01T00:00:00Z", "2030-03-02T00:00:00Z", "2030-02-28", "2030-03-03", false},
+		{"exercises: the day before a future range", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-12T09:00:00+03:00", "2030-03-12T18:00:00+03:00", "2030-03-11", "2030-03-13", true},
+		{"exercises: the day before, past or not (the CRM leaves past days out)", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-10T13:00:00+03:00", "2030-03-10T15:00:00+03:00", "2030-03-09", "2030-03-11", true},
+		{"exercises: local, not UTC dates", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-11T00:30:00+03:00", "2030-03-11T01:30:00+03:00", "2030-03-10", "2030-03-12", true},
+		{"exercises: today before midnight plus overnight is incomplete", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-10T03:30:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-09", "2030-03-11", false},
+		{"exercises: today after midnight plus overnight is complete", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-10T04:00:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-09", "2030-03-11", true},
+		{"exercises: a past range is incomplete", "exercises", "2030-03-10T09:00:00+03:00", "2030-03-01T10:00:00+03:00", "2030-03-01T11:00:00+03:00", "2030-02-28", "2030-03-02", false},
+		// a CRM clock a little ahead is already past midnight: yesterday's
+		// exercise running into tomorrow's early hours cannot be listed
+		{"exercises: our clock just before midnight", "exercises", "2030-03-09T23:57:00+03:00", "2030-03-10T01:00:00+03:00", "2030-03-10T02:00:00+03:00", "2030-03-09", "2030-03-11", false},
+		{"breaks: the look-back, past days too", "breaks", "2030-03-10T09:00:00+03:00", "2030-03-10T03:30:00+03:00", "2030-03-10T05:00:00+03:00", "2030-03-03", "2030-03-11", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f, to, complete := listWindow(ts(c.from), ts(c.to), now)
+			f, to, complete := d.window(c.kind, msk, ts(c.from), ts(c.to), ts(c.now))
 			if f.Format("2006-01-02") != c.wantFrom || to.Format("2006-01-02") != c.wantTo || complete != c.complete {
 				t.Fatalf("got %s..%s complete=%v, want %s..%s complete=%v",
 					f.Format("2006-01-02"), to.Format("2006-01-02"), complete, c.wantFrom, c.wantTo, c.complete)
@@ -41,14 +52,16 @@ func TestListWindow(t *testing.T) {
 }
 
 func TestParseTime(t *testing.T) {
-	for _, s := range []string{"2030-03-10T12:00:00Z", "2030-03-10T15:00:00+03:00", "2030-03-10T12:00:00.000Z", "2030-03-10T12:00:00"} {
+	for _, s := range []string{"2030-03-10T12:00:00Z", "2030-03-10T15:00:00+03:00", "2030-03-10T12:00:00.000Z"} {
 		got, ok := parseTime(s)
 		if !ok || !got.Equal(ts("2030-03-10T12:00:00Z")) {
 			t.Fatalf("parseTime(%q) = %v, %v", s, got, ok)
 		}
 	}
-	if _, ok := parseTime("10.03.2030 12:00"); ok {
-		t.Fatal("unexpected parse")
+	for _, s := range []string{"10.03.2030 12:00", "2030-03-10T12:00:00"} { // no zone: refused
+		if _, ok := parseTime(s); ok {
+			t.Fatalf("parseTime(%q) accepted", s)
+		}
 	}
 }
 
@@ -56,15 +69,43 @@ func TestBuildCommentAndMarker(t *testing.T) {
 	if got := buildComment("", "booker"); got != "[cg:booker]" {
 		t.Fatalf("empty note: %q", got)
 	}
-	if got := buildComment("Ivan, racket rental", "booker"); got != "Ivan, racket rental [cg:booker]" {
+	if got := buildComment("Ivan, racket rental", "booker"); got != "[cg:booker] Ivan, racket rental" {
 		t.Fatalf("note: %q", got)
 	}
-	forged := buildComment("pay later [cg:other]", "booker")
+	forged := buildComment("[cg:other] pay later", "booker")
 	if hasMarker(forged, "other") || !hasMarker(forged, "booker") {
 		t.Fatalf("forged marker survived: %q", forged)
 	}
-	if hasMarker("[cg:booker] then edited by the club", "booker") {
-		t.Fatal("marker must be the suffix")
+	if hasMarker("edited by the club [cg:booker]", "booker") {
+		t.Fatal("marker must lead the comment")
+	}
+	long := buildComment(strings.Repeat("я", 2*maxComment), "booker")
+	if n := utf8.RuneCountInString(long); n != maxComment || !hasMarker(long, "booker") {
+		t.Fatalf("long note: %d characters, marker kept %v", n, hasMarker(long, "booker"))
+	}
+}
+
+// A TIME base price wins over the NONE (default) one wherever it applies,
+// whichever comes first in the price list.
+func TestTimePriceWinsOverTheDefault(t *testing.T) {
+	timeRule := `{"condition": {"type": "TIME", "days": ` + week + `, "timeStart": "18:00:00", "timeEnd": "22:00:00"}, "valueFrom": 3000}`
+	noneRule := `{"condition": {"type": "NONE"}, "valueFrom": 1500}`
+	for name, rules := range map[string]string{"default first": noneRule + "," + timeRule, "default last": timeRule + "," + noneRule} {
+		tb, err := parsePricing([]byte(`{"basePrices": [` + rules + `]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := func(minute int) int64 { // the first rule that covers it, as the core prices
+			for _, r := range tb.Base {
+				if r.Days.Has(0) && r.From <= minute && minute < r.To {
+					return r.PerHour
+				}
+			}
+			return -1
+		}
+		if at(19*60) != 300000 || at(10*60) != 150000 {
+			t.Fatalf("%s: 19:00 at %d, 10:00 at %d", name, at(19*60), at(10*60))
+		}
 	}
 }
 

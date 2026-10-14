@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,32 +18,16 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/contract"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-const gatewayConfig = `club: { id: demo-club, name: "Демо-клуб" }
-crm: { type: demo }
-venue:
-  timezone: Europe/Moscow
-  slot_minutes: 30
-  hours: { mon-sun: "07:00-23:00" }
-courts:
-  - { id: court-1, name: "Корт 1" }
-  - { id: court-2, name: "Корт 2" }
-` + contract.PartnersYAML
+var demoSpec = testkit.Club("demo-club", "Демо-клуб", "Корт 1", "Корт 2")
 
-const operatorKey = "test-operator-key-0123456789abcdef"
-
-func hubEnv() map[string]string {
-	env := contract.KeyEnv()
-	env["HUB_OPERATOR_KEY"] = operatorKey
-	return env
-}
-
-const hubYAML = "poll_wait: 1s\nrequest_timeout: 3s\noperator_key_env: HUB_OPERATOR_KEY\n" + testkit.HubPartnersYAML
+const hubYAML = "poll_wait: 1s\nrequest_timeout: 3s\n" + testkit.OperatorYAML + testkit.HubPartnersYAML
 
 type partnerResp struct {
 	status int
@@ -56,22 +42,7 @@ func call(t *testing.T, h *testkit.Hub, method, path, key string, body string) p
 	if body != "" {
 		rd = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.URL()+path, rd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := (&http.Client{Transport: h.Transport(), Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	resp, data := h.Do(t, 30*time.Second, method, path, key, rd)
 	out := partnerResp{status: resp.StatusCode, body: data, header: resp.Header}
 	_ = json.Unmarshal(data, &out.json)
 	return out
@@ -86,8 +57,8 @@ type world struct {
 
 func newWorld(t *testing.T, opts hub.Options, extraHub string) *world {
 	t.Helper()
-	h := testkit.StartHub(t, hubYAML+extraHub, hubEnv(), opts)
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
+	h := testkit.StartHub(t, hubYAML+extraHub, testkit.HubEnv(), opts)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	return &world{hub: h, built: b, drv: b.Driver.(*demo.Driver)}
 }
 
@@ -99,7 +70,9 @@ func (w *world) connect(t *testing.T, hubURL string) {
 
 func (w *world) connectWith(t *testing.T, hubURL, secret string) {
 	t.Helper()
-	w.gw = testkit.StartGateway(t, hubURL, w.hub.Transport(), secret, w.built.Server.TunnelHandler(), nil)
+	cfg := w.hub.ClientConfig("demo-club", secret, w.built.Clubs.TunnelHandler(), nil)
+	cfg.HubURL = hubURL
+	w.gw = testkit.StartGateway(t, cfg)
 	w.waitConnected(t)
 }
 
@@ -114,24 +87,9 @@ func TestEndToEnd(t *testing.T) {
 	w := newWorld(t, hub.Options{}, "")
 	w.connect(t, w.hub.URL())
 
-	r := call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/courts", contract.ReadKey, "")
-	if r.status != http.StatusOK || !strings.Contains(string(r.body), `"court-2"`) {
-		t.Fatalf("courts: %d %s", r.status, r.body)
-	}
-	day := time.Now().In(w.built.Settings.Location).AddDate(0, 0, 2)
-	start := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-	body := `{"court":"court-1","start":"` + start.Format(time.RFC3339) + `","end":"` + start.Add(time.Hour).Format(time.RFC3339) + `","kind":"game"}`
-	r = call(t, w.hub, http.MethodPost, "/v1/clubs/demo-club/bookings", contract.BookKey, body)
-	if r.status != http.StatusCreated {
-		t.Fatalf("create: %d %s", r.status, r.body)
-	}
-	id, _ := r.json["id"].(string)
-	r = call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/"+id, contract.ReadKey, "")
-	if r.status != http.StatusOK || r.json["status"] != "active" {
-		t.Fatalf("read: %d %s", r.status, r.body)
-	}
+	// the API itself goes through the hub in the contract suites; here:
 	// one request id from the partner's view to the gateway's log
-	r = call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/x-nothing", contract.ReadKey, "")
+	r := call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/x-nothing", contract.ReadKey, "")
 	rid := r.header.Get("X-Request-ID")
 	if r.status != http.StatusNotFound || rid == "" || r.json["request_id"] != rid {
 		t.Fatalf("request id: %d %q %s", r.status, rid, r.body)
@@ -167,11 +125,11 @@ func TestClubOfflineAndUnknown(t *testing.T) {
 func TestPartnerLimitedToItsClubs(t *testing.T) {
 	extra := `  - { name: narrow, key_env: NARROW_KEY, scopes: [read], clubs: [other-club] }
 `
-	env := hubEnv()
+	env := testkit.HubEnv()
 	env["NARROW_KEY"] = "narrow-key-0123456789abcdef0123"
 	h := testkit.StartHub(t, hubYAML+extra, env, hub.Options{})
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	gw := testkit.StartGateway(t, h.URL(), h.Transport(), h.Register("demo-club", "Демо"), b.Server.TunnelHandler(), nil)
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
+	gw := testkit.StartGateway(t, h.ClientConfig("demo-club", h.Register("demo-club", "Демо"), b.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "connected", 10*time.Second, gw.Client.Connected)
 	r := call(t, h, http.MethodGet, "/v1/clubs/demo-club/courts", "narrow-key-0123456789abcdef0123", "")
 	if r.status != http.StatusNotFound {
@@ -206,7 +164,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("poll with a wrong secret: %d", resp.StatusCode)
 	}
-	gw := testkit.StartGateway(t, w.hub.URL(), w.hub.Transport(), "cgs_wrong", w.built.Server.TunnelHandler(), nil)
+	gw := testkit.StartGateway(t, w.hub.ClientConfig("demo-club", "cgs_wrong", w.built.Clubs.TunnelHandler(), nil))
 	testkit.WaitFor(t, "secret rejected", 5*time.Second, gw.Client.Unauthorized)
 	if gw.Client.Connected() || w.hub.Server().Broker().Connected("demo-club") {
 		t.Fatal("a gateway with a wrong secret counts as connected")
@@ -216,7 +174,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	if err := hub.RevokeGateway(w.hub.StateDir, "demo-club"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tunnel.FetchWhoami(context.Background(), w.hub.Transport(), w.hub.URL(), secret); !errors.Is(err, tunnel.ErrUnauthorized) {
+	if _, err := testkit.FetchWhoami(context.Background(), w.hub.Transport(), w.hub.URL(), secret); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("revoked secret: %v", err)
 	}
 }
@@ -232,7 +190,7 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 	// typed by hand: lower case, no dashes, O for 0
 	typed := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(code, "-", ""), "0", "O"))
 	rr, err := tunnel.Register(ctx, w.hub.Transport(), w.hub.URL(), typed, "1.0.0")
-	if err != nil || rr.Club != "demo-club" || rr.ClubName != "Демо-клуб" || !strings.HasPrefix(rr.Secret, "cgs_") {
+	if err != nil || rr.Installation != "demo-club" || rr.Name != "Демо-клуб" || !strings.HasPrefix(rr.Secret, "cgs_") {
 		t.Fatalf("first use: %+v %v", rr, err)
 	}
 	if _, err := tunnel.Register(ctx, w.hub.Transport(), w.hub.URL(), code, "1.0.0"); !errors.Is(err, tunnel.ErrJoinCodeRejected) {
@@ -258,10 +216,11 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 		t.Fatalf("one code redeemed %d times", wins)
 	}
 	// expiry
-	code, _, err = hub.CreateJoinCode(w.hub.StateDir, "demo-club", "Демо-клуб", time.Hour, now)
+	jc, err := hub.CreateJoinCode(w.hub.StateDir, "demo-club", "Демо-клуб", time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	code = jc.Code
 	mu.Lock()
 	now = now.Add(time.Hour + time.Second)
 	mu.Unlock()
@@ -271,10 +230,10 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 	// re-registration revokes the previous secret
 	secret1 := w.hub.Register("demo-club", "Демо-клуб")
 	secret2 := w.hub.Register("demo-club", "Демо-клуб")
-	if _, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret1); !errors.Is(err, tunnel.ErrUnauthorized) {
+	if _, err := testkit.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret1); !errors.Is(err, tunnel.ErrUnauthorized) {
 		t.Fatalf("old secret still works: %v", err)
 	}
-	if who, err := tunnel.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret2); err != nil || who.Club != "demo-club" {
+	if who, err := testkit.FetchWhoami(ctx, w.hub.Transport(), w.hub.URL(), secret2); err != nil || who.Installation != "demo-club" {
 		t.Fatalf("new secret: %+v %v", who, err)
 	}
 	// nothing secret is stored in plain text
@@ -321,22 +280,20 @@ func TestReconnectAfterNetworkFailure(t *testing.T) {
 }
 
 func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
-	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: "x", Handler: b.Server.TunnelHandler()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
+	hubKey := testkit.NewSigning("demo-club")
+	c := hubKey.Client(t, b.Clubs.TunnelHandler())
 	for _, p := range []string{"/hub/status", "/v1/../hub/status", "/debug/pprof/", "", "/v1/clubs/%2e%2e"} {
-		r := c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: p, Partner: "reader"})
+		r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: p, Partner: "reader", Scopes: []string{"read"}}), testkit.PollNonce)
 		if r.Status != http.StatusNotFound {
 			t.Fatalf("%q: %d", p, r.Status)
 		}
 	}
-	r := c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts"})
+	r := c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts"}), testkit.PollNonce)
 	if r.Status != http.StatusUnauthorized {
 		t.Fatalf("a request without a partner name: %d", r.Status)
 	}
-	r = c.Execute(context.Background(), tunnel.Request{ID: "1", Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader"})
+	r = c.Execute(context.Background(), hubKey.Sign(tunnel.Request{Method: http.MethodGet, Path: "/v1/clubs/demo-club/courts", Partner: "reader", Scopes: []string{"read"}}), testkit.PollNonce)
 	if r.Status != http.StatusOK {
 		t.Fatalf("partner request: %d %s", r.Status, r.Body)
 	}
@@ -345,10 +302,11 @@ func TestTunnelReachesOnlyAPIAndHealth(t *testing.T) {
 func TestUpdateHint(t *testing.T) {
 	var mu sync.Mutex
 	var hint string
-	h := testkit.StartHub(t, hubYAML+"latest_version: 1.2.0\n", hubEnv(), hub.Options{})
-	b := contract.Build(t, gatewayConfig, contract.KeyEnv(), "demo", demo.New, nil)
+	h := testkit.StartHub(t, hubYAML+"latest_version: 1.2.0\n", testkit.HubEnv(), hub.Options{})
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
 	c, err := tunnel.NewClient(tunnel.ClientConfig{
-		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Server.TunnelHandler(),
+		HubURL: h.URL(), Secret: h.Register("demo-club", "Демо"), Handler: b.Clubs.TunnelHandler(),
+		HubKey: h.Server().Store().HubKey(), Installation: "demo-club",
 		Version: "1.0.0", Build: tunnel.BuildRelease, Transport: h.Transport(), PollTimeout: 5 * time.Second,
 		OnHint: func(v string) { mu.Lock(); hint = v; mu.Unlock() },
 	})
@@ -386,5 +344,132 @@ func assertNoPlaintext(t *testing.T, dir string, secrets []string) {
 	})
 	if err != nil || n == 0 {
 		t.Fatalf("walk: %v (%d files)", err, n)
+	}
+}
+
+// The hub forwards only canonical paths: an encoded slash or dot segment
+// is refused by the hub itself (404) and never reaches the broker, here
+// a registered gateway that is not connected (which would answer 503).
+func TestHubRefusesNonCanonicalPaths(t *testing.T) {
+	w := newWorld(t, hub.Options{}, "")
+	w.hub.Register("demo-club", "Демо-клуб")
+	client := &http.Client{Transport: w.hub.Transport(), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	get := func(p string) (int, string) {
+		req, _ := http.NewRequest(http.MethodGet, w.hub.URL()+p, nil)
+		req.Header.Set("Authorization", "Bearer "+contract.ReadKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := get("/v1/clubs/demo-club/courts"); code != http.StatusServiceUnavailable || !strings.Contains(body, "CLUB_OFFLINE") {
+		t.Fatalf("canonical path: %d %s", code, body)
+	}
+	for _, p := range []string{
+		"/v1/clubs/demo-club%2F..%2Fother/courts",
+		"/v1/clubs/demo-club/..%2Fother/courts",
+		"/v1/clubs/demo-club/%2E%2E/other/courts",
+		"/v1/clubs/demo-club/.%2E/other/courts",
+		"/v1/clubs/demo-club/courts/..%2F..%2F..%2Fgateway%2Fdiscover",
+		"/v1/clubs/demo-club/court%73",
+	} {
+		if code, body := get(p); code != http.StatusNotFound && code != http.StatusMovedPermanently {
+			t.Errorf("%s: %d %s", p, code, body)
+		}
+	}
+}
+
+// A hub that stops ends its gateways' long polls at once: it stops within
+// a second with no error, though a gateway was polling. Served over plain
+// HTTP, it says that gateways use that only on loopback.
+func TestHubStopsPromptlyAndCleanly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	settings, err := hub.Load([]byte("listen: "+addr+"\nstate_dir: "+t.TempDir()+"\npoll_wait: 25s\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := hub.OpenStore(settings.StateDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &contract.LogBuffer{}
+	log := core.NewLogger(logs, slog.LevelDebug, nil)
+	srv, err := hub.NewServer(settings, store, hub.Options{Logger: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	ran := make(chan error, 1)
+	go func() { ran <- hub.Run(ctx, settings, srv, log) }()
+	url := "http://" + addr
+	jc, _ := hub.CreateJoinCode(settings.StateDir, "stop-net", "", time.Hour, time.Now())
+	var rr tunnel.RegisterResponse
+	testkit.WaitFor(t, "the hub listens", 5*time.Second, func() bool {
+		rr, err = tunnel.Register(context.Background(), http.DefaultTransport, url, jc.Code, "1.0.0")
+		return err == nil
+	})
+	b := contract.Build(t, testkit.DemoCRM, demoSpec, nil, "demo", demo.New, nil)
+	testkit.StartGateway(t, testkit.ClientConfig(url, http.DefaultTransport, store.HubKey(), "stop-net", rr.Secret, b.Clubs.TunnelHandler(), nil))
+	testkit.WaitFor(t, "a gateway polls", 5*time.Second, func() bool { return srv.Broker().Connected("stop-net") })
+	start := time.Now()
+	stop()
+	select {
+	case err := <-ran:
+		if err != nil || time.Since(start) > time.Second {
+			t.Fatalf("stopped after %s: %v", time.Since(start), err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the hub did not stop")
+	}
+	if strings.Contains(logs.String(), `"level":"ERROR"`) || !strings.Contains(logs.String(), "plain http only to a loopback address") {
+		t.Fatalf("log:\n%s", logs)
+	}
+}
+
+// The gateway checks the hub's signatures against the hub's own time,
+// which the hub signs on every poll answer: a club computer whose clock
+// is ten minutes off is served, the hub signing with its own clock; one
+// more than an hour off is not corrected (the gateway reports CLOCK_SKEW)
+// and runs nothing the hub sends (503 CLOCK_UNKNOWN).
+func TestGatewayFollowsTheHubsClock(t *testing.T) {
+	for _, c := range []struct {
+		ahead  time.Duration
+		status int
+	}{{10 * time.Minute, http.StatusNotFound}, {-10 * time.Minute, http.StatusNotFound}, {2 * time.Hour, http.StatusServiceUnavailable}} {
+		t.Run(c.ahead.String(), func(t *testing.T) {
+			w := newWorld(t, hub.Options{Now: func() time.Time { return time.Now().Add(c.ahead) }}, "")
+			w.connect(t, w.hub.URL())
+			if off := w.gw.Client.ClockOffset(); (off - c.ahead).Abs() > 5*time.Second {
+				t.Fatalf("offset %s, the hub is %s ahead", off, c.ahead)
+			}
+			r := call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/x-nothing", contract.ReadKey, "")
+			if r.status != c.status {
+				t.Fatalf("a request signed by a hub %s ahead: %d %s", c.ahead, r.status, r.body)
+			}
+		})
+	}
+}
+
+// whoami carries the hub's signed time as a poll answer does: doctor
+// learns it there before it checks the club config.
+func TestWhoamiSignsTheHubsTime(t *testing.T) {
+	w := newWorld(t, hub.Options{Now: func() time.Time { return time.Now().Add(10 * time.Minute) }}, "")
+	c, err := tunnel.NewClient(w.hub.ClientConfig("demo-club", w.hub.Register("demo-club", "Демо-клуб"), http.NotFoundHandler(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Whoami(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if off := c.ClockOffset(); (off - 10*time.Minute).Abs() > 5*time.Second {
+		t.Fatalf("offset %s after whoami, the hub is 10m ahead", off)
 	}
 }

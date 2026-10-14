@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"flag"
@@ -14,7 +15,10 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/doctor"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 )
@@ -22,9 +26,11 @@ import (
 // stdin and terminal detection are variables so tests can drive the
 // interactive setup.
 var (
-	stdin      io.Reader = os.Stdin
-	isTerminal           = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-	readSecret           = func() (string, error) {
+	stdin io.Reader = os.Stdin
+	// installService is what setup --install-service runs after success.
+	installService = cmdInstallService
+	isTerminal     = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	readSecret     = func() (string, error) {
 		b, err := term.ReadPassword(int(os.Stdin.Fd()))
 		return string(b), err
 	}
@@ -37,26 +43,30 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	nonInteractive := fs.Bool("non-interactive", false, "never prompt; take everything from flags and the environment")
 	asJSON := fs.Bool("json", false, "print the result as JSON (no secrets)")
 	passwordStdin := fs.Bool("password-stdin", false, "read the CRM password from the first line of stdin")
+	withService := fs.Bool("install-service", false, "after a successful setup, install and start the service (as install-service does)")
 	fs.StringVar(&in.ConfigPath, "config", defaultConfig, "where to write gateway.yaml (.env goes next to it)")
 	fs.BoolVar(&in.Force, "force", false, "overwrite existing gateway.yaml and .env")
-	fs.StringVar(&in.HubURL, "hub-url", firstSet(getenv("GATEWAY_HUB_URL"), defaultHubURL), "hub address (env GATEWAY_HUB_URL)")
-	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "extra CA certificate for a self-hosted hub")
-	fs.StringVar(&in.JoinCode, "join-code", getenv("GATEWAY_JOIN_CODE"), "one-time join code (env GATEWAY_JOIN_CODE)")
-	fs.StringVar(&in.ClubID, "club-id", getenv("GATEWAY_CLUB_ID"), "expected club id (must match the join code)")
-	fs.StringVar(&in.ClubName, "club-name", getenv("GATEWAY_CLUB_NAME"), "club name (default: from the hub)")
-	fs.StringVar(&in.CRMType, "crm", "viva", "CRM type: viva or demo")
-	fs.StringVar(&in.Username, "crm-username", getenv("CRM_USERNAME"), "CRM administrator login (env CRM_USERNAME)")
-	fs.StringVar(&in.Studio, "crm-studio", getenv("CRM_STUDIO"), "CRM studio id (env CRM_STUDIO)")
+	// Flags have no environment defaults: the flag package prints defaults
+	// in --help and in the error for a mistyped flag, and the join code is a
+	// secret. The environment is read after parsing.
+	fs.StringVar(&in.HubURL, "hub-url", "", "hub address (env GATEWAY_HUB_URL)")
+	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "trust only this CA certificate for the hub (a self-hosted hub, or pinning)")
+	fs.StringVar(&in.HubKeyFingerprint, "hub-key-fingerprint", "", "fingerprint of the hub's key, given with the join code (env GATEWAY_HUB_KEY_FINGERPRINT); a release's own hub needs none")
+	fs.StringVar(&in.JoinCode, "join-code", "", "one-time join code (env GATEWAY_JOIN_CODE)")
+	fs.StringVar(&in.CRMType, "crm", "viva", "CRM type")
+	fs.StringVar(&in.Username, "crm-username", "", "CRM administrator login (env CRM_USERNAME)")
 	fs.StringVar(&in.AuthURL, "crm-auth-url", "", "CRM login endpoint override (test doubles)")
 	fs.StringVar(&in.APIURL, "crm-api-url", "", "CRM API endpoint override (test doubles)")
-	fs.StringVar(&in.Timezone, "timezone", "Europe/Moscow", "club time zone")
-	fs.IntVar(&in.SlotMinutes, "slot-minutes", 30, "booking grid step, minutes")
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	in.HubURL = cmp.Or(in.HubURL, getenv("GATEWAY_HUB_URL"), defaultHubURL)
+	in.HubKeyFingerprint = strings.TrimSpace(cmp.Or(in.HubKeyFingerprint, getenv("GATEWAY_HUB_KEY_FINGERPRINT")))
+	in.HubKey = embeddedHubKey(in.HubURL)
+	in.Username = cmp.Or(in.Username, getenv("CRM_USERNAME"))
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
-	in.JoinCode = strings.TrimSpace(in.JoinCode)
+	in.JoinCode = strings.TrimSpace(cmp.Or(in.JoinCode, getenv("GATEWAY_JOIN_CODE")))
 	in.Password = getenv("CRM_PASSWORD")
 	reader := bufio.NewReader(stdin)
 	if *passwordStdin {
@@ -77,7 +87,8 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if !*asJSON {
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
-	res, err := setup.Run(context.Background(), in, setup.Deps{Version: version})
+	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets, Accounts: setupAccounts(getenv)}
+	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -88,16 +99,72 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if err != nil {
 		return 1
 	}
+	if *withService {
+		out := stdout
+		if *asJSON {
+			out = stderr // stdout carries the JSON result only
+		}
+		return installService([]string{"-config", res.Config}, out, stderr, defaultConfig, false)
+	}
 	return 0
 }
 
-func firstSet(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// cmdSetPassword replaces the CRM password in .env after the CRM
+// administrator's password changed; no join code is needed.
+func cmdSetPassword(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
+	fs := flag.NewFlagSet("set-password", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", defaultConfig, "gateway.yaml (.env next to it is changed)")
+	passwordStdin := fs.Bool("password-stdin", false, "read the new CRM password from the first line of stdin")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	password := getenv("CRM_PASSWORD")
+	switch {
+	case *passwordStdin:
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && line == "" {
+			fmt.Fprintln(stderr, "set-password: пароль не прочитан из stdin")
+			return 2
+		}
+		password = strings.TrimRight(line, "\r\n")
+	case password == "" && isTerminal():
+		fmt.Fprint(stderr, "Новый пароль администратора CRM (не отображается): ")
+		var err error
+		password, err = readSecret()
+		fmt.Fprintln(stderr)
+		if err != nil {
+			fmt.Fprintln(stderr, "set-password: ввод прерван")
+			return 2
 		}
 	}
-	return ""
+	if err := setup.SetPassword(context.Background(), *cfgPath, password, getenv, setup.Deps{ProtectSecrets: protectSecrets}); err != nil {
+		fmt.Fprintf(stderr, "set-password: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, passwordSetHint(fileExists))
+	return 0
+}
+
+// passwordSetHint is what set-password prints after success. The service
+// re-reads .env by itself; a container has the password in its
+// environment from its creation, and is created again.
+func passwordSetHint(exists func(string) bool) string {
+	const recreate = "docker compose up -d --force-recreate court-gateway"
+	if exists("/.dockerenv") {
+		return "Пароль CRM проверен и записан в .env. Пересоздайте контейнер шлюза: " + recreate + " (пароль попадает в контейнер при создании, перезапуска мало)"
+	}
+	return "Пароль CRM проверен и записан в .env. Служба шлюза подхватит его сама в течение минуты, перезапуск не нужен (шлюз в Docker: " + recreate + ")"
+}
+
+// embeddedHubKey is the hub key a release embeds, for its own hub only.
+func embeddedHubKey(hubURL string) string {
+	if defaultHubKey == "" || strings.TrimRight(hubURL, "/") != strings.TrimRight(defaultHubURL, "/") {
+		return ""
+	}
+	return defaultHubKey
 }
 
 func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
@@ -117,12 +184,13 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		}
 		return s, nil
 	}
+	// secret returns what was typed as is: spaces may belong to a password
 	secret := func(q string) (string, error) {
 		fmt.Fprintf(w, "%s (не отображается): ", q)
 		if isTerminal() {
 			s, err := readSecret()
 			fmt.Fprintln(w)
-			return strings.TrimSpace(s), err
+			return s, err
 		}
 		s, err := r.ReadString('\n')
 		if err != nil && s == "" {
@@ -131,18 +199,20 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		return strings.TrimRight(s, "\r\n"), nil
 	}
 	var err error
-	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся логин и пароль администратора Viva и код подключения от нас.")
+	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся логин и пароль администратора Viva и код подключения.")
+	fmt.Fprintln(w, "Клубы, корты и часы работы здесь не задаются: их подключит оператор на хабе.")
 	if in.HubURL == "" {
 		if in.HubURL, err = line("Адрес хаба (пришёл вместе с кодом подключения)", ""); err != nil {
 			return err
 		}
+		in.HubKey = embeddedHubKey(in.HubURL)
 	}
-	if in.JoinCode == "" {
-		if in.JoinCode, err = secret("Код подключения"); err != nil {
+	if in.HubKey == "" && in.HubKeyFingerprint == "" {
+		if in.HubKeyFingerprint, err = line("Отпечаток ключа хаба (пришёл вместе с кодом подключения)", ""); err != nil {
 			return err
 		}
 	}
-	if in.CRMType == "" || in.CRMType == "viva" {
+	if in.CRMType == "viva" {
 		if in.Username == "" {
 			if in.Username, err = line("Логин администратора Viva (e-mail)", ""); err != nil {
 				return err
@@ -153,16 +223,26 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 				return err
 			}
 		}
-		if in.Studio == "" {
-			if in.Studio, err = line("Идентификатор студии Viva (UUID из адресной строки кабинета Viva)", ""); err != nil {
-				return err
-			}
-		}
 	}
-	if in.Timezone, err = line("Часовой пояс клуба", in.Timezone); err != nil {
-		return err
+	if in.JoinCode == "" {
+		if in.JoinCode, err = secret("Код подключения"); err != nil {
+			return err
+		}
+		in.JoinCode = strings.TrimSpace(in.JoinCode)
 	}
 	return nil
+}
+
+// demoCRMEnv=1 lets setup take the demo CRM (--crm demo): for tests and
+// demonstrations, never offered to a club.
+const demoCRMEnv = "GATEWAY_DEMO_CRM"
+
+// setupAccounts are the CRM types setup takes.
+func setupAccounts(getenv func(string) string) map[string]driver.AccountFactory {
+	if getenv(demoCRMEnv) == "1" {
+		return drivers.Accounts
+	}
+	return map[string]driver.AccountFactory{"viva": drivers.Accounts["viva"]}
 }
 
 func printSetup(w io.Writer, r setup.Result) {
@@ -170,23 +250,16 @@ func printSetup(w io.Writer, r setup.Result) {
 		fmt.Fprintf(w, "Не получилось (%s): %s\n", r.Error.Code, r.Error.Message)
 		return
 	}
-	fmt.Fprintf(w, "Готово. Клуб: %s (%s), хаб: %s\n", r.Club.Name, r.Club.ID, r.Hub)
+	fmt.Fprintf(w, "Готово. Установка: %s (%s), хаб: %s\n", r.Installation.Name, r.Installation.ID, r.Hub)
 	fmt.Fprintf(w, "Конфигурация: %s\nСекреты:      %s (доступ только владельцу)\n", r.Config, r.EnvFile)
-	fmt.Fprintf(w, "Корты (%d):\n", len(r.Courts))
-	for _, c := range r.Courts {
-		if c.Room != "" {
-			fmt.Fprintf(w, "  %s  %s  (броней за 28 дней: %d)\n", c.ID, c.Name, c.Bookings)
-		} else {
-			fmt.Fprintf(w, "  %s  %s\n", c.ID, c.Name)
-		}
-	}
 	if len(r.Warnings) > 0 {
 		fmt.Fprintln(w, "Проверьте:")
 		for _, x := range r.Warnings {
 			fmt.Fprintf(w, "  - %s\n", x.Message)
 		}
 	}
-	fmt.Fprintln(w, "Дальше: court-gateway install-service, затем court-gateway doctor")
+	fmt.Fprintln(w, "Дальше: court-gateway install-service, затем court-gateway doctor.")
+	fmt.Fprintln(w, "Больше ничего делать не нужно: клубы подключает оператор на хабе, шлюз получит их сам.")
 }
 
 func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
@@ -198,7 +271,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 2
 	}
 	rep := doctor.Run(context.Background(), doctor.Options{
-		ConfigPath: *cfgPath, Getenv: getenv, Factories: factories, Version: version, ReleaseKey: releaseKey,
+		ConfigPath: *cfgPath, Getenv: getenv, Factories: drivers.Factories, Accounts: drivers.Accounts, Version: version, ReleaseKey: releaseKey,
 	})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -207,6 +280,10 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	} else {
 		mark := map[doctor.Status]string{doctor.OK: "ок  ", doctor.Warn: "ВНИМ", doctor.Fail: "ОШИБ", doctor.Skip: " -  "}
 		fmt.Fprintf(stdout, "court-gateway %s (%s)\n", rep.Version, rep.Build)
+		if rep.Installation != "" {
+			fmt.Fprintf(stdout, "Установка %s: конфигурация клубов версии %d (%s); служба применила версию %d и обслуживает: %s\n",
+				rep.Installation, rep.ConfigVersion, listOrNone(rep.Clubs), rep.AppliedConfigVersion, listOrNone(rep.ClubsServed))
+		}
 		for _, c := range rep.Checks {
 			fmt.Fprintf(stdout, "[%s] %-17s %s\n", mark[c.Status], c.Code, c.Message)
 			if c.Hint != "" && c.Status != doctor.OK {
@@ -223,6 +300,13 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 1
 	}
 	return 0
+}
+
+func listOrNone(v []string) string {
+	if len(v) == 0 {
+		return "клубов нет"
+	}
+	return strings.Join(v, ", ")
 }
 
 func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig string, uninstall bool) int {
@@ -245,6 +329,8 @@ func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig st
 			return 2
 		}
 	}
+	// macOS without sudo: a per-user LaunchAgent; uninstall under sudo
+	// removes both kinds
 	system := runtime.GOOS != "darwin" || os.Geteuid() == 0
 	spec, err := service.CurrentSpec(*cfgPath, system)
 	if err != nil {
@@ -279,6 +365,19 @@ func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig st
 		}
 		return os.WriteFile(path, []byte(data), 0o644)
 	}
+	if !uninstall && protectSecrets != nil {
+		// the folder and .env are closed and verified before the service
+		// that reads them is registered
+		for _, p := range []string{filepath.Dir(spec.Config), filepath.Join(filepath.Dir(spec.Config), core.EnvFileName)} {
+			if _, err := os.Stat(p); err != nil {
+				continue
+			}
+			if err := protectSecrets(p); err != nil {
+				fmt.Fprintf(stderr, "%s: не удалось закрыть %s от других пользователей (нужны права администратора): %v\n", name, p, err)
+				return 1
+			}
+		}
+	}
 	if err := service.Install(plan, service.ExecRunner, write); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
@@ -287,7 +386,7 @@ func cmdInstallService(args []string, stdout, stderr io.Writer, defaultConfig st
 		fmt.Fprintln(stdout, "Служба удалена.")
 		return 0
 	}
-	fmt.Fprintln(stdout, "Служба установлена и запущена; шлюз будет стартовать сам после перезагрузки.")
+	fmt.Fprintln(stdout, plan.Done)
 	for _, n := range plan.Notes {
 		fmt.Fprintln(stdout, "  "+n)
 	}

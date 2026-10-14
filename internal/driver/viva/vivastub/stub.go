@@ -1,8 +1,7 @@
-// Package vivastub is a fake VivaCRM for tests: a Keycloak-like token
-// endpoint and the admin API endpoints the viva driver uses. It mimics the
-// behaviour the driver depends on, including the awkward parts: lists are
-// filtered by whole UTC days and come back EMPTY when dateFrom is in the
-// past, while reads by id always work.
+// Package vivastub is a fake VivaCRM for tests: the token endpoint and the
+// admin API endpoints the viva driver uses. Lists select records by their
+// start date in the studio's local day (dateFrom and dateTo included) and
+// leave out exercises of past days, not breaks; reads by id always work.
 //
 // Serve it with httptest.NewServer(stub); then the driver's auth_url is
 // <server>/token and api_url is <server>/api/v1.
@@ -15,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,12 +43,18 @@ type Stub struct {
 	TokenTTL int
 	// Now is the stub's clock (defaults to time.Now).
 	Now func() time.Time
+	// Zone is the studio's time zone, whose dates the lists select by and
+	// whose offset GET /studios reports (defaults to UTC+3).
+	Zone *time.Location
 	// OmitCommentOnRead removes "comment" from reads by id.
 	OmitCommentOnRead bool
-	// OmitTitleOnRead removes "title" from reads by id.
-	OmitTitleOnRead bool
+	// StudioName and WorkTime (weekday name -> {from, to} as
+	// "HH:MM+03:00"; nil omits workTime) describe Studio in GET /studios.
+	StudioName string
+	WorkTime   map[string][2]string
 
 	mu        sync.Mutex
+	others    []map[string]any  // more studios of the account (listed only)
 	rooms     map[string]string // id -> name
 	tokens    map[string]bool
 	exercises map[string]map[string]any
@@ -56,6 +62,7 @@ type Stub struct {
 	pricing   map[string]json.RawMessage
 	overrides []override
 	logins    int
+	attempts  int
 	calls     []string
 }
 
@@ -97,6 +104,58 @@ func (s *Stub) AddRoom(id, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rooms[strings.ToLower(id)] = name
+}
+
+// RemoveRoom takes a room out of the studio.
+func (s *Stub) RemoveRoom(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rooms, strings.ToLower(id))
+}
+
+// AddStudio lists one more studio of the account in GET /studios, with
+// rooms (id -> name). Its rooms are not bookable in the stub.
+func (s *Stub) AddStudio(id, name string, rooms map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.others = append(s.others, studioObject(id, name, 3, nil, rooms))
+}
+
+func studioObject(id, name string, offset float64, workTime map[string][2]string, rooms map[string]string) map[string]any {
+	ids := make([]string, 0, len(rooms))
+	for rid := range rooms {
+		ids = append(ids, rid)
+	}
+	sort.Strings(ids)
+	list := []map[string]any{}
+	for _, rid := range ids {
+		list = append(list, map[string]any{
+			"id": rid, "name": rooms[rid], "studioId": id, "orgId": "00000000-0000-4000-8000-0000000000f0",
+			"totalCapacity": 4, "color": "#000000", "workTime": nil, "rates": []any{}, "directions": []any{},
+			"roomPartition": nil, "customFields": []any{}, "photos": []any{}, "mainPhoto": nil,
+		})
+	}
+	st := map[string]any{"id": id, "name": name, "offset": offset, "schedule": nil, "rooms": list}
+	if workTime != nil {
+		daily := map[string]any{}
+		for day, ft := range workTime {
+			daily[day] = map[string]string{"from": ft[0], "to": ft[1]}
+		}
+		st["workTime"] = map[string]any{"dailyWorkTime": daily}
+	}
+	return st
+}
+
+func (s *Stub) studios() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := s.StudioName
+	if name == "" {
+		name = "Studio"
+	}
+	_, off := s.now().In(s.zone()).Zone()
+	out := []map[string]any{studioObject(s.Studio, name, float64(off)/3600, s.WorkTime, s.rooms)}
+	return append(out, s.others...)
 }
 
 // SetPricing stores a price list body for GET /pricing/{id}.
@@ -157,6 +216,13 @@ func (s *Stub) RevokeTokens() {
 	s.tokens = map[string]bool{}
 }
 
+// LoginAttempts returns how many logins were tried, failed ones included.
+func (s *Stub) LoginAttempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
 // Logins returns how many successful logins happened.
 func (s *Stub) Logins() int {
 	s.mu.Lock()
@@ -195,6 +261,8 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if path != TokenPath {
 		s.calls = append(s.calls, r.Method+" "+rel+"?"+r.URL.RawQuery)
+	} else {
+		s.attempts++
 	}
 	for i, o := range s.overrides {
 		if o.method == r.Method && (strings.HasPrefix(rel, o.prefix) || (path == TokenPath && o.prefix == TokenPath)) {
@@ -232,6 +300,8 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRead(w, parts[0], parts[1])
 	case len(parts) == 2 && (parts[0] == "exercises" || parts[0] == "breaks") && r.Method == http.MethodDelete:
 		s.handleDelete(w, parts[0], parts[1])
+	case len(parts) == 1 && parts[0] == "studios" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, s.studios())
 	case len(parts) == 1 && parts[0] == "pricing" && r.Method == http.MethodGet:
 		s.handlePricingList(w, r)
 	case len(parts) == 2 && parts[0] == "pricing" && r.Method == http.MethodGet:
@@ -292,20 +362,32 @@ func roomID(rec map[string]any) string {
 	return ""
 }
 
+func (s *Stub) zone() *time.Location {
+	if s.Zone != nil {
+		return s.Zone
+	}
+	return time.FixedZone("UTC+3", 3*3600)
+}
+
+func localDay(t time.Time, loc *time.Location) time.Time {
+	t = t.In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+}
+
 func (s *Stub) handleList(w http.ResponseWriter, r *http.Request, kind string) {
 	q := r.URL.Query()
-	from, err1 := time.ParseInLocation("2006-01-02", q.Get("dateFrom"), time.UTC)
-	to, err2 := time.ParseInLocation("2006-01-02", q.Get("dateTo"), time.UTC)
+	loc := s.zone()
+	from, err1 := time.ParseInLocation("2006-01-02", q.Get("dateFrom"), loc)
+	to, err2 := time.ParseInLocation("2006-01-02", q.Get("dateTo"), loc)
 	if q.Get("studioId") == "" || err1 != nil || err2 != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "BAD_REQUEST"})
 		return
 	}
-	now := s.now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	if from.Before(today) || q.Get("studioId") != s.Studio {
-		writeJSON(w, http.StatusOK, []any{}) // past dates: an empty list
+	if q.Get("studioId") != s.Studio {
+		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
+	today := localDay(s.now(), loc)
 	includeCanceled := q.Get("includeCanceled") == "true"
 	room := q.Get("roomId")
 	s.mu.Lock()
@@ -321,9 +403,9 @@ func (s *Stub) handleList(w http.ResponseWriter, r *http.Request, kind string) {
 			out = append(out, copyMap(rec))
 			continue
 		}
-		day := time.Date(start.UTC().Year(), start.UTC().Month(), start.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		if day.Before(from) || day.After(to) {
-			continue
+		day := localDay(start, loc)
+		if day.Before(from) || day.After(to) || (kind == "exercises" && day.Before(today)) {
+			continue // exercises of past days are left out
 		}
 		if room != "" && !strings.EqualFold(roomID(rec), room) {
 			continue
@@ -447,9 +529,6 @@ func (s *Stub) handleRead(w http.ResponseWriter, kind, id string) {
 	if s.OmitCommentOnRead {
 		delete(out, "comment")
 	}
-	if s.OmitTitleOnRead {
-		delete(out, "title")
-	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -483,13 +562,21 @@ func (s *Stub) handlePricingList(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	sort.Strings(ids)
-	content := []map[string]any{}
-	if r.URL.Query().Get("studioId") == s.Studio {
-		for _, id := range ids {
-			content = append(content, map[string]any{"id": id, "name": "Price list", "usages": map[string]any{}})
-		}
+	if r.URL.Query().Get("studioId") != s.Studio {
+		ids = nil
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"content": content, "totalElements": len(content)})
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if size <= 0 {
+		size = 20
+	}
+	pages := (len(ids) + size - 1) / size
+	content := []map[string]any{}
+	for _, id := range ids[min(page*size, len(ids)):min((page+1)*size, len(ids))] {
+		content = append(content, map[string]any{"id": id, "name": "Price list", "usages": map[string]any{}})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"content": content, "totalElements": len(ids), "totalPages": pages,
+		"number": page, "size": size, "last": page+1 >= pages})
 }
 
 func (s *Stub) handlePricing(w http.ResponseWriter, id string) {

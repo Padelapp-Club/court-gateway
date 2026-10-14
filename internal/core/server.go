@@ -9,9 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
@@ -21,123 +22,99 @@ const ReadyTimeout = 5 * time.Second
 // driverTimeout bounds every driver call made for an API request.
 const driverTimeout = 30 * time.Second
 
-// Server is the CRM-agnostic HTTP API. It is a plain http.Handler factory:
-// it makes no assumption about how or where it is served.
+// Server is the partner API of one club around its driver. Clubs serves
+// every club of an installation and adds health, auth and the club list.
 type Server struct {
-	cfg  *Settings
-	drv  driver.Driver
-	log  *slog.Logger
-	now  func() time.Time
-	auth *auth.Authenticator
-	caps driver.Capabilities
+	cfg *Settings
+	drv driver.Driver
+	log *slog.Logger
+	// clock is the hub's time (driver.Config.Clock): "now" of every
+	// booking decision
+	clock driver.Clock
+	caps  driver.Capabilities
+	// mismatch: the last readiness check found the club's config does not
+	// match its CRM; partners get 503 until a check passes again.
+	mismatch atomic.Bool
 }
 
-// Option customises a Server.
-type Option func(*Server)
+// noteCheck records a readiness result: a mismatch blocks the club, a
+// pass (or a mere alert) unblocks it, a check that could not be made
+// changes nothing.
+func (s *Server) noteCheck(err error) {
+	var me *driver.MisconfigError
+	var ca *driver.ConfigAlert
+	switch {
+	case err == nil, errors.As(err, &ca):
+		s.mismatch.Store(false)
+	case errors.As(err, &me):
+		s.mismatch.Store(true)
+	}
+}
 
-// WithClock overrides the clock (tests).
-func WithClock(now func() time.Time) Option { return func(s *Server) { s.now = now } }
-
-// NewServer builds the API around a driver.
-func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger, opts ...Option) (*Server, error) {
+// NewServer builds the API of one club around its driver.
+func NewServer(cfg *Settings, drv driver.Driver, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{cfg: cfg, drv: drv, log: log, now: time.Now, caps: drv.Capabilities()}
-	for _, o := range opts {
-		o(s)
-	}
-	if len(cfg.Partners) > 0 {
-		a, err := auth.New(cfg.Partners, auth.Options{WriteError: writeError, Now: s.now})
-		if err != nil {
-			return nil, err
-		}
-		s.auth = a
-	}
-	return s, nil
+	return &Server{cfg: cfg, drv: drv, log: log, clock: cfg.Driver.DecisionClock(), caps: drv.Capabilities()}
 }
 
-// Handler returns the complete handler: request ids, access log, panic
-// recovery, unauthenticated health endpoints and the partner API behind
-// the auth middleware.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", s.handleLive)
-	mux.HandleFunc("GET /health/ready", s.handleReady)
-	mux.Handle("/health/", methodNotAllowed())
-	if s.auth != nil {
-		mux.Handle("/v1/", s.auth.Wrap(s.APIHandler()))
-	} else {
-		mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "the partner API of this gateway is served through the hub")
-		})
-	}
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
-	})
-	return s.observe(mux)
+// Narrowed is the server of cfg and drv, a narrower config of s's club: it
+// stays blocked if s is, until its own readiness check passes.
+func (s *Server) Narrowed(cfg *Settings, drv driver.Driver) *Server {
+	n := NewServer(cfg, drv, cfg.Driver.Logger)
+	n.mismatch.Store(s.mismatch.Load())
+	return n
 }
 
-// TunnelHandler is the handler a gateway runs for requests that arrive over
-// its own outbound connection to the hub. The hub has already
-// authenticated the partner and checked its scope; the tunnel client puts
-// the partner name into the request context (auth.WithPartnerName). Only
-// the health endpoints and the partner API are reachable.
-func (s *Server) TunnelHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", s.handleLive)
-	mux.HandleFunc("GET /health/ready", s.handleReady)
-	mux.Handle("/health/", methodNotAllowed())
-	api := s.APIHandler()
-	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := auth.PartnerName(r.Context()); !ok {
-			writeError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "the hub did not name the partner")
-			return
-		}
-		api.ServeHTTP(w, r)
-	}))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
-	})
-	return s.observe(mux)
-}
+func (s *Server) Settings() *Settings { return s.cfg }
 
-// APIHandler returns the partner API without authentication. It expects the
-// partner name in the request context (see auth.PartnerName) and is meant to
-// be wrapped by the auth middleware.
+func (s *Server) Driver() driver.Driver { return s.drv }
+
+// APIHandler returns the club's partner API without authentication. It
+// expects the partner name in the request context (see auth.PartnerName);
+// Clubs routes /v1/clubs/{club}/... here.
 func (s *Server) APIHandler() http.Handler {
 	mux := http.NewServeMux()
 	const club = "/v1/clubs/{club}"
-	mux.HandleFunc("GET /v1/clubs", s.handleClubs)
-	mux.HandleFunc("GET "+club, s.withClub(s.handleClub))
-	mux.HandleFunc("GET "+club+"/courts", s.withClub(s.handleCourts))
-	mux.HandleFunc("GET "+club+"/occupancy", s.withClub(s.handleOccupancy))
-	mux.HandleFunc("GET "+club+"/prices", s.withClub(s.handlePrices))
-	mux.HandleFunc("GET "+club+"/quote", s.withClub(s.handleQuote))
-	mux.HandleFunc("POST "+club+"/bookings", s.withClub(s.handleCreate))
-	mux.HandleFunc("GET "+club+"/bookings/{id}", s.withClub(s.handleGet))
-	mux.HandleFunc("DELETE "+club+"/bookings/{id}", s.withClub(s.handleCancel))
-	mux.HandleFunc("POST "+club+"/bookings/{id}/payment", s.withClub(s.handlePayment))
-	for _, p := range []string{"/v1/clubs", club, club + "/courts", club + "/occupancy", club + "/prices",
-		club + "/quote", club + "/bookings", club + "/bookings/{id}", club + "/bookings/{id}/payment"} {
-		mux.Handle(p, methodNotAllowed())
+	routes := []struct {
+		method, path string
+		h            http.HandlerFunc
+	}{
+		{"GET", club, s.handleClub},
+		{"GET", club + "/courts", s.handleCourts},
+		{"GET", club + "/occupancy", s.handleOccupancy},
+		{"GET", club + "/prices", s.handlePrices},
+		{"GET", club + "/quote", s.handleQuote},
+		{"POST", club + "/bookings", s.handleCreate},
+		{"GET", club + "/bookings/{id}", s.handleGet},
+		{"DELETE", club + "/bookings/{id}", s.handleCancel},
+		{"POST", club + "/bookings/{id}/payment", s.handlePayment},
+	}
+	paths := map[string]bool{}
+	for _, r := range routes {
+		mux.HandleFunc(r.method+" "+r.path, s.withClub(r.h))
+		if !paths[r.path] {
+			paths[r.path] = true
+			mux.Handle(r.path, methodNotAllowed()) // any other method
+		}
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
+		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	})
-	return s.notePartner(mux)
+	return mux
 }
 
 func methodNotAllowed() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
+		WriteError(w, r, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed for this endpoint")
 	})
 }
 
 func (s *Server) withClub(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("club") != s.cfg.ClubID {
-			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
+			WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such club")
 			return
 		}
 		h(w, r)
@@ -190,8 +167,6 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-func (s *Server) observe(next http.Handler) http.Handler { return Observe(s.log, s.now, next) }
-
 type upstreamIDKey struct{}
 
 // WithRequestID returns a context carrying a request id assigned upstream
@@ -229,7 +204,7 @@ func Observe(log *slog.Logger, now func() time.Time, next http.Handler) http.Han
 			if p := recover(); p != nil {
 				log.Error("panic in handler", "request_id", ri.id, "path", r.URL.Path)
 				if rec.status == 0 {
-					writeError(rec, r, http.StatusInternalServerError, "INTERNAL", "internal error")
+					WriteError(rec, r, http.StatusInternalServerError, "INTERNAL", "internal error")
 				}
 			}
 			log.Info("request",
@@ -245,15 +220,6 @@ func Observe(log *slog.Logger, now func() time.Time, next http.Handler) http.Han
 	})
 }
 
-func (s *Server) notePartner(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if name, ok := auth.PartnerName(r.Context()); ok {
-			info(r).partner = name
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // ---- responses ----
 
 type errorBody struct {
@@ -262,24 +228,18 @@ type errorBody struct {
 	RequestID string `json:"request_id"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// WriteJSON writes v as a JSON response that must not be cached.
+func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	writeJSON(w, status, errorBody{Code: code, Message: message, RequestID: info(r).id})
-}
-
 // WriteError writes the API error body {code, message, request_id}.
 func WriteError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	writeError(w, r, status, code, message)
+	WriteJSON(w, status, errorBody{Code: code, Message: message, RequestID: info(r).id})
 }
-
-// WriteJSON writes v as a JSON response that must not be cached.
-func WriteJSON(w http.ResponseWriter, status int, v any) { writeJSON(w, status, v) }
 
 // driverError maps a driver error to an API error. Upstream details are
 // logged (they never contain secrets or personal data by the driver
@@ -291,7 +251,29 @@ func (s *Server) driverError(w http.ResponseWriter, r *http.Request, op string, 
 		lvl = slog.LevelWarn
 	}
 	s.log.Log(r.Context(), lvl, "driver call failed", "request_id", info(r).id, "op", op, "code", code, "error", err)
-	writeError(w, r, status, code, msg)
+	WriteError(w, r, status, code, msg)
+}
+
+// crmFailure is what a CRM failure is to a partner (status, code,
+// message) and to readiness (ready), by its kind.
+type crmFailure struct {
+	status           int
+	code, msg, ready string
+}
+
+var crmFailures = map[driver.UpstreamKind]crmFailure{
+	driver.UpstreamUnavailable: {http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "the club's CRM is unavailable", "CRM_UNREACHABLE"},
+	driver.UpstreamAuth:        {http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM", "CRM_AUTH_FAILED"},
+	driver.UpstreamLogin:       {http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM", "CRM_AUTH_ERROR"},
+	driver.UpstreamInvalid:     {http.StatusBadGateway, "UPSTREAM_INVALID", "the club's CRM returned a response the gateway cannot interpret", "CRM_INVALID_RESPONSE"},
+	driver.UpstreamRejected:    {http.StatusBadGateway, "UPSTREAM_REJECTED", "the club's CRM rejected the request", "CRM_REJECTED"},
+}
+
+func failureOf(ue *driver.UpstreamError) crmFailure {
+	if f, ok := crmFailures[ue.Kind]; ok {
+		return f
+	}
+	return crmFailures[driver.UpstreamUnavailable]
 }
 
 func classify(err error) (int, string, string) {
@@ -301,6 +283,12 @@ func classify(err error) (int, string, string) {
 		return http.StatusNotFound, "NOT_FOUND", "not found"
 	case errors.Is(err, driver.ErrNotOwned):
 		return http.StatusForbidden, "NOT_OWNED", "the booking was not created through this gateway by this partner"
+	case errors.Is(err, driver.ErrCourtNotConfigured):
+		return http.StatusConflict, "COURT_NOT_CONFIGURED", "the booking is on a court that is not configured for this club"
+	case errors.Is(err, driver.ErrClockUnknown):
+		return http.StatusServiceUnavailable, "CLOCK_UNKNOWN", "the club's gateway does not know the hub's time yet, retry"
+	case errors.Is(err, driver.ErrStarted):
+		return http.StatusConflict, "BOOKING_STARTED", "the booking has already started and cannot be cancelled"
 	case errors.Is(err, driver.ErrSlotUnavailable):
 		return http.StatusConflict, "SLOT_UNAVAILABLE", "the court is occupied in this interval"
 	case errors.Is(err, driver.ErrNotSupported):
@@ -308,58 +296,52 @@ func classify(err error) (int, string, string) {
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "the club's CRM did not answer in time"
 	case errors.As(err, &ue):
-		switch ue.Kind {
-		case driver.UpstreamInvalid:
-			return http.StatusBadGateway, "UPSTREAM_INVALID", "the club's CRM returned a response the gateway cannot interpret"
-		case driver.UpstreamAuth:
-			return http.StatusBadGateway, "UPSTREAM_AUTH", "the gateway cannot log in to the club's CRM"
-		case driver.UpstreamRejected:
-			return http.StatusBadGateway, "UPSTREAM_REJECTED", "the club's CRM rejected the request"
-		default:
-			return http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "the club's CRM is unavailable"
-		}
+		f := failureOf(ue)
+		return f.status, f.code, f.msg
 	default:
 		return http.StatusInternalServerError, "INTERNAL", "internal error"
 	}
 }
 
-// ReadyReason maps a readiness failure to a short code with no secrets.
-func ReadyReason(err error) string { return readyReason(err) }
+// ReadyError is a readiness failure of the clubs named: the first club
+// (in id order) whose check failed, or, when the only findings are
+// config alerts, every club with one.
+type ReadyError struct {
+	Clubs []string
+	Err   error
+}
 
-// readyReason maps a readiness failure to a short code with no secrets.
-func readyReason(err error) string {
+func (e *ReadyError) Error() string {
+	return "клуб " + strings.Join(e.Clubs, ", ") + ": " + e.Err.Error()
+}
+
+func (e *ReadyError) Unwrap() error { return e.Err }
+
+// ReadyClubs returns the clubs a readiness failure is about (none for the
+// account's own login check).
+func ReadyClubs(err error) []string {
+	var re *ReadyError
+	if errors.As(err, &re) {
+		return re.Clubs
+	}
+	return nil
+}
+
+// ReadyReason maps a readiness failure to a short code with no secrets.
+func ReadyReason(err error) string {
 	var ue *driver.UpstreamError
+	var me *driver.MisconfigError
+	var ca *driver.ConfigAlert
 	switch {
+	case errors.As(err, &ca):
+		return ca.Code
+	case errors.As(err, &me):
+		return "CONFIG_MISMATCH"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "CRM_TIMEOUT"
 	case errors.As(err, &ue):
-		switch ue.Kind {
-		case driver.UpstreamAuth:
-			return "CRM_AUTH_FAILED"
-		case driver.UpstreamInvalid:
-			return "CRM_INVALID_RESPONSE"
-		case driver.UpstreamRejected:
-			return "CRM_REJECTED"
-		default:
-			return "CRM_UNREACHABLE"
-		}
+		return failureOf(ue).ready
 	default:
 		return "CRM_ERROR"
 	}
-}
-
-func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
-}
-
-func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), ReadyTimeout)
-	defer cancel()
-	if err := s.drv.Ready(ctx); err != nil {
-		reason := readyReason(err)
-		s.log.Warn("not ready", "request_id", info(r).id, "reason", reason, "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }

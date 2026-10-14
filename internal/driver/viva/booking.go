@@ -1,34 +1,43 @@
 package viva
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-// markerPrefix starts the ownership marker appended to the comment of every
-// record the gateway creates: "[cg:<partner>]".
+// markerPrefix starts the ownership marker that begins the comment of
+// every record the gateway creates: "[cg:<partner>] <note>".
 const markerPrefix = "[cg:"
+
+// maxComment caps a comment, marker included, in characters: well within
+// what the CRM keeps, so the marker is never cut off.
+const maxComment = 1000
 
 func marker(partner string) string { return markerPrefix + partner + "]" }
 
-// buildComment appends the partner's marker to the note. A marker-like
-// sequence inside the note is defused so a partner cannot forge another
-// partner's ownership.
+// buildComment puts the partner's marker in front of the note, cut to
+// maxComment. Ownership is read only from the start of the comment
+// (hasMarker), so a marker inside the note proves nothing.
 func buildComment(note, partner string) string {
-	note = strings.ReplaceAll(note, markerPrefix, "[cg ")
-	if note == "" {
-		return marker(partner)
+	m := marker(partner)
+	if room := maxComment - utf8.RuneCountInString(m) - 1; utf8.RuneCountInString(note) > room {
+		note = string([]rune(note)[:max(room, 0)])
 	}
-	return note + " " + marker(partner)
+	if note == "" {
+		return m
+	}
+	return m + " " + note
 }
 
 func hasMarker(text, partner string) bool {
-	return strings.HasSuffix(strings.TrimSpace(text), marker(partner))
+	return strings.HasPrefix(strings.TrimSpace(text), marker(partner))
 }
 
 // parseID splits "e-<uuid>" / "b-<uuid>".
@@ -98,13 +107,13 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	case status == http.StatusConflict:
 		return driver.Booking{}, fmt.Errorf("POST %s: %w", path, driver.ErrSlotUnavailable)
 	default:
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST %s answered HTTP %d", path, status), nil)
+		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST %s answered HTTP %d", path, status))
 	}
 	var cr createdResponse
 	if err := json.Unmarshal(data, &cr); err != nil || !uuidRe.MatchString(cr.ID) {
 		// The record may exist upstream without us knowing its id. The
 		// partner sees an error and must re-read occupancy before retrying.
-		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, "POST "+path+": response has no valid id", nil)
+		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, "POST "+path+": response has no valid id")
 	}
 	d.log.Info("record created", "kind", strings.TrimPrefix(path, "/"), "court", req.Court)
 	return driver.Booking{
@@ -112,65 +121,62 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}, nil
 }
 
-// read fetches one record as raw fields, so the caller can tell an absent
-// field from an empty one. found=false means the CRM answered 404.
-func (d *Driver) read(ctx context.Context, kind, uuid string) (map[string]json.RawMessage, bool, error) {
+// read fetches one record, decoded and as raw fields (so the caller can
+// tell an absent field from an empty one). found=false means the CRM
+// answered 404.
+func (d *Driver) read(ctx context.Context, kind, uuid string) (s slot, raw map[string]json.RawMessage, found bool, err error) {
 	status, data, err := d.c.do(ctx, http.MethodGet, "/"+kind+"/"+uuid, nil, nil)
 	if err != nil {
-		return nil, false, err
+		return s, nil, false, err
 	}
 	switch status {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, false, nil
+		return s, nil, false, nil
 	default:
-		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s/{id} answered HTTP %d", kind, status), nil)
+		return s, nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s/{id} answered HTTP %d", kind, status))
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
-		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: response is not a JSON object", nil)
-	}
-	return raw, true, nil
-}
-
-func (d *Driver) decodeSlot(kind, uuid string, raw map[string]json.RawMessage) (slot, error) {
-	b, _ := json.Marshal(raw)
-	var s slot
-	if err := json.Unmarshal(b, &s); err != nil {
-		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: malformed record", nil)
+	if json.Unmarshal(data, &raw) != nil || raw == nil || json.Unmarshal(data, &s) != nil {
+		return s, nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: response is not a record")
 	}
 	if s.ID != "" && !strings.EqualFold(s.ID, uuid) {
-		return slot{}, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record id does not match", nil)
+		return s, nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record id does not match")
 	}
 	s.ID = uuid
-	return s, nil
+	return s, raw, true, nil
 }
 
-// Get implements driver.Driver.
 func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	kind, uuid, ok := parseID(id)
 	if !ok {
 		return driver.Booking{}, driver.ErrNotFound
 	}
-	raw, found, err := d.read(ctx, kind, uuid)
+	s, _, found, err := d.read(ctx, kind, uuid)
 	if err != nil {
 		return driver.Booking{}, err
 	}
 	if !found {
 		return driver.Booking{}, driver.ErrNotFound
 	}
-	s, err := d.decodeSlot(kind, uuid, raw)
-	if err != nil {
-		return driver.Booking{}, err
-	}
 	prefix := id[:2]
-	iv, _, err := d.interval(kind, prefix, slot{ID: s.ID, TimeFrom: s.TimeFrom, TimeTo: s.TimeTo, Room: s.Room}, d.byRoom)
+	rooms := d.byRoom
+	if s.Room == nil || s.Room.ID == "" {
+		// a break without a room closes its studio: occupancy shows it on
+		// every court, and it reads on the first one; another studio's is
+		// not this club's
+		if s.Studio == nil || !strings.EqualFold(s.Studio.ID, d.studio) {
+			return driver.Booking{}, driver.ErrNotFound
+		}
+		rooms = map[string]string{d.courts[0].room: d.byRoom[d.courts[0].room]}
+	}
+	ivs, err := d.intervals(kind, prefix, slot{ID: s.ID, TimeFrom: s.TimeFrom, TimeTo: s.TimeTo, Room: s.Room}, rooms)
 	if err != nil {
 		return driver.Booking{}, err
 	}
-	if iv.Court == "" {
-		return driver.Booking{}, driver.ErrNotFound // a room that is not a configured court
+	if len(ivs) == 0 {
+		return driver.Booking{}, d.notACourt(s)
 	}
+	iv := ivs[0]
 	status := driver.StatusActive
 	if s.Canceled != nil && *s.Canceled {
 		status = driver.StatusCancelled
@@ -178,45 +184,51 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	return driver.Booking{ID: iv.ID, Court: iv.Court, Start: iv.Start, End: iv.End, Status: status}, nil
 }
 
-// Cancel implements driver.Driver. The record is read first, and the
-// gateway refuses unless it can tell the record is the caller's:
-//   - an exercise with a client booking (masterServiceBooking) or with
-//     clients (clientsCount > 0) is the club's;
-//   - a record whose comment is present but lacks the caller's marker is not
-//     the caller's;
-//   - a break with no comment but a title that is neither the gateway's break
-//     title nor marked is not the caller's.
-//
-// If the CRM returns neither comment nor title, the check cannot be made and
-// the cancel is allowed (documented residual risk). A record that is gone
-// (404) or already cancelled counts as cancelled.
+// Cancel implements driver.Driver: it deletes a record only when, read
+// back, its comment starts with the caller's marker (checkOwnership; the
+// break title is never evidence) and it has not started. A record that
+// is gone or already cancelled counts as cancelled. Viva has no
+// conditional delete: a change between the read and the DELETE is not
+// seen (docs/hub.md).
 func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	kind, uuid, ok := parseID(id)
 	if !ok {
 		return driver.ErrNotFound
 	}
-	raw, found, err := d.read(ctx, kind, uuid)
+	s, raw, found, err := d.read(ctx, kind, uuid)
 	if err != nil {
 		return err
 	}
 	if !found {
+		// gone, unless the id names a record of the other kind (a wrong
+		// prefix): that one is not this booking
+		other := map[string]string{"exercises": "breaks", "breaks": "exercises"}[kind]
+		if _, _, exists, err := d.read(ctx, other, uuid); err != nil || exists {
+			return cmp.Or(err, driver.ErrNotFound)
+		}
 		return nil
-	}
-	s, err := d.decodeSlot(kind, uuid, raw)
-	if err != nil {
-		return err
 	}
 	if s.Canceled != nil && *s.Canceled {
 		return nil
 	}
 	if s.Room == nil {
-		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no room", nil)
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no room")
 	}
 	if _, ours := d.byRoom[strings.ToLower(s.Room.ID)]; !ours {
-		return driver.ErrNotOwned
+		return d.notACourt(s)
 	}
 	if err := d.checkOwnership(kind, raw, partner); err != nil {
 		return err
+	}
+	start, ok := parseTime(s.TimeFrom)
+	now, known := d.clock()
+	switch {
+	case !ok:
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: record has no valid timeFrom")
+	case !known:
+		return driver.ErrClockUnknown
+	case !start.After(now):
+		return driver.ErrStarted
 	}
 	status, _, err := d.c.do(ctx, http.MethodDelete, "/"+kind+"/"+uuid, nil, nil)
 	if err != nil {
@@ -227,62 +239,69 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		d.log.Info("record deleted", "kind", kind)
 		return nil
 	default:
-		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /%s/{id} answered HTTP %d", kind, status), nil)
+		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /%s/{id} answered HTTP %d", kind, status))
 	}
 }
 
-func isNull(r json.RawMessage) bool { return len(r) == 0 || string(r) == "null" }
+// notACourt: a record in no configured court's room is on a court removed
+// from this club's config, or another studio's: no booking of this club.
+func (d *Driver) notACourt(s slot) error {
+	if s.Studio != nil && strings.EqualFold(s.Studio.ID, d.studio) {
+		return driver.ErrCourtNotConfigured
+	}
+	return driver.ErrNotFound
+}
 
+// clientKeys are the fields of an exercise that may list its clients. A
+// value other than null, "", [] or {} under any of them means the
+// exercise has a client: Cancel refuses it.
+var clientKeys = []string{"clients", "guests", "participants", "bookings"}
+
+func isEmpty(r json.RawMessage) bool {
+	switch strings.Join(strings.Fields(string(r)), "") {
+	case "", "null", `""`, "[]", "{}":
+		return true
+	}
+	return false
+}
+
+// checkOwnership fails closed: an exercise is deleted only when it shows
+// no client at all — clientsCount present and 0, no masterServiceBooking,
+// nothing under clientKeys — and its comment starts with the caller's
+// marker.
 func (d *Driver) checkOwnership(kind string, raw map[string]json.RawMessage, partner string) error {
 	invalid := func(what string) error {
-		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: "+what, nil)
+		return driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+"/{id}: "+what)
 	}
 	if kind == "exercises" {
-		if msb, ok := raw["masterServiceBooking"]; ok && !isNull(msb) {
-			return driver.ErrNotOwned
-		}
-		if cc, ok := raw["clientsCount"]; ok && !isNull(cc) {
-			var n float64
-			if err := json.Unmarshal(cc, &n); err != nil {
-				return invalid("clientsCount is not a number")
-			}
-			if n > 0 {
+		for _, k := range clientKeys {
+			if !isEmpty(raw[k]) {
 				return driver.ErrNotOwned
 			}
 		}
-	}
-	textField := func(name string) (string, bool, error) {
-		r, ok := raw[name]
-		if !ok {
-			return "", false, nil
-		}
-		if isNull(r) {
-			return "", true, nil
-		}
-		var s string
-		if err := json.Unmarshal(r, &s); err != nil {
-			return "", true, invalid(name + " is not a string")
-		}
-		return s, true, nil
-	}
-	comment, hasComment, err := textField("comment")
-	if err != nil {
-		return err
-	}
-	if hasComment {
-		if !hasMarker(comment, partner) {
+		if m := raw["masterServiceBooking"]; len(m) > 0 && string(m) != "null" { // even {}: stricter than isEmpty
 			return driver.ErrNotOwned
 		}
-		return nil
-	}
-	if kind == "breaks" {
-		title, hasTitle, err := textField("title")
-		if err != nil {
-			return err
+		var n float64
+		if cc := raw["clientsCount"]; isEmpty(cc) {
+			return invalid("clientsCount is missing: the record may have clients")
+		} else if err := json.Unmarshal(cc, &n); err != nil {
+			return invalid("clientsCount is not a number")
 		}
-		if hasTitle && !hasMarker(title, partner) && strings.TrimSpace(title) != d.breakTitle {
+		if n != 0 {
 			return driver.ErrNotOwned
 		}
+	}
+	r, ok := raw["comment"]
+	if !ok || isEmpty(r) {
+		return driver.ErrNotOwned
+	}
+	var comment string
+	if err := json.Unmarshal(r, &comment); err != nil {
+		return invalid("comment is not a string")
+	}
+	if !hasMarker(comment, partner) {
+		return driver.ErrNotOwned
 	}
 	return nil
 }

@@ -7,14 +7,11 @@ import (
 	"testing"
 )
 
-const hubGateway = `club: { id: c1, name: "Клуб" }
-hub: { url: https://hub.example.test }
+const hubGateway = `hub: { url: https://hub.example.test, installation: test-net, key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= }
 crm: { type: demo }
-venue: { timezone: Europe/Moscow, slot_minutes: 30, hours: { mon-sun: "07:00-23:00" } }
-courts: [ { id: court-1, name: "Корт 1" } ]
 `
 
-func TestHubModeClosesThePortAndNeedsNoPartners(t *testing.T) {
+func TestHubSettings(t *testing.T) {
 	s, err := Load([]byte(hubGateway), func(k string) string {
 		if k == DefaultHubSecretEnv {
 			return "cgs_test-secret"
@@ -24,9 +21,6 @@ func TestHubModeClosesThePortAndNeedsNoPartners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Listen != "" {
-		t.Fatalf("with a hub the local port must stay closed by default, got %q", s.Listen)
-	}
 	if s.Hub == nil || s.Hub.Polls != DefaultHubPolls || s.Hub.Secret != "cgs_test-secret" {
 		t.Fatalf("hub: %+v", s.Hub)
 	}
@@ -35,11 +29,6 @@ func TestHubModeClosesThePortAndNeedsNoPartners(t *testing.T) {
 	}
 	if !s.Update.Enabled {
 		t.Fatal("updates are on by default")
-	}
-	// explicit listen still works (LAN / debugging)
-	s, err = Load([]byte(hubGateway+"listen: \"127.0.0.1:9090\"\n"), func(k string) string { return "cgs_x" })
-	if err != nil || s.Listen != "127.0.0.1:9090" {
-		t.Fatalf("explicit listen: %v %+v", err, s)
 	}
 }
 
@@ -52,11 +41,6 @@ func TestHubConfigErrors(t *testing.T) {
 	_, err = Load([]byte(bad), func(string) string { return "x" })
 	if err == nil || !strings.Contains(err.Error(), "https://") {
 		t.Fatalf("plain http hub: %v", err)
-	}
-	// without a hub, partners are still required
-	noHub := strings.Replace(hubGateway, "hub: { url: https://hub.example.test }\n", "", 1)
-	if _, err := Load([]byte(noHub), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "partners") {
-		t.Fatalf("no hub, no partners: %v", err)
 	}
 }
 
@@ -86,7 +70,7 @@ func TestDotEnv(t *testing.T) {
 	}
 }
 
-func TestStatePathAgreesWithLoadFile(t *testing.T) {
+func TestStateDirAgreesWithLoadFile(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "gateway.yaml")
 	_ = os.WriteFile(cfg, []byte(hubGateway), 0o644)
@@ -95,15 +79,14 @@ func TestStatePathAgreesWithLoadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateDir, listen, hub := StatePath(cfg, get)
-	if stateDir != s.StateDir || stateDir != filepath.Join(dir, "state") || listen != "" || !hub {
-		t.Fatalf("StatePath %q %q %v vs %q", stateDir, listen, hub, s.StateDir)
+	if d := StateDir(cfg, get); d != s.StateDir || d != filepath.Join(dir, "state") {
+		t.Fatalf("StateDir %q vs %q", d, s.StateDir)
 	}
 	get2 := func(k string) string {
 		return map[string]string{DefaultHubSecretEnv: "cgs_x", StateDirEnv: "/elsewhere"}[k]
 	}
 	s, _ = LoadFile(cfg, get2)
-	if d, _, _ := StatePath(cfg, get2); d != "/elsewhere" || s.StateDir != "/elsewhere" {
+	if d := StateDir(cfg, get2); d != "/elsewhere" || s.StateDir != "/elsewhere" {
 		t.Fatalf("env override: %q %q", d, s.StateDir)
 	}
 }

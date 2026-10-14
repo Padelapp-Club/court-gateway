@@ -3,18 +3,24 @@
 package doctor
 
 import (
-	"os"
 	"path/filepath"
 
-	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 )
 
-func secretsFileCheckOS(cfgPath string) Check {
-	p := filepath.Join(filepath.Dir(cfgPath), core.EnvFileName)
-	if _, err := os.Stat(p); err != nil {
-		return Check{Code: CodeSecretFile, Status: Skip, Message: "файла .env нет: секреты берутся из окружения"}
+// secretsExposure: the folder holding .env and .env itself must be closed
+// to everyone but Administrators and SYSTEM (service.ProtectSecrets, which
+// setup and install-service apply and verify).
+func secretsExposure(cfgPath, env string) (Status, string, string) {
+	hint := `court-gateway install-service -config "` + cfgPath + `" (PowerShell от имени администратора; если служба уже установлена — сначала court-gateway uninstall-service)`
+	for _, p := range []string{filepath.Dir(env), env} {
+		protected, null, aces, err := service.ReadACL(p)
+		if err != nil {
+			return Fail, "права " + p + " не читаются: " + err.Error(), hint
+		}
+		if msg := service.ACLProblem(protected, null, aces); msg != "" {
+			return Fail, p + ": " + msg, hint
+		}
 	}
-	// Windows ACLs are not inspected; the install instructions put the
-	// folder under the service account's control.
-	return Check{Code: CodeSecretFile, Status: OK, Message: ".env найден"}
+	return OK, "папка с .env и сам .env закрыты: доступ только администраторам и системе", ""
 }

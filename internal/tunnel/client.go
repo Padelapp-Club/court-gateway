@@ -3,8 +3,11 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	crand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +18,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,16 +33,31 @@ import (
 type ClientConfig struct {
 	HubURL string
 	Secret string
+	// HubKey and Installation are pinned at registration: the client acts
+	// only on requests and configs that key signed for this installation
+	// and this secret's registration.
+	HubKey       ed25519.PublicKey
+	Installation string
+	// Verifier, when set, is the one the client checks with (built from
+	// HubKey, Installation and Secret otherwise): its Now is the hub's
+	// time, for the clubs' booking decisions.
+	Verifier *Verifier
 	// Polls is the number of concurrent long-poll requests (default 4).
 	Polls int
 	// Handler serves requests that arrive through the tunnel.
 	Handler http.Handler
 	// Version, Build and Platform are reported to the hub on every poll.
 	Version, Build, Platform string
-	Logger                   *slog.Logger
+	// Instance identifies this process to the hub (default: random).
+	Instance string
+	Logger   *slog.Logger
 	// OnHint is called when the hub says a newer release exists.
 	OnHint func(version string)
-	// Transport defaults to NewTransport(nil).
+	// OnConfigVersion is called, after every answer whose signed time signs
+	// a config version (polls), with the version and epoch the verifier
+	// holds then (Verifier.Announced), in the order it took them.
+	OnConfigVersion func(version int64, epoch string)
+	// Transport defaults to NewTransport(nil, nil).
 	Transport http.RoundTripper
 	// Backoff after a failed poll grows from MinBackoff to MaxBackoff with
 	// full jitter (defaults 1s and 60s).
@@ -52,10 +72,14 @@ type Client struct {
 	cfg      ClientConfig
 	http     *http.Client
 	log      *slog.Logger
+	verify   *Verifier
+	refused  atomic.Int64 // requests and configs refused for their signature
 	okPolls  atomic.Int32
-	everOK   atomic.Bool
 	lastHint atomic.Value // string
 	authFail atomic.Bool
+	dup      atomic.Bool
+	badKey   atomic.Bool // the hub's last signed time failed the pinned key
+	announce sync.Mutex  // one signed time taken and announced at a time
 	mu       sync.Mutex
 	state    string // "connected" / "disconnected", for transition logs
 }
@@ -63,15 +87,54 @@ type Client struct {
 // ErrUnauthorized means the hub rejected the gateway secret.
 var ErrUnauthorized = errors.New("the hub rejected the gateway secret")
 
-// LoadRoots returns the system root pool plus the certificates in caFile.
+// ErrDuplicate: the hub serves another running copy of this gateway, one
+// with the same secret; this copy stays idle until that one is gone.
+var ErrDuplicate = errors.New("another copy of this gateway, with the same secret, is connected to the hub")
+
+// ErrRedirected: the hub answered with a redirect. No request to the hub
+// follows one (core.RefuseRedirects): hub.url must be the hub itself.
+var ErrRedirected = errors.New("the hub answered with a redirect, which is not followed: hub.url must be the hub's own address")
+
+// answerError is the error for a hub answer with status code, other than
+// a success; what names the request.
+func answerError(status int, what string) error {
+	switch {
+	case status == http.StatusUnauthorized:
+		return ErrUnauthorized
+	case status == http.StatusConflict:
+		return ErrDuplicate
+	case core.IsRedirect(status):
+		return fmt.Errorf("HTTP %d to %s: %w", status, what, ErrRedirected)
+	}
+	return fmt.Errorf("hub answered HTTP %d to %s", status, what)
+}
+
+// hubError is answerError, noting a rejected secret and a refused copy
+// for Unauthorized and Duplicate.
+func (c *Client) hubError(status int, what string) error {
+	err := answerError(status, what)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		c.authFail.Store(true)
+	case errors.Is(err, ErrDuplicate):
+		c.dup.Store(true)
+	}
+	return err
+}
+
+// hubClient is the HTTP client of every request to the hub.
+func hubClient(rt http.RoundTripper) *http.Client {
+	return &http.Client{Transport: rt, CheckRedirect: core.RefuseRedirects}
+}
+
+// LoadRoots returns the roots of the hub's certificate: nil (the system's)
+// without caFile, otherwise ONLY caFile's, pinning the hub's CA against a
+// TLS-inspecting proxy this machine trusts.
 func LoadRoots(caFile string) (*x509.CertPool, error) {
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
 	if caFile == "" {
-		return pool, nil
+		return nil, nil
 	}
+	pool := x509.NewCertPool()
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("hub.ca_file: %w", err)
@@ -82,12 +145,10 @@ func LoadRoots(caFile string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// NewTransport builds the HTTPS transport used to reach the hub: proxy
-// from the environment (clubs behind a corporate proxy), HTTP/2 with
-// pings so a silently dead path is noticed, TLS 1.2+ verified against
-// roots (nil means the system roots).
-func NewTransport(roots *x509.CertPool) *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
+// NewTransport is the HTTPS transport to the hub: the proxy, HTTP/2 pings
+// (a silently dead path is noticed), TLS 1.2+ against roots (nil: system).
+func NewTransport(roots *x509.CertPool, proxy core.ProxyFunc) *http.Transport {
+	t := proxy.Transport()
 	t.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	t.ForceAttemptHTTP2 = true
 	t.HTTP2 = &http.HTTP2Config{SendPingTimeout: 20 * time.Second, PingTimeout: 10 * time.Second}
@@ -99,6 +160,13 @@ func NewTransport(roots *x509.CertPool) *http.Transport {
 func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.HubURL == "" || cfg.Secret == "" || cfg.Handler == nil {
 		return nil, errors.New("tunnel: hub URL, secret and handler are required")
+	}
+	v := cfg.Verifier
+	if v == nil {
+		var err error
+		if v, err = NewVerifier(cfg.HubKey, cfg.Installation, cfg.Secret, nil); err != nil {
+			return nil, err
+		}
 	}
 	cfg.HubURL = strings.TrimRight(cfg.HubURL, "/")
 	if cfg.Polls <= 0 {
@@ -117,16 +185,21 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		cfg.PollTimeout = 60 * time.Second
 	}
 	if cfg.Transport == nil {
-		cfg.Transport = NewTransport(nil)
+		cfg.Transport = NewTransport(nil, nil)
 	}
 	if cfg.Build == "" {
 		cfg.Build = BuildSelf
+	}
+	if cfg.Instance == "" {
+		var b [16]byte
+		_, _ = crand.Read(b[:])
+		cfg.Instance = hex.EncodeToString(b[:])
 	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Client{cfg: cfg, http: &http.Client{Transport: cfg.Transport}, log: log}, nil
+	return &Client{cfg: cfg, http: hubClient(cfg.Transport), log: log, verify: v}, nil
 }
 
 // Connected reports whether at least one poll is currently healthy.
@@ -134,6 +207,26 @@ func (c *Client) Connected() bool { return c.okPolls.Load() > 0 }
 
 // Unauthorized reports whether the hub's last answer rejected the secret.
 func (c *Client) Unauthorized() bool { return c.authFail.Load() }
+
+// Duplicate reports whether the hub's last answer refused this copy
+// because another one with the same secret is connected.
+func (c *Client) Duplicate() bool { return c.dup.Load() }
+
+// Refused counts the requests and configs refused because the hub did
+// not sign them for this gateway (heartbeats report it).
+func (c *Client) Refused() int64 { return c.refused.Load() }
+
+// ClockOffset is how far the hub's clock was ahead of this computer's when
+// last signed (0 before); beyond MaxClockSkew: CLOCK_SKEW.
+func (c *Client) ClockOffset() time.Duration {
+	c.verify.mu.Lock()
+	defer c.verify.mu.Unlock()
+	return c.verify.offset
+}
+
+// HubKeyMismatch reports whether the hub's last signed time failed the
+// pinned key: the hub signs with another key (a new one, or not the hub).
+func (c *Client) HubKeyMismatch() bool { return c.badKey.Load() }
 
 // Run keeps Polls pollers running until ctx is done.
 func (c *Client) Run(ctx context.Context) {
@@ -157,9 +250,13 @@ func (c *Client) note(ok bool, err error) {
 		c.log.Info("hub connected", "hub", c.cfg.HubURL)
 	case !ok && c.state != "disconnected" && !c.Connected():
 		c.state = "disconnected"
-		if errors.Is(err, ErrUnauthorized) {
+		switch {
+		case errors.Is(err, ErrUnauthorized):
 			c.log.Error("hub rejected the gateway secret; run setup again with a new join code", "hub", c.cfg.HubURL)
-		} else {
+		case errors.Is(err, ErrDuplicate):
+			c.log.Error("another copy of this gateway, with the same secret, is connected to the hub; this copy stays idle "+
+				"until that one stops — run only one", "hub", c.cfg.HubURL)
+		default:
 			c.log.Warn("hub unreachable, reconnecting", "hub", c.cfg.HubURL, "error", err)
 		}
 	}
@@ -185,10 +282,10 @@ func (c *Client) poller(ctx context.Context) {
 		}
 	}()
 	for ctx.Err() == nil {
-		rq, err := c.poll(ctx, func() {
+		rq, nonce, err := c.poll(ctx, func() {
 			failures = 0
 			c.authFail.Store(false)
-			c.everOK.Store(true)
+			c.dup.Store(false)
 			setHealthy(true, nil)
 		})
 		if err != nil {
@@ -205,16 +302,20 @@ func (c *Client) poller(ctx context.Context) {
 		if rq == nil {
 			continue
 		}
-		resp := c.Execute(ctx, *rq)
-		c.reply(ctx, resp)
+		// a request taken runs to its end (ExecTimeout) and its reply is
+		// delivered, also when ctx ends: a restart drains it
+		resp := c.Execute(context.WithoutCancel(ctx), *rq, nonce)
+		c.reply(context.WithoutCancel(ctx), resp)
 	}
 }
 
 // backoff returns a full-jitter delay: uniform in [0, min(max, min*2^n)).
-// A rejected secret waits the maximum: retrying faster cannot help.
-func (c *Client) backoff(failures int, unauthorized bool) time.Duration {
+// A rejected secret waits the maximum: retrying faster cannot help. A
+// refused duplicate backs off like a failure: it may be the restart of a
+// copy whose last polls the hub has not yet seen end.
+func (c *Client) backoff(failures int, refused bool) time.Duration {
 	ceil := c.cfg.MaxBackoff
-	if !unauthorized {
+	if !refused {
 		ceil = c.cfg.MinBackoff
 		for i := 1; i < failures && ceil < c.cfg.MaxBackoff; i++ {
 			ceil *= 2
@@ -250,23 +351,29 @@ func (c *Client) newRequest(ctx context.Context, method, p string, body []byte) 
 	req.Header.Set(HeaderVersion, c.cfg.Version)
 	req.Header.Set(HeaderBuild, c.cfg.Build)
 	req.Header.Set(HeaderPlatform, c.cfg.Platform)
+	req.Header.Set(HeaderPolls, strconv.Itoa(c.cfg.Polls))
+	req.Header.Set(HeaderInstance, c.cfg.Instance)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return req, nil
 }
 
-// poll returns the next request, nil when the hub had none, or an error.
-// connected is called as soon as the hub accepted the poll (headers
-// received), before the long wait for the body.
-func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
+// poll returns the next request (nil: none) and the poll's nonce, calling
+// connected once the hub accepted the poll, before the long wait.
+func (c *Client) poll(ctx context.Context, connected func()) (*Request, string, error) {
 	pctx, cancel := context.WithTimeout(ctx, c.cfg.PollTimeout)
 	defer cancel()
 	req, err := c.newRequest(pctx, http.MethodPost, PathPoll, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	resp, err := c.http.Do(req)
+	rq, err := c.pollAnswer(req, connected)
+	return rq, req.Header.Get(HeaderNonce), err
+}
+
+func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, error) {
+	resp, run, err := c.timed(req)
 	if err != nil {
 		return nil, cleanError(err)
 	}
@@ -282,12 +389,10 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 		connected()
 		return nil, nil
 	case http.StatusOK:
+		_ = c.confirm(req.Context())
 		connected()
-	case http.StatusUnauthorized:
-		c.authFail.Store(true)
-		return nil, ErrUnauthorized
 	default:
-		return nil, fmt.Errorf("hub answered HTTP %d to a poll", resp.StatusCode)
+		return nil, c.hubError(resp.StatusCode, "a poll")
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxEnvelope))
 	if err != nil {
@@ -303,7 +408,112 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 	if rq.ID == "" {
 		return nil, errors.New("hub sent a request without id")
 	}
+	rq.run = run
 	return &rq, nil
+}
+
+// doTimed sends req with a fresh nonce and takes the hub's signed time and
+// config version from the answer (Verifier.Time), then announces the
+// version taken (OnConfigVersion).
+func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
+	resp, _, err := c.timed(req)
+	return resp, err
+}
+
+// timed is doTimed, also returning the hub run (config epoch) the answer's
+// signed time names, "" when none verified: no hub run is "".
+func (c *Client) timed(req *http.Request) (*http.Response, string, error) {
+	var nonce [16]byte
+	_, _ = crand.Read(nonce[:])
+	req.Header.Set(HeaderNonce, hex.EncodeToString(nonce[:]))
+	sent, ticket := c.verify.now(), c.verify.Ticket()
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	if h := resp.Header.Get(HeaderHubTime); h != "" {
+		version, epoch := resp.Header.Get(HeaderConfigVersion), resp.Header.Get(HeaderConfigEpoch)
+		c.announce.Lock()
+		defer c.announce.Unlock()
+		err := c.verify.Time(req.Header.Get(HeaderNonce), h, strings.TrimSpace(version+" "+epoch), sent, ticket)
+		c.badKey.Store(errors.Is(err, ErrBadSignature))
+		switch {
+		case errors.Is(err, ErrBadSignature):
+			c.refused.Add(1)
+			c.log.Error("the hub's time refused: not signed by the hub for this gateway", "error", err)
+		case err != nil:
+			c.log.Debug("the hub's time not taken", "error", err)
+		}
+		if err != nil && !errors.Is(err, ErrSlowTime) {
+			return resp, "", nil
+		}
+		n, perr := strconv.ParseInt(version, 10, 64)
+		if perr == nil && n >= 0 && c.cfg.OnConfigVersion != nil {
+			c.cfg.OnConfigVersion(c.verify.Announced())
+		}
+		return resp, epoch, nil
+	}
+	return resp, "", nil
+}
+
+// confirm makes an exchange now when another hub run answered, so that its
+// answer confirms which run is current (Verifier.Time).
+func (c *Client) confirm(ctx context.Context) error {
+	if c.verify.Confirmed() {
+		return nil
+	}
+	_, err := c.Whoami(ctx)
+	return err
+}
+
+// MaxConfigBody bounds the club configuration of an installation.
+const MaxConfigBody = 8 << 20
+
+// FetchConfig pulls the installation's club configuration from the hub.
+func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
+	var out RemoteConfig
+	if err := c.confirm(ctx); err != nil {
+		return out, err
+	}
+	req, err := c.newRequest(ctx, http.MethodGet, PathConfig, nil)
+	if err != nil {
+		return out, err
+	}
+	status, err := exchange(c.http.Do, req, MaxConfigBody, &out)
+	switch {
+	case status == 0:
+		return out, err
+	case status != http.StatusOK:
+		return out, c.hubError(status, "a config request")
+	case err != nil:
+		return RemoteConfig{}, errors.New("hub sent a malformed config")
+	}
+	if err := c.verify.Config(&out); err != nil {
+		if !errors.Is(err, ErrStaleConfig) {
+			c.refused.Add(1)
+			c.log.Error("club config refused: not signed by the hub for this gateway", "error", err)
+		}
+		return RemoteConfig{}, err
+	}
+	return out, nil
+}
+
+// Release tells the hub, after Run returned, that this copy stopped: the
+// next one (a restart, an update) is not refused as a duplicate.
+func (c *Client) Release(ctx context.Context) error {
+	req, err := c.newRequest(ctx, http.MethodPost, PathRelease, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return cleanError(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return answerError(resp.StatusCode, "a release")
+	}
+	return nil
 }
 
 func (c *Client) reply(ctx context.Context, r Response) {
@@ -323,6 +533,9 @@ func (c *Client) reply(ctx context.Context, r Response) {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			cancel()
+			if core.IsRedirect(resp.StatusCode) {
+				break // not delivered, and a retry would not be either
+			}
 			if resp.StatusCode < 500 {
 				return // delivered, or the partner is gone (410)
 			}
@@ -355,28 +568,48 @@ func allowed(method, p string) bool {
 	if p == "" || path.Clean(p) != p || strings.Contains(p, "%") {
 		return false
 	}
-	return p == "/health/live" || p == "/health/ready" || strings.HasPrefix(p, "/v1/")
+	if p == PathDiscover {
+		return method == http.MethodPost
+	}
+	return strings.HasPrefix(p, "/v1/")
 }
 
-// Execute runs one tunnelled request against the local handler. Exposed
-// for tests.
-func (c *Client) Execute(ctx context.Context, rq Request) Response {
+// Execute runs one tunnelled request against the local handler, if the
+// hub signed it for this gateway and the poll that sent nonce.
+func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response {
 	fail := func(status int, code, msg string) Response {
 		b, _ := json.Marshal(map[string]string{"code": code, "message": msg, "request_id": rq.RequestID})
 		return Response{ID: rq.ID, Status: status, Header: map[string]string{"Content-Type": "application/json; charset=utf-8"}, Body: b}
 	}
-	if !allowed(rq.Method, rq.Path) {
+	err := c.verify.Request(&rq, nonce)
+	if errors.Is(err, ErrClockUnknown) {
+		r := fail(http.StatusServiceUnavailable, "CLOCK_UNKNOWN", "the club's gateway does not know the hub's time yet, retry")
+		r.Header["Retry-After"] = "5"
+		return r
+	}
+	if errors.Is(err, ErrUnconfirmedRun) || errors.Is(err, ErrOtherRun) {
+		r := fail(http.StatusServiceUnavailable, "CONFIG_PENDING", "the hub restarted; the club's gateway is taking its configuration, retry")
+		r.Header["Retry-After"] = "5"
+		return r
+	}
+	if err != nil {
+		c.refused.Add(1)
+		c.log.Error("request refused: not signed by the hub for this gateway", "request_id", rq.RequestID, "error", err)
+		return fail(http.StatusBadGateway, "SIGNATURE_REJECTED", "the club's gateway did not accept the hub's signature")
+	}
+	if rq.Partner != "" && !slices.Contains(rq.Scopes, string(auth.Needs(rq.Method))) {
+		return fail(http.StatusForbidden, "FORBIDDEN", "the API key has no scope for this operation")
+	}
+	// the gateway API (/gateway/...) is the hub operator's, never a partner's
+	if !allowed(rq.Method, rq.Path) || (rq.Partner != "" && strings.HasPrefix(rq.Path, "/gateway/")) {
 		return fail(http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	}
 	if len(rq.Body) > MaxRequestBody {
 		return fail(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body is too large")
 	}
-	timeout := time.Duration(rq.TimeoutMS) * time.Millisecond
-	if timeout < time.Second || timeout > 2*time.Minute {
-		timeout = 30 * time.Second
-	}
-	rctx, cancel := context.WithTimeout(ctx, timeout)
+	rctx, cancel := context.WithTimeout(ctx, ExecTimeout(rq.TimeoutMS))
 	defer cancel()
+	rctx = core.WithHubRun(rctx, rq.run)
 	if rq.Partner != "" {
 		rctx = auth.WithPartnerName(rctx, rq.Partner)
 	}
@@ -389,7 +622,7 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 		return fail(http.StatusBadRequest, "INVALID_REQUEST", "malformed request")
 	}
 	hr.RemoteAddr = "hub"
-	for _, h := range forwardedHeaders {
+	for _, h := range RequestHeaders {
 		if v := rq.Header[h]; v != "" {
 			hr.Header.Set(h, v)
 		}
@@ -403,7 +636,7 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 		rec.status = http.StatusOK
 	}
 	out := Response{ID: rq.ID, Status: rec.status, Body: rec.buf.Bytes(), Header: map[string]string{}}
-	for _, h := range append(forwardedHeaders, "Cache-Control") {
+	for _, h := range ResponseHeaders {
 		if v := rec.header.Get(h); v != "" {
 			out.Header[h] = v
 		}

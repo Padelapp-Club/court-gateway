@@ -16,7 +16,7 @@ import (
 )
 
 // Platforms are the release builds.
-var Platforms = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64", "windows-amd64"}
+var Platforms = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64", "windows-amd64", "windows-arm64"}
 
 // AssetName is the file name of a release build.
 func AssetName(ver, platform string) string {
@@ -56,7 +56,7 @@ func BuildManifest(ver, dir, baseURL string, released time.Time) ([]byte, error)
 			return nil, fmt.Errorf("missing build %s: %w", name, err)
 		}
 		sum := sha256.Sum256(data)
-		m.Assets[p] = Asset{URL: strings.TrimRight(baseURL, "/") + "/" + name, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(data))}
+		m.Assets[p] = Asset{URL: strings.TrimRight(baseURL, "/") + "/" + name, SHA256: hex.EncodeToString(sum[:])}
 	}
 	return json.MarshalIndent(m, "", "  ")
 }

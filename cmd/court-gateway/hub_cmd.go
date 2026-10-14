@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,8 +27,11 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 	if len(args) >= 2 && args[0] == "gateway" && args[1] == "revoke" {
 		return cmdRevoke(args[2:], stdout, stderr, getenv, defaultConfig)
 	}
+	if len(args) >= 1 && args[0] == "key" {
+		return cmdHubKey(args[1:], stdout, stderr, getenv, defaultConfig)
+	}
 	if len(args) > 0 && (len(args[0]) == 0 || args[0][0] != '-') {
-		fmt.Fprintf(stderr, "hub: неизвестная команда %q (есть: hub, hub join-code create, hub gateway revoke)\n", args[0])
+		fmt.Fprintf(stderr, "hub: неизвестная команда %q (есть: hub, hub join-code create, hub gateway revoke, hub key)\n", args[0])
 		return 2
 	}
 	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
@@ -38,19 +42,16 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	log := core.NewLogger(stderr, slog.LevelInfo, s.Secrets)
 	store, err := hub.OpenStore(s.StateDir, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	srv, err := hub.NewServer(s, store, hub.Options{Logger: log, Version: version})
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -59,6 +60,11 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 		return 1
 	}
 	return 0
+}
+
+func hubFail(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+	return 2
 }
 
 func loadHub(cfgPath string, getenv func(string) string) (*hub.Settings, error) {
@@ -73,48 +79,85 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 	fs := flag.NewFlagSet("hub join-code create", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
-	club := fs.String("club", "", "club id: lower-case latin letters, digits, dashes")
-	name := fs.String("name", "", "club name as people know it")
+	inst := fs.String("installation", "", "installation id (one CRM account): lower-case latin letters, digits, dashes")
+	name := fs.String("name", "", "installation name, used if the code creates the installation")
 	ttl := fs.Duration("ttl", hub.DefaultJoinCodeTTL, "how long the code stays valid")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
-	code, expires, err := hub.CreateJoinCode(s.StateDir, *club, *name, *ttl, time.Now())
+	jc, err := hub.CreateJoinCode(s.StateDir, *inst, *name, *ttl, time.Now())
+	switch {
+	case errors.Is(err, hub.ErrInvalidID):
+		fmt.Fprintf(stderr, "court-gateway hub: --installation: «%s» — от 2 до 63 символов: строчные латинские буквы, цифры и дефис\n", *inst)
+		return 2
+	case errors.Is(err, hub.ErrInvalidName):
+		fmt.Fprintln(stderr, "court-gateway hub: --name: не длиннее 200 символов, без управляющих символов")
+		return 2
+	case errors.Is(err, hub.ErrInvalidTTL):
+		fmt.Fprintf(stderr, "court-gateway hub: --ttl: больше нуля и не дольше %s\n", hub.MaxJoinCodeTTL)
+		return 2
+	case err != nil:
+		return hubFail(stderr, err)
+	}
+	key, err := hub.PublicKey(s.StateDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "Код подключения клуба %s: %s\n", *club, code)
-	fmt.Fprintf(stdout, "Действует до %s UTC, один раз.\n", expires.UTC().Format("2006-01-02 15:04"))
+	fp := core.HubKeyFingerprint(key)
+	fmt.Fprintf(stdout, "Код подключения установки %s: %s\n", jc.Installation, jc.Code)
+	fmt.Fprintf(stdout, "Действует до %s UTC, один раз.\n", jc.Expires.UTC().Format("2006-01-02 15:04"))
+	fmt.Fprintf(stdout, "Отпечаток ключа хаба: %s\n", fp)
 	if s.PublicURL != "" {
 		fmt.Fprintf(stdout, "Адрес хаба: %s\n", s.PublicURL)
-		fmt.Fprintf(stdout, "Команда для клуба: court-gateway setup --hub-url %s\n", s.PublicURL)
+		fmt.Fprintf(stdout, "Команда для клуба: court-gateway setup --hub-url %s --hub-key-fingerprint %s\n", s.PublicURL, fp)
 	}
 	return 0
+}
+
+// cmdHubKey prints the hub's public signing key (DEFAULT_HUB_KEY of a
+// release build) and its fingerprint.
+func cmdHubKey(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
+	fs := flag.NewFlagSet("hub key", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", defaultConfig, "hub config file")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	s, err := loadHub(*cfgPath, getenv)
+	if err == nil {
+		var key []byte
+		if key, err = hub.PublicKey(s.StateDir); err == nil {
+			fmt.Fprintf(stdout, "key: %s\nfingerprint: %s\n", core.EncodeHubKey(key), core.HubKeyFingerprint(key))
+			return 0
+		}
+	}
+	return hubFail(stderr, err)
 }
 
 func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("hub gateway revoke", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
-	club := fs.String("club", "", "club id")
+	inst := fs.String("installation", "", "installation id")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
-	if err := hub.RevokeGateway(s.StateDir, *club); err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+	if err := hub.RevokeGateway(s.StateDir, *inst); err != nil {
+		if errors.Is(err, hub.ErrNotRegistered) {
+			fmt.Fprintf(stderr, "court-gateway hub: у установки %s нет зарегистрированного шлюза\n", *inst)
+		} else {
+			fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+		}
 		return 1
 	}
-	fmt.Fprintf(stdout, "Подключение клуба %s отозвано; шлюз потеряет доступ при следующем запросе.\n", *club)
+	fmt.Fprintf(stdout, "Подключение установки %s отозвано; шлюз потеряет доступ при следующем запросе. Клубы установки остались на хабе.\n", *inst)
 	return 0
 }

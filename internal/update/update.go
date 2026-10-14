@@ -1,15 +1,14 @@
 // Package update keeps a gateway on the newest signed release without
 // anyone at the club doing anything.
 //
-// A release publishes manifest.json (version, and per platform a download
-// URL and SHA-256) and manifest.json.sig (an ed25519 signature over the
-// exact manifest bytes, base64). The public key is embedded into release
-// builds at link time; a build without it is "self-built" and never
-// updates itself. An update is installed only if the signature verifies,
-// the version is strictly newer, the download matches the SHA-256 from the
-// signed manifest, and the new binary passes a self-check in a child
-// process. After the switch the new binary must become ready within a
-// deadline, or it puts the previous binary back.
+// A release publishes manifest.json (version, per platform a URL and
+// SHA-256) and manifest.json.sig (ed25519 over its exact bytes, base64),
+// checked with the key embedded in release builds (a self-build has none
+// and never updates). An update is installed only when signed, strictly
+// newer, matching the signed SHA-256 and passing a self-check in a child
+// process. Updates live in the state directory (Versions): the installed
+// binary is never replaced. A switched version that is not ready in time
+// is rolled back.
 package update
 
 import (
@@ -17,6 +16,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -58,13 +58,17 @@ var (
 	ErrTransient = errors.New("self-check could not complete")
 	// ErrBroken: the new binary does not work here.
 	ErrBroken = errors.New("new binary failed its self-check")
+	// ErrNotRun: the new binary's self-check did not run because the CRM
+	// rejected the password: not the binary's fault, and not retried.
+	ErrNotRun = errors.New("self-check not run: the CRM rejected the password")
+	// ErrHeld: no update is checked while Updater.Hold says so.
+	ErrHeld = errors.New("updates held while the CRM rejects the password")
 )
 
 // Asset is one platform build in a manifest.
 type Asset struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size,omitempty"`
 }
 
 // Manifest describes one release.
@@ -126,29 +130,23 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
-// Result of a check.
-type Result struct {
-	Latest    string
-	Installed string // version installed by this check, if any
-	Target    string // binary to run after installation
-}
-
 // Updater checks and installs releases.
 type Updater struct {
 	PublicKey   ed25519.PublicKey
 	ManifestURL string
-	// SignatureURL defaults to ManifestURL + ".sig".
-	SignatureURL string
-	Current      string
-	Platform     string
-	Client       *http.Client
-	StateDir     string
-	Installer    Installer
+	Current     string
+	Platform    string
+	Client      *http.Client
+	Versions    *Versions
 	// CheckBinary runs the downloaded binary's self-check before the
 	// switch. Nil skips it (tests only).
 	CheckBinary func(ctx context.Context, path, version string) error
 	Log         *slog.Logger
 	Now         func() time.Time
+	// Hold, while true, stops every check before anything is fetched or
+	// run: the CRM rejected the password, and the new binary's self-check
+	// would log in with it again.
+	Hold func() bool
 }
 
 func (u *Updater) now() time.Time {
@@ -165,12 +163,32 @@ func (u *Updater) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// httpsRedirectsOnly is the CheckRedirect of release downloads: release
+// hosting redirects (GitHub: latest → version → file storage), followed
+// only to https. Trust is in the signature and checksum, not the transport.
+func httpsRedirectsOnly(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return errors.New("redirect to a non-https address refused")
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
+// do sends req with u.Client, following only https redirects.
+func (u *Updater) do(req *http.Request) (*http.Response, error) {
+	hc := *u.Client
+	hc.CheckRedirect = httpsRedirectsOnly
+	return hc.Do(req)
+}
+
 func (u *Updater) get(ctx context.Context, url string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := u.Client.Do(req)
+	resp, err := u.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -197,10 +215,7 @@ func (u *Updater) Fetch(ctx context.Context) (*Manifest, error) {
 	if mURL == "" {
 		mURL = DefaultManifestURL
 	}
-	sURL := u.SignatureURL
-	if sURL == "" {
-		sURL = mURL + ".sig"
-	}
+	sURL := mURL + ".sig"
 	data, err := u.get(ctx, mURL, maxManifest)
 	if err != nil {
 		return nil, err
@@ -215,19 +230,22 @@ func (u *Updater) Fetch(ctx context.Context) (*Manifest, error) {
 	return ParseManifest(data)
 }
 
-// Check fetches the manifest and installs a newer release if there is one.
-func (u *Updater) Check(ctx context.Context) (Result, error) {
+// Check fetches the manifest and installs a newer release if there is
+// one; installed is the version it installed ("" for none).
+func (u *Updater) Check(ctx context.Context) (installed string, err error) {
+	if u.Hold != nil && u.Hold() {
+		return "", ErrHeld
+	}
 	m, err := u.Fetch(ctx)
 	if err != nil {
-		return Result{}, err
+		return "", err
 	}
-	res := Result{Latest: m.Version}
 	if !version.Newer(m.Version, u.Current) {
-		return res, nil
+		return "", nil
 	}
-	if u.isBad(m.Version) {
+	if isBad(u.Versions.Dir, m.Version, u.now()) {
 		u.log().Info("skipping a release that failed here recently", "version", m.Version)
-		return res, nil
+		return "", nil
 	}
 	plat := u.Platform
 	if plat == "" {
@@ -235,32 +253,32 @@ func (u *Updater) Check(ctx context.Context) (Result, error) {
 	}
 	a, ok := m.Assets[plat]
 	if !ok {
-		return res, fmt.Errorf("release %s has no build for %s", m.Version, plat)
+		return "", fmt.Errorf("release %s has no build for %s", m.Version, plat)
 	}
 	path, err := u.download(ctx, a)
 	if err != nil {
-		return res, err
+		return "", err
 	}
 	defer os.Remove(path) // no-op once installed (renamed away)
 	if u.CheckBinary != nil {
 		if err := u.CheckBinary(ctx, path, m.Version); err != nil {
 			if errors.Is(err, ErrBroken) {
-				u.markBad(m.Version)
+				markBad(u.Versions.Dir, m.Version, u.now())
 			}
-			return res, err
+			return "", err
 		}
 	}
-	target, err := u.Installer.Install(path, m.Version)
-	if err != nil {
-		return res, fmt.Errorf("install: %w", err)
+	// the marker first: a version that starts must find it, whenever the
+	// switch is interrupted
+	if err := writePending(u.Versions.Dir, Pending{Version: m.Version, From: u.Current, Installed: u.now().UTC()}); err != nil {
+		return "", fmt.Errorf("install: %w", err)
 	}
-	if err := writePending(u.StateDir, Pending{Version: m.Version, From: u.Current, Installed: u.now().UTC()}); err != nil {
-		_ = u.Installer.Rollback()
-		return res, fmt.Errorf("install: %w", err)
+	if err := u.Versions.Install(path, m.Version); err != nil {
+		_ = clearPending(u.Versions.Dir)
+		return "", fmt.Errorf("install: %w", err)
 	}
-	res.Installed, res.Target = m.Version, target
 	u.log().Info("update installed", "from", u.Current, "to", m.Version)
-	return res, nil
+	return m.Version, nil
 }
 
 func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
@@ -272,7 +290,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := u.Client.Do(req)
+	resp, err := u.do(req)
 	if err != nil {
 		return "", err
 	}
@@ -280,7 +298,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
-	dir := u.Installer.StagingDir()
+	dir := u.Versions.dir() // downloads go next to the versions: the last step is a rename
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -297,7 +315,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if err == nil && n > maxBinary {
 		err = errors.New("download: file too large")
 	}
-	if err == nil && !equalBytes(h.Sum(nil), want) {
+	if err == nil && subtle.ConstantTimeCompare(h.Sum(nil), want) != 1 {
 		err = ErrChecksum
 	}
 	if err == nil {
@@ -308,17 +326,6 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
-}
-
-func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
 }
 
 // ---- bookkeeping in the state directory ----
@@ -368,96 +375,114 @@ func clearPending(dir string) error {
 	return err
 }
 
-func (u *Updater) badList() map[string]time.Time {
+// readBad returns the versions that failed here, with when they did.
+func readBad(dir string) map[string]time.Time {
 	out := map[string]time.Time{}
-	data, err := os.ReadFile(filepath.Join(u.StateDir, badFile))
-	if err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, badFile)); err == nil {
 		_ = json.Unmarshal(data, &out)
 	}
 	return out
 }
 
-func (u *Updater) isBad(v string) bool {
-	t, ok := u.badList()[v]
-	return ok && u.now().Sub(t) < BadVersionTTL
+// isBad reports whether v failed here less than BadVersionTTL ago.
+func isBad(dir, v string, now time.Time) bool {
+	t, ok := readBad(dir)[v]
+	return ok && now.Sub(t) < BadVersionTTL
 }
 
-func (u *Updater) markBad(v string) { markBad(u.StateDir, v, u.now()) }
-
 func markBad(dir, v string, now time.Time) {
-	m := map[string]time.Time{}
-	if data, err := os.ReadFile(filepath.Join(dir, badFile)); err == nil {
-		_ = json.Unmarshal(data, &m)
-	}
+	m := readBad(dir)
 	m[v] = now.UTC()
 	data, _ := json.Marshal(m)
 	_ = os.MkdirAll(dir, 0o700)
 	_ = core.WriteFileAtomic(filepath.Join(dir, badFile), data, 0o600)
 }
 
-// BadVersions returns the versions that failed here (tests, doctor).
-func BadVersions(dir string) map[string]time.Time {
-	return (&Updater{StateDir: dir}).badList()
-}
-
 // ---- confirmation after the switch ----
 
-// MaxStartAttempts: a pending update that has started this many times
-// without confirming itself is rolled back without further checks.
+// MaxStartAttempts: a pending update started this many times without
+// confirming itself is rolled back before the next start (Versions.Next).
 const MaxStartAttempts = 3
 
-// Confirm runs in a freshly started binary. When the state directory says
-// this very version was just installed, it waits for check (the gateway
-// becoming ready) and either confirms the update or rolls it back. It
-// returns the binary to re-execute after a rollback, or "".
-func Confirm(ctx context.Context, stateDir, current string, inst Installer, check func(context.Context) error, log *slog.Logger, now func() time.Time) (string, error) {
+// Confirm runs in the started version. When it was just installed, it
+// waits for check (the gateway ready) and confirms or rolls it back, or
+// leaves it pending when check fails with ErrNotRun. restart is true after
+// a rollback: the installed binary must start again.
+func Confirm(ctx context.Context, v *Versions, current string, check func(context.Context) error, log *slog.Logger, now func() time.Time) (restart bool, err error) {
 	if now == nil {
 		now = time.Now
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	p, err := ReadPending(stateDir)
+	p, err := ReadPending(v.Dir)
 	if err != nil || p == nil {
-		return "", err
+		return false, err
 	}
 	if p.Version != current {
 		// we are not the binary the marker is about: the switch did not
 		// happen or was undone; nothing to confirm
-		return "", clearPending(stateDir)
+		return false, clearPending(v.Dir)
 	}
-	p.Attempts++
-	if err := writePending(stateDir, *p); err != nil {
-		return "", err
+	err = check(ctx)
+	switch {
+	case err == nil:
+		log.Info("update confirmed", "version", current, "from", p.From)
+		return false, clearPending(v.Dir)
+	case ctx.Err() != nil:
+		return false, ctx.Err() // shutting down: decide on the next start
+	case errors.Is(err, ErrNotRun):
+		// the password, not this binary: still pending, decided on a later
+		// start, which this one does not count against (Versions.Next)
+		log.Warn("update neither confirmed nor rolled back: the CRM rejected the password", "version", current)
+		p.Attempts = 0
+		return false, writePending(v.Dir, *p)
 	}
-	if p.Attempts <= MaxStartAttempts {
-		if err := check(ctx); err == nil {
-			log.Info("update confirmed", "version", current, "from", p.From)
-			return "", clearPending(stateDir)
-		} else if ctx.Err() != nil {
-			return "", ctx.Err() // shutting down: decide on the next start
-		} else {
-			log.Error("updated binary failed its start check, rolling back", "version", current, "error", err)
-		}
-	} else {
-		log.Error("updated binary keeps restarting, rolling back", "version", current, "attempts", p.Attempts)
-	}
-	markBad(stateDir, current, now())
-	if err := inst.Rollback(); err != nil {
-		return "", fmt.Errorf("rollback: %w", err)
-	}
-	if err := clearPending(stateDir); err != nil {
-		return "", err
-	}
-	return inst.Current(), nil
+	log.Error("updated binary failed its start check, rolling back", "version", current, "error", err)
+	return true, v.rollBackPending(current, now())
 }
 
-// Loop checks after first, then every interval (with up to an hour of
-// jitter so a fleet does not hit the release server at once), and when
-// trigger fires — the hub's hint — at most once an hour. onInstalled is
-// called after a successful installation; the caller restarts into the
-// new binary.
-func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, interval time.Duration, onInstalled func(Result)) {
+func (v *Versions) rollBackPending(ver string, now time.Time) error {
+	markBad(v.Dir, ver, now)
+	if err := v.Rollback(); err != nil {
+		return fmt.Errorf("rollback: %w", err)
+	}
+	return clearPending(v.Dir)
+}
+
+// Next is what the installed binary (version own) runs at start: the
+// version to hand over to, or "" for itself. A pending update's start is
+// counted here, before it runs, so one that dies before confirming is
+// rolled back after MaxStartAttempts starts.
+func (v *Versions) Next(own string, now time.Time, log *slog.Logger) string {
+	next := v.Launch(own, now)
+	p, err := ReadPending(v.Dir)
+	if next == "" || err != nil || p == nil {
+		return next
+	}
+	if cur, err := readPointer(v.file("current.json")); err != nil || cur.Path != next || cur.Version != p.Version {
+		return next
+	}
+	if p.Attempts >= MaxStartAttempts {
+		if log != nil {
+			log.Error("updated binary keeps failing to start, rolling back", "version", p.Version, "attempts", p.Attempts)
+		}
+		if err := v.rollBackPending(p.Version, now); err != nil {
+			return ""
+		}
+		return v.Launch(own, now)
+	}
+	p.Attempts++
+	if err := writePending(v.Dir, *p); err != nil {
+		return ""
+	}
+	return next
+}
+
+// Loop checks after first, then every interval (up to an hour of jitter,
+// so a fleet does not come at once), and on trigger (the hub's hint) at
+// most once an hour; onInstalled then restarts into the new binary.
+func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, interval time.Duration, onInstalled func()) {
 	timer := time.NewTimer(first)
 	defer timer.Stop()
 	var lastHint time.Time
@@ -474,13 +499,15 @@ func (u *Updater) Loop(ctx context.Context, trigger <-chan struct{}, first, inte
 			timer.Reset(interval + jitter(time.Hour))
 		}
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		res, err := u.Check(cctx)
+		installed, err := u.Check(cctx)
 		cancel()
 		switch {
+		case errors.Is(err, ErrHeld) || errors.Is(err, ErrNotRun):
+			u.log().Info("update not checked", "reason", err)
 		case err != nil:
 			u.log().Warn("update check failed", "error", err)
-		case res.Installed != "":
-			onInstalled(res)
+		case installed != "":
+			onInstalled()
 			return
 		}
 	}

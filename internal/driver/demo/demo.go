@@ -24,38 +24,44 @@ type record struct {
 	end       time.Time
 	partner   string // empty for bookings made "by the club"
 	cancelled bool
-	paid      bool
 }
 
 // Driver is the demo driver.
 type Driver struct {
-	mu       sync.Mutex
-	courts   map[string]bool
-	first    string
-	records  map[string]*record
-	readyErr error
+	mu      sync.Mutex
+	courts  map[string]bool
+	studio  string
+	records map[string]*record
+	clock   driver.Clock
 }
 
 var _ driver.Driver = (*Driver)(nil)
 
+// ClubCRMKeys are the club-level keys of the crm section.
+var ClubCRMKeys = []string{"studio"}
+
 // New is the driver.Factory for crm.type "demo".
 func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 
-// NewDriver builds a demo driver. It accepts no driver-specific keys.
+// NewDriver builds a demo driver. Its only driver-specific key is the
+// optional crm.studio, which names one of the demo account's studios.
 func NewDriver(cfg driver.Config) (*Driver, error) {
 	var errs []string
-	if err := cfg.CRM.RejectUnknown("crm"); err != nil {
+	if err := cfg.CRM.RejectUnknown("crm", "studio"); err != nil {
 		errs = append(errs, err.Error())
 	}
-	d := &Driver{courts: map[string]bool{}, records: map[string]*record{}}
+	st, err := cfg.CRM.String("crm", "studio", false)
+	if err != nil {
+		errs = append(errs, err.Error())
+	} else if st != "" && studioByID(st) == nil {
+		errs = append(errs, fmt.Sprintf("crm.studio: «%s» — в учебной CRM есть студии %s", st, studioIDs()))
+	}
+	d := &Driver{courts: map[string]bool{}, studio: st, records: map[string]*record{}, clock: cfg.DecisionClock()}
 	for i, c := range cfg.Courts {
 		if err := c.Params.RejectUnknown(fmt.Sprintf("courts[%d]", i)); err != nil {
 			errs = append(errs, err.Error())
 		}
 		d.courts[c.ID] = true
-		if d.first == "" {
-			d.first = c.ID
-		}
 	}
 	if len(cfg.Courts) == 0 {
 		errs = append(errs, "courts: нужен хотя бы один корт")
@@ -66,22 +72,16 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	return d, nil
 }
 
-// Capabilities: the demo CRM supports payment marks.
-func (d *Driver) Capabilities() driver.Capabilities { return driver.Capabilities{Payments: true} }
+// Studio implements driver.AccountClub.
+func (d *Driver) Studio() string { return d.studio }
 
-// SetReadyError makes Ready fail (tests).
-func (d *Driver) SetReadyError(err error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.readyErr = err
+// Capabilities: the demo CRM supports payment marks; prices in rubles.
+func (d *Driver) Capabilities() driver.Capabilities {
+	return driver.Capabilities{Payments: true, Currency: "RUB"}
 }
 
-// Ready implements driver.Driver.
-func (d *Driver) Ready(context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.readyErr
-}
+// Ready implements driver.Driver: the demo CRM is always reachable.
+func (d *Driver) Ready(context.Context) error { return nil }
 
 func newID() string {
 	var b [16]byte
@@ -97,14 +97,6 @@ func (d *Driver) Seed(court string, start, end time.Time) string {
 	id := newID()
 	d.records[id] = &record{court: court, start: start, end: end}
 	return id
-}
-
-// Paid reports whether a booking was marked as paid (tests).
-func (d *Driver) Paid(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	r := d.records[id]
-	return r != nil && r.paid
 }
 
 // Occupancy implements driver.Driver. The demo store is always complete.
@@ -158,7 +150,6 @@ func (d *Driver) Create(_ context.Context, req driver.CreateRequest) (driver.Boo
 	return driver.Booking{ID: id, Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
 }
 
-// Get implements driver.Driver.
 func (d *Driver) Get(_ context.Context, id string) (driver.Booking, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -173,7 +164,6 @@ func (d *Driver) Get(_ context.Context, id string) (driver.Booking, error) {
 	return driver.Booking{ID: id, Court: r.court, Start: r.start, End: r.end, Status: st}, nil
 }
 
-// Cancel implements driver.Driver.
 func (d *Driver) Cancel(_ context.Context, id, partner string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -184,11 +174,16 @@ func (d *Driver) Cancel(_ context.Context, id, partner string) error {
 	if r.partner == "" || r.partner != partner {
 		return driver.ErrNotOwned
 	}
+	switch now, known := d.clock(); {
+	case !known:
+		return driver.ErrClockUnknown
+	case !r.start.After(now):
+		return driver.ErrStarted
+	}
 	r.cancelled = true
 	return nil
 }
 
-// MarkPaid implements driver.Driver.
 func (d *Driver) MarkPaid(_ context.Context, id, partner string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -199,6 +194,5 @@ func (d *Driver) MarkPaid(_ context.Context, id, partner string) error {
 	if r.partner == "" || r.partner != partner {
 		return driver.ErrNotOwned
 	}
-	r.paid = true
-	return nil
+	return nil // the demo CRM keeps no payment state
 }

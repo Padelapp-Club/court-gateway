@@ -7,8 +7,13 @@ package testkit
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -16,34 +21,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/contract"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
-
-// SafeBuffer is a goroutine-safe log sink.
-type SafeBuffer struct {
-	mu  sync.Mutex
-	buf []byte
-}
-
-func (b *SafeBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	return len(p), nil
-}
-
-// String returns everything written.
-func (b *SafeBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.buf)
-}
 
 // Hub is a running test hub.
 type Hub struct {
@@ -51,7 +38,7 @@ type Hub struct {
 	Settings *hub.Settings
 	StateDir string
 	Opts     hub.Options
-	Logs     *SafeBuffer
+	Logs     *contract.LogBuffer
 
 	mu     sync.Mutex
 	addr   string
@@ -71,7 +58,7 @@ func StartHub(t *testing.T, hubYAML string, env map[string]string, opts hub.Opti
 	if err != nil {
 		t.Fatalf("hub config: %v", err)
 	}
-	h := &Hub{t: t, Settings: settings, StateDir: settings.StateDir, Opts: opts, Logs: &SafeBuffer{}}
+	h := &Hub{t: t, Settings: settings, StateDir: settings.StateDir, Opts: opts, Logs: &contract.LogBuffer{}}
 	if h.Opts.Logger == nil {
 		h.Opts.Logger = core.NewLogger(h.Logs, slog.LevelDebug, settings.Secrets)
 	}
@@ -168,17 +155,20 @@ func (h *Hub) JoinCode(club, name string) string {
 	if h.Opts.Now != nil {
 		now = h.Opts.Now()
 	}
-	code, _, err := hub.CreateJoinCode(h.StateDir, club, name, time.Hour, now)
+	jc, err := hub.CreateJoinCode(h.StateDir, club, name, time.Hour, now)
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	return code
+	return jc.Code
 }
 
 // Transport returns a transport that trusts the test hub only.
-func (h *Hub) Transport() *http.Transport { return tunnel.NewTransport(h.Roots) }
+func (h *Hub) Transport() *http.Transport { return tunnel.NewTransport(h.Roots, nil) }
 
-// Register redeems a fresh join code for club and returns the secret.
+// Register makes an installation with the same id as club that serves
+// club, redeems a join code for it and returns the gateway secret. The
+// club is put on the hub only so the hub routes it; the test gateway
+// serves its own copy (a contract.Built), not the hub's.
 func (h *Hub) Register(club, name string) string {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -186,6 +176,11 @@ func (h *Hub) Register(club, name string) string {
 	rr, err := tunnel.Register(ctx, h.Transport(), h.URL(), h.JoinCode(club, name), "test")
 	if err != nil {
 		h.t.Fatalf("register: %v", err)
+	}
+	spec := core.ClubSpec{ID: club, Name: name, Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "00:00-24:00"},
+		Courts: []core.CourtSpec{{ID: "court-1", Name: "Court 1"}}}
+	if _, _, err := h.Server().Store().PutClub(club, spec); err != nil {
+		h.t.Fatalf("put club: %v", err)
 	}
 	return rr.Secret
 }
@@ -197,14 +192,26 @@ type Gateway struct {
 	done   chan struct{}
 }
 
-// StartGateway connects handler to the hub at hubURL with secret.
-func StartGateway(t *testing.T, hubURL string, rt http.RoundTripper, secret string, handler http.Handler, log *slog.Logger) *Gateway {
-	t.Helper()
-	c, err := tunnel.NewClient(tunnel.ClientConfig{
-		HubURL: hubURL, Secret: secret, Polls: 2, Handler: handler, Version: "1.0.0", Build: tunnel.BuildRelease,
+// ClientConfig is the config of a test gateway of installation that
+// registered at h with secret: two polls, fast reconnects.
+func (h *Hub) ClientConfig(installation, secret string, handler http.Handler, log *slog.Logger) tunnel.ClientConfig {
+	return ClientConfig(h.URL(), h.Transport(), h.Server().Store().HubKey(), installation, secret, handler, log)
+}
+
+// ClientConfig is the tunnel client config test gateways use: two polls,
+// fast reconnects; key is the hub's public key.
+func ClientConfig(hubURL string, rt http.RoundTripper, key ed25519.PublicKey, installation, secret string, handler http.Handler, log *slog.Logger) tunnel.ClientConfig {
+	return tunnel.ClientConfig{
+		HubURL: hubURL, Secret: secret, HubKey: key, Installation: installation, Polls: 2, Handler: handler, Version: "1.0.0", Build: tunnel.BuildRelease,
 		Platform: "test", Logger: log, Transport: rt, MinBackoff: 20 * time.Millisecond, MaxBackoff: 200 * time.Millisecond,
 		PollTimeout: 5 * time.Second,
-	})
+	}
+}
+
+// StartGateway runs a tunnel client with cfg until the test ends.
+func StartGateway(t *testing.T, cfg tunnel.ClientConfig) *Gateway {
+	t.Helper()
+	c, err := tunnel.NewClient(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +229,53 @@ func StartGateway(t *testing.T, hubURL string, rt http.RoundTripper, secret stri
 func (g *Gateway) Stop() {
 	g.cancel()
 	<-g.done
+}
+
+// Signing is a hub key and a gateway registration, for tests that hand
+// requests to a tunnel client directly, without a hub.
+type Signing struct {
+	Key          ed25519.PrivateKey
+	Installation string
+	Secret       string
+}
+
+// NewSigning makes a key and a registration of installation.
+func NewSigning(installation string) Signing {
+	_, key, _ := ed25519.GenerateKey(nil)
+	return Signing{Key: key, Installation: installation, Secret: "cgs_test-secret-" + installation}
+}
+
+// Client is a tunnel client that trusts s.
+func (s Signing) Client(t *testing.T, handler http.Handler) *tunnel.Client {
+	t.Helper()
+	pub := s.Key.Public().(ed25519.PublicKey)
+	v, err := tunnel.NewVerifier(pub, s.Installation, s.Secret, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the hub's time, as the client's first poll answer brings it
+	reg := tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret))
+	if err := v.Time("sync", tunnel.SignTime(s.Key, s.Installation, reg, "sync", "0", time.Now()), "0", time.Now(), v.Ticket()); err != nil {
+		t.Fatal(err)
+	}
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: s.Secret, Handler: handler,
+		HubKey: pub, Installation: s.Installation, Verifier: v})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// PollNonce is the nonce of the poll Sign signs a request for.
+const PollNonce = "test-poll"
+
+// Sign signs rq as the hub does, with a fresh id, for the poll PollNonce.
+func (s Signing) Sign(rq tunnel.Request) tunnel.Request {
+	var id [8]byte
+	_, _ = rand.Read(id[:])
+	rq.ID = hex.EncodeToString(id[:])
+	rq.Sign(s.Key, s.Installation, tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret)), PollNonce, time.Now())
+	return rq
 }
 
 // WaitFor polls cond until it is true or the timeout passes.
@@ -325,4 +379,27 @@ func (p *Proxy) Heal() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.broken = false
+}
+
+// FetchWhoami asks the hub how it sees the gateway with secret, without
+// checking the hub's signatures.
+func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret string) (tunnel.Whoami, error) {
+	var out tunnel.Whoami
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hubURL, "/")+tunnel.PathWhoami, nil)
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := (&http.Client{Transport: rt}).Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return out, json.NewDecoder(resp.Body).Decode(&out)
+	case http.StatusUnauthorized:
+		return out, tunnel.ErrUnauthorized
+	}
+	return out, fmt.Errorf("whoami: HTTP %d", resp.StatusCode)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,27 +14,38 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync/atomic"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/remote"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
-// statusInterval is how often serve runs its self-check (CRM login and a
-// narrow occupancy request). The one result feeds the health status file
-// (and so the container healthcheck) and the heartbeat to the hub; there
-// is no other scheduled CRM call. A variable for tests.
+// statusInterval is how often serve runs its self-check, its one scheduled
+// CRM call: the result feeds the status file (the container healthcheck)
+// and the heartbeat to the hub. A variable for tests.
 var statusInterval = 60 * time.Second
 
 // confirmDeadline is how long a freshly updated binary has to become
 // ready (and connected to the hub) before it rolls itself back.
 const confirmDeadline = 3 * time.Minute
+
+// restartProcess starts the installed binary again in place of this
+// process (update.Restart); a variable for tests.
+var restartProcess = update.Restart
+
+// maxHandovers bounds how often one start of the installed binary hands
+// over in a row (Windows: a version that exits to be restarted).
+const maxHandovers = 10
 
 func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -43,151 +55,168 @@ func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defau
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	if *logFile != "" && stderr == io.Writer(os.Stderr) {
+		core.TrimStartupLog(os.Stderr, 1<<20)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return serve(ctx, *cfgPath, *logFile, stderr, getenv)
 }
 
-type gateway struct {
-	ready     atomic.Bool
-	reason    atomic.Value // string
-	connected func() bool
-}
-
-func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, getenv func(string) string) int {
-	getenv, err := core.EnvWithDotEnv(cfgPath, getenv)
+func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procEnv func(string) string) int {
+	fail := func(err error) int { fmt.Fprintf(stderr, "court-gateway: %v\n", err); return 2 }
+	getenv, err := core.EnvWithDotEnv(cfgPath, procEnv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	s, err := core.LoadFile(cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	var out io.Writer = stderr
+	closeLog := func() {}
 	if logFile != "" {
 		rf := &core.RotatingFile{Path: logFile, Max: 10 << 20}
 		defer rf.Close()
-		out = rf
+		out, closeLog = rf, func() { _ = rf.Close() }
 	}
 	log := core.NewLogger(out, slog.LevelInfo, s.Secrets)
 
-	// A container ships a read-only binary; updates live in the state
-	// directory, and the shipped binary hands over to the newest verified
+	// The installed binary is never replaced: updates live in the state
+	// directory, and the installed binary hands over to the newest verified
 	// one here, before doing anything else.
-	exe, _ := os.Executable()
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	inst, canUpdate := update.ChooseInstaller(exe, s.StateDir)
-	if cache, ok := inst.(*update.CacheDir); ok {
-		if next := cache.Launch(version, time.Now()); next != "" {
-			log.Info("starting the updated binary", "path", next)
-			if err := update.Exec(next, os.Args[1:], update.LaunchedEnv+"=1", update.ShippedEnv+"="+cache.Shipped); err != nil {
-				log.Error("could not start the updated binary, staying on the shipped one", "error", err)
-			}
+	installed := update.InstalledPath()
+	vers := &update.Versions{Dir: s.StateDir}
+	if os.Getenv(update.LaunchedEnv) == "" {
+		next := func() string { return vers.Next(version, time.Now(), log) }
+		start := func(ctx context.Context, path string) (int, error) {
+			return update.Handover(ctx, path, serveArgs(cfgPath, logFile), update.LaunchEnv(installed))
+		}
+		if code, ran := launch(ctx, next, start, log, closeLog); ran {
+			return code
 		}
 	}
+	canUpdate := vers.Writable()
 
 	s.Driver.Logger = log
-	drv, err := core.BuildDriver(s, factories)
+	// the hub's signed time: what the tunnel checks signatures against and
+	// the clubs take "now" from
+	verifier, err := tunnel.NewVerifier(s.Hub.Key, s.Hub.Installation, s.Hub.Secret, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
-	srv, err := core.NewServer(s, drv, log)
+	s.Driver.Clock = verifier.Now
+	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	restartTo := make(chan string, 1)
-	gw := &gateway{connected: func() bool { return true }}
-	gw.reason.Store("STARTING")
-
-	// local port: only when asked for (LAN, debugging, or no hub)
-	var httpSrv *http.Server
-	errc := make(chan error, 1)
-	if s.Listen != "" {
-		httpSrv = &http.Server{
-			Addr: s.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second,
-			MaxHeaderBytes: 64 << 10,
+	update.StopOnEOF(cancel)
+	restart := make(chan struct{}, 1)
+	askRestart := func() {
+		select {
+		case restart <- struct{}{}:
+		default:
 		}
-		ln, err := net.Listen("tcp", s.Listen)
-		if err != nil {
-			log.Error("cannot open the local port", "listen", s.Listen, "error", err)
-			return 1
-		}
-		go func() { errc <- httpSrv.Serve(ln) }()
 	}
-
-	// the outbound tunnel to the hub
+	// the outbound tunnel to the hub: the only way in
 	hint := make(chan struct{}, 1)
-	var client *tunnel.Client
-	if s.Hub != nil {
-		roots, err := tunnel.LoadRoots(s.Hub.CAFile)
-		if err != nil {
-			fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-			return 2
-		}
-		client, err = tunnel.NewClient(tunnel.ClientConfig{
-			HubURL: s.Hub.URL, Secret: s.Hub.Secret, Polls: s.Hub.Polls, Handler: srv.TunnelHandler(),
-			Version: version, Build: build(), Platform: platform(), Logger: log,
-			Transport: tunnel.NewTransport(roots),
-			OnHint: func(string) {
-				select {
-				case hint <- struct{}{}:
-				default:
-				}
-			},
-		})
-		if err != nil {
-			fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-			return 2
-		}
-		gw.connected = client.Connected
-		go client.Run(ctx)
+	roots, err := tunnel.LoadRoots(s.Hub.CAFile)
+	if err != nil {
+		return fail(err)
 	}
+	client, err := tunnel.NewClient(tunnel.ClientConfig{
+		HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation, Verifier: verifier,
+		Polls: s.Hub.Polls, Handler: clubs.TunnelHandler(),
+		Version: version, Build: build(), Platform: update.Platform(), Logger: log,
+		Transport: tunnel.NewTransport(roots, s.Hub.Proxy), OnConfigVersion: syncer.Notify,
+		OnHint: func(string) {
+			select {
+			case hint <- struct{}{}:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		return fail(err)
+	}
+	syncer.SetFetch(client.FetchConfig)
+	go syncer.Run(ctx)
+	tunnelDone := make(chan struct{})
+	go func() {
+		defer close(tunnelDone)
+		client.Run(ctx)
+	}()
 
-	// self-check -> health status file (read by `healthcheck`) and heartbeat
-	// to the hub: the CRM is checked every statusInterval, the hub
-	// connection every 2 seconds; the file is rewritten after each CRM check
-	// and whenever the hub connection changes, and each CRM check is sent to
-	// the hub as a heartbeat over the gateway's own connection
+	// every statusInterval a readiness round (syncer.Ready) feeds the
+	// health status file (read by `healthcheck`) and a heartbeat to the
+	// hub; the file is also rewritten when the hub connection changes
 	go func() {
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
-		check := &tunnel.SelfCheck{Ready: drv.Ready, Reason: core.ReadyReason, Interval: statusInterval,
-			Timeout: core.ReadyTimeout, Version: version, Build: build()}
+		// each club has its own time limit (core.ReadyTimeout); this only
+		// bounds the whole round
+		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Clubs: core.ReadyClubs, Interval: statusInterval,
+			Version: version, Build: build()}
 		var st core.HealthStatus
-		lastHub := ""
+		var crm tunnel.Heartbeat // the last self-check
+		checked := false
+		sentConfig := int64(-1) // the applied config version the hub last heard of
+		var lastSeen time.Time  // the hub, when last connected
+		files := newConfigWatch(cfgPath, procEnv, s.Driver.Account, log, askRestart)
+		clockSkewed := false
+		var refused int64    // refused signatures, at the last self-check
+		refusedGrew := false // since the self-check before
+		unwritable := false  // the status file could not be written last time
 		for {
-			hubState := ""
-			if s.Hub != nil {
-				hubState = "disconnected"
-				if gw.connected() {
-					hubState = "connected"
+			files.check()
+			_, clockKnown := verifier.Now()
+			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown,
+				keyMismatch: client.HubKeyMismatch(), refusedGrew: refusedGrew, stateUnwritable: unwritable}
+			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
+				clockSkewed = skewed
+				if skewed {
+					log.Error("this computer's clock is far off the hub's: the gateway refuses what the hub sends until the clock is set right (turn on automatic time)",
+						"offset", hs.clockOffset.Round(time.Second).String())
 				}
 			}
+			if hs.connected {
+				lastSeen = time.Now()
+			}
+			hs.silentFor, hs.starting = time.Since(lastSeen), lastSeen.IsZero() || !syncer.Applied()
 			hb, due := check.Step(ctx)
 			if ctx.Err() != nil {
 				return
 			}
+			cs := syncer.State()
+			hs.configRefused = cs.ConfigError != ""
+			hs.configBehind = syncer.Behind()
 			if due {
-				st = core.HealthStatus{Version: version, Ready: hb.Ready, Reason: hb.Reason}
-				gw.ready.Store(st.Ready)
-				gw.reason.Store(st.Reason)
-				if client != nil {
-					go sendHeartbeat(ctx, client, hb, log)
-				}
+				crm, checked = hb, true
+				n := client.Refused()
+				refusedGrew, refused = n > refused, n
+				hs.refusedGrew = refusedGrew
 			}
-			if due || hubState != lastHub {
-				st.Time, st.Hub, lastHub = time.Now().UTC(), hubState, hubState
-				if werr := core.WriteHealthStatus(s.StateDir, st); werr != nil {
-					log.Warn("cannot write the health status file", "error", werr)
+			ready, reason := readiness(crm.Ready, crm.Reason, hs)
+			// a newly applied config is reported at once, not with the
+			// next self-check a minute later
+			beat := checked && (due || cs.ConfigVersion != sentConfig)
+			if beat {
+				hb := crm
+				hb.Ready, hb.Reason, hb.AppliedConfig = ready, reason, cs
+				sentConfig = cs.ConfigVersion
+				go sendHeartbeat(ctx, client, hb, log)
+			}
+			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
+			if beat || unwritable || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
+				next.Time = time.Now().UTC()
+				werr := core.WriteHealthStatus(s.StateDir, next)
+				if werr != nil && !unwritable {
+					log.Error("the state directory is not writable: the gateway reports STATE_UNWRITABLE", "path", s.StateDir, "error", werr)
+				}
+				if unwritable = werr != nil; !unwritable {
+					st = next
 				}
 			}
 			select {
@@ -198,17 +227,19 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		}
 	}()
 
-	// a freshly updated binary confirms itself or rolls back
+	// a freshly updated binary confirms itself or rolls back: it must log
+	// in to the CRM and connect to the hub, as the version before it did;
+	// the clubs' own readiness is reported by the heartbeat, not judged here
 	if canUpdate {
 		go func() {
-			target, err := update.Confirm(ctx, s.StateDir, version, inst, func(ctx context.Context) error {
-				return waitHealthy(ctx, gw, s.Hub != nil, confirmDeadline)
+			again, err := update.Confirm(ctx, vers, version, func(ctx context.Context) error {
+				return waitHealthy(ctx, s.Driver.Account.CheckLogin, client.Connected, confirmDeadline)
 			}, log, nil)
 			if err != nil && ctx.Err() == nil {
 				log.Error("update confirmation", "error", err)
 			}
-			if target != "" {
-				restartTo <- target
+			if again {
+				askRestart()
 			}
 		}()
 	}
@@ -223,55 +254,242 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 	case !s.Update.Enabled:
 		log.Info("automatic updates are off in the config", "version", version)
 	case !canUpdate:
-		log.Warn("the binary's folder is not writable; automatic updates are off", "path", exe)
+		log.Warn("the state directory is not writable; automatic updates are off", "path", s.StateDir)
 	default:
 		u := &update.Updater{
-			PublicKey: key, ManifestURL: s.Update.ManifestURL, Current: version, Client: &http.Client{Timeout: 5 * time.Minute},
-			StateDir: s.StateDir, Installer: inst, CheckBinary: update.ChildCheck(cfgPath), Log: log,
+			PublicKey: key, ManifestURL: s.Update.ManifestURL, Current: version, Client: &http.Client{Timeout: 5 * time.Minute, Transport: s.Hub.Proxy.Transport()},
+			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log, Hold: passwordRejected(s.Driver.Account),
 		}
 		first := 5*time.Minute + time.Duration(time.Now().UnixNano()%int64(10*time.Minute))
-		go u.Loop(ctx, hint, first, 24*time.Hour, func(res update.Result) { restartTo <- res.Target })
+		go u.Loop(ctx, hint, first, 24*time.Hour, askRestart)
 	}
 
-	log.Info("started", "version", version, "build", build(), "listen", s.Listen, "hub", s.Hub != nil, "crm", s.CRMType, "courts", len(s.Courts))
-	code := 0
-	var target string
+	log.Info("started", "version", version, "build", build(), "crm", s.CRMType)
+	restarting := false
 	select {
-	case err := <-errc:
-		if !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server stopped", "error", err)
-			code = 1
-		}
 	case <-ctx.Done():
 		log.Info("shutting down")
-	case target = <-restartTo:
-		log.Info("restarting into another binary", "path", target)
+	case <-restart:
+		restarting = true
+		log.Info("restarting to run the version that is current now")
 	}
 	cancel()
-	if httpSrv != nil {
-		shCtx, shCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = httpSrv.Shutdown(shCtx)
-		shCancel()
+	// the copy started after this one (a restart, an update, the service
+	// manager) must not be refused by the hub as a duplicate
+	<-tunnelDone
+	rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := client.Release(rctx); err != nil {
+		log.Debug("hub not told that this copy stopped", "error", err)
 	}
-	if target != "" {
-		var env []string
-		if cache, ok := inst.(*update.CacheDir); ok {
-			// the next binary must keep using the cache, not replace itself
-			env = append(env, update.LaunchedEnv+"=1", update.ShippedEnv+"="+cache.Shipped)
+	rcancel()
+	if restarting {
+		// returns only where a process cannot replace itself (Windows) or
+		// on failure; then the restart code makes the installed binary or
+		// the service manager start again
+		if err := restartProcess(installed, serveArgs(cfgPath, logFile)); err != nil && !errors.Is(err, update.ErrRestartRequired) {
+			log.Error("restart failed; the service manager will start the binary again", "error", err)
 		}
-		err := update.Exec(target, os.Args[1:], env...)
-		if errors.Is(err, update.ErrRestartRequired) {
-			return exitRestart
-		}
-		log.Error("re-exec failed; the service manager will restart the binary", "error", err)
 		return exitRestart
 	}
-	return code
+	return 0
 }
 
-// sendHeartbeat reports one self-check to the hub. A failed heartbeat is
-// only logged at debug level: the hub notices missing heartbeats itself,
-// and a broken connection is already logged by the tunnel client.
+// launch runs the newest verified version (next) with start until it
+// exits other than to be restarted; ran is false when this binary runs
+// itself. The log file is closed before every start: a handle held here
+// would stop the version from rotating it on Windows.
+func launch(ctx context.Context, next func() string, start func(context.Context, string) (int, error), log *slog.Logger, closeLog func()) (code int, ran bool) {
+	for range maxHandovers {
+		path := next()
+		if path == "" {
+			break
+		}
+		log.Info("starting the newest verified version", "path", path)
+		closeLog()
+		code, err := start(ctx, path)
+		if err != nil {
+			log.Error("could not start it, running the installed binary", "error", err)
+			break
+		}
+		if code != exitRestart || ctx.Err() != nil {
+			return code, true
+		}
+	}
+	return 0, false
+}
+
+// serveArgs are the arguments of a version handed over to, or of the
+// installed binary started again: explicit, since on Windows this
+// process's own are the service's, without the log file.
+func serveArgs(cfgPath, logFile string) []string {
+	args := []string{"serve", "-config", cfgPath}
+	if logFile != "" {
+		args = append(args, "-log-file", logFile)
+	}
+	return args
+}
+
+// buildInstallation builds the CRM account, the multi-club handler and the
+// syncer that keeps the clubs equal to the installation's config on the hub.
+func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote.Syncer, error) {
+	acct, err := core.BuildAccount(s, drivers.Accounts, s.Driver)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.Driver.Account = acct // one CRM session for the account and its clubs
+	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
+	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
+	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
+}
+
+// passwordRejected reports whether the CRM rejected acct's password: then no
+// update is checked, as its self-check would log in with it again.
+func passwordRejected(acct driver.Account) func() bool {
+	ps, ok := acct.(driver.PasswordSetter)
+	return func() bool { return ok && ps.PasswordRejected() }
+}
+
+// configWatch notices when setup or set-password rewrites gateway.yaml or
+// .env. A new CRM password is taken at once from .env (the redactor learns
+// it first), ending a stop after a rejected login; a changed hub
+// connection (setup --force) restarts the service.
+type configWatch struct {
+	cfgPath string
+	procEnv func(string) string
+	acct    driver.PasswordSetter
+	log     *slog.Logger
+	restart func()
+	seen    [2]os.FileInfo
+	// as the files said when last read
+	password, hub string
+}
+
+func newConfigWatch(cfgPath string, procEnv func(string) string, acct driver.Account, log *slog.Logger, restart func()) *configWatch {
+	w := &configWatch{cfgPath: cfgPath, procEnv: procEnv, log: log, restart: restart}
+	w.acct, _ = acct.(driver.PasswordSetter)
+	w.seen = w.stat()
+	w.password, w.hub, _ = w.read()
+	return w
+}
+
+func (w *configWatch) stat() (out [2]os.FileInfo) {
+	out[0], _ = os.Stat(w.cfgPath)
+	out[1], _ = os.Stat(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName))
+	return out
+}
+
+// read returns the CRM password in .env and the hub connection the files
+// configure ("" when they do not load), .env before the environment.
+func (w *configWatch) read() (password, hub string, err error) {
+	vals := map[string]string{}
+	if data, err := os.ReadFile(filepath.Join(filepath.Dir(w.cfgPath), core.EnvFileName)); err == nil {
+		if vals, err = core.ParseDotEnv(data); err != nil {
+			return "", "", err
+		}
+	}
+	password = vals[core.PasswordEnv]
+	s, err := core.LoadFile(w.cfgPath, func(k string) string { return cmp.Or(vals[k], w.procEnv(k)) })
+	if err != nil {
+		return password, "", err
+	}
+	h := s.Hub
+	return password, strings.Join([]string{h.URL, h.Installation, core.EncodeHubKey(h.Key), tunnel.SecretSHA256(h.Secret), h.CAFile, strconv.Itoa(h.Polls)}, "\n"), nil
+}
+
+func (w *configWatch) check() {
+	st := w.stat()
+	if same(st[0], w.seen[0]) && same(st[1], w.seen[1]) {
+		return
+	}
+	w.seen = st
+	password, hub, err := w.read()
+	switch {
+	case err != nil:
+		w.log.Warn("changed gateway.yaml or .env not read in full", "error", err)
+	case hub != w.hub:
+		w.log.Info("the hub connection changed in gateway.yaml or .env (setup --force): restarting")
+		w.hub = hub
+		w.restart()
+	}
+	if password != "" && password != w.password && w.acct != nil {
+		core.AddSecret(w.log, password)
+		w.acct.SetPassword(password)
+		w.log.Info("CRM password re-read from .env: logging in to the CRM again")
+	}
+	w.password = cmp.Or(password, w.password)
+}
+
+func same(a, b os.FileInfo) bool {
+	return (a == nil) == (b == nil) && (a == nil || a.ModTime().Equal(b.ModTime()) && a.Size() == b.Size())
+}
+
+// hubOfflineAfter is how long the hub may be unreachable before the
+// gateway reports itself not ready (the hub's default offline_after).
+const hubOfflineAfter = 3 * time.Minute
+
+// configPendingAfter is how long the gateway may run another club config
+// version than the hub's (it could not pull it) before it is not ready.
+const configPendingAfter = 3 * time.Minute
+
+// hubState is what readiness needs to know about the hub connection.
+type hubState struct {
+	connected     bool
+	authFailed    bool // the hub rejected the gateway secret
+	duplicate     bool // the hub serves another copy with the same secret
+	silentFor     time.Duration
+	starting      bool          // the hub not reached, or no config applied, since the start
+	configRefused bool          // a club of the hub's config does not load
+	configBehind  time.Duration // how long the hub's config version has not been applied
+	clockOffset   time.Duration // the hub's clock minus this computer's, as the hub signed it
+	clockKnown    bool          // the hub's time is known (tunnel.Verifier.Now)
+	keyMismatch   bool          // the hub signs with another key than the pinned one
+	refusedGrew   bool          // signatures were refused since the self-check before
+	// the state directory is not writable (the status file, updates)
+	stateUnwritable bool
+}
+
+func (h hubState) String() string {
+	if h.connected {
+		return "connected"
+	}
+	return "disconnected"
+}
+
+// readiness combines the CRM self-check with the hub and the club config,
+// each failure with its own reason code.
+func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
+	switch {
+	case !crmReady:
+		return false, cmp.Or(crmReason, "STARTING")
+	case h.authFailed:
+		return false, "HUB_AUTH_FAILED"
+	case h.duplicate:
+		return false, "DUPLICATE_GATEWAY"
+	case h.stateUnwritable:
+		return false, "STATE_UNWRITABLE"
+	case h.clockOffset.Abs() > tunnel.MaxClockSkew:
+		return false, "CLOCK_SKEW"
+	case h.connected && h.keyMismatch:
+		return false, "HUB_KEY_MISMATCH" // a new hub key: a new join code is needed
+	case h.connected && !h.clockKnown:
+		return false, "CLOCK_UNKNOWN" // the hub sends no signed time: nothing is booked
+	case h.refusedGrew:
+		return false, "SIGNATURE_REFUSED"
+	case h.starting:
+		return false, "STARTING"
+
+	case !h.connected && h.silentFor > hubOfflineAfter:
+		return false, "HUB_UNREACHABLE"
+	case h.configBehind > configPendingAfter:
+		return false, "CONFIG_PENDING"
+	case h.configRefused:
+		return false, "CONFIG_REFUSED"
+	}
+	return true, ""
+}
+
+// sendHeartbeat reports one self-check to the hub; a failure is only a debug
+// line (the hub notices missing heartbeats, the tunnel logs the connection).
 func sendHeartbeat(ctx context.Context, c *tunnel.Client, hb tunnel.Heartbeat, log *slog.Logger) {
 	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -280,21 +498,31 @@ func sendHeartbeat(ctx context.Context, c *tunnel.Client, hb tunnel.Heartbeat, l
 	}
 }
 
-// waitHealthy waits until the gateway is ready and, with a hub, connected.
-func waitHealthy(ctx context.Context, gw *gateway, hub bool, deadline time.Duration) error {
+// waitHealthy waits until the CRM login works and the hub connection is
+// up. A login the CRM still rejects at the deadline is update.ErrNotRun:
+// the password, not the binary.
+func waitHealthy(ctx context.Context, login func(context.Context) error, connected func() bool, deadline time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
+	reason := "STARTING"
 	for {
-		if gw.ready.Load() && (!hub || gw.connected()) {
+		lctx, lcancel := context.WithTimeout(ctx, core.ReadyTimeout)
+		err := login(lctx)
+		lcancel()
+		switch {
+		case err != nil:
+			reason = "CRM: " + core.ReadyReason(err)
+		case !connected():
+			reason = "HUB_DISCONNECTED"
+		default:
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			reason, _ := gw.reason.Load().(string)
-			if hub && !gw.connected() {
-				reason += " HUB_DISCONNECTED"
+			if reason == "CRM: CRM_AUTH_FAILED" {
+				return update.ErrNotRun
 			}
 			return fmt.Errorf("not healthy within %s: %s", deadline, reason)
 		case <-t.C:
@@ -306,48 +534,42 @@ func cmdHealthcheck(args []string, stdout, stderr io.Writer, getenv func(string)
 	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "config file")
-	addr := fs.String("addr", "", "host:port of the running service (overrides the config)")
 	hubCfg := fs.String("hub", "", "probe the hub running with this hub.yaml instead of a gateway")
+	live := fs.Bool("live", false, "only whether the service runs (its status is fresh), not whether it is ready")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	if *hubCfg != "" {
-		return probeHub(*hubCfg, stdout, stderr, getenv)
+		return probeHub(*hubCfg, stdout, stderr)
 	}
-	if *addr != "" {
-		return probeHTTP(*addr, stdout, stderr)
-	}
-	stateDir, listen, hub := core.StatePath(*cfgPath, getenv)
-	if !hub && listen != "" {
-		return probeHTTP(listen, stdout, stderr)
-	}
-	return probeStatusFile(stateDir, stdout, stderr)
+	return probeStatusFile(core.StateDir(*cfgPath, getenv), *live, stdout, stderr)
 }
 
-// probeStatusFile reads what the running service last observed. It needs
-// no secrets and opens no connection.
-func probeStatusFile(dir string, stdout, stderr io.Writer) int {
+// probeStatusFile reads what the running service last observed (no
+// secrets, no connection): 0 ready (live: running), 1 not ready, 2 not
+// running or hung.
+func probeStatusFile(dir string, live bool, stdout, stderr io.Writer) int {
 	st, err := core.ReadHealthStatus(dir)
 	if err != nil {
 		fmt.Fprintln(stderr, "healthcheck: служба не запущена или ещё не проверила готовность")
-		return 1
+		return 2
 	}
 	age := time.Since(st.Time)
 	fmt.Fprintf(stdout, "ready=%v reason=%s hub=%s age=%s version=%s\n", st.Ready, st.Reason, st.Hub, age.Round(time.Second), st.Version)
 	if age > 3*statusInterval {
 		fmt.Fprintln(stderr, "healthcheck: служба давно не обновляла статус — зависла или остановлена")
-		return 1
+		return 2
 	}
-	if !st.Ready {
-		return 1
+	if st.Ready || live {
+		return 0
 	}
-	return 0
+	return 1
 }
 
 // probeHub asks the hub on this machine for /health/ready over loopback.
 // The hub's certificate is issued for its public name, not for 127.0.0.1,
 // so this local liveness probe does not verify it; it sends no secret.
-func probeHub(cfgPath string, stdout, stderr io.Writer, getenv func(string) string) int {
+func probeHub(cfgPath string, stdout, stderr io.Writer) int {
 	var c struct {
 		Listen string `yaml:"listen"`
 		TLS    struct {
@@ -391,35 +613,11 @@ func probeHub(cfgPath string, stdout, stderr io.Writer, getenv func(string) stri
 	return 0
 }
 
-// probeHTTP asks a running service for /health/ready on its local port.
-func probeHTTP(addr string, stdout, stderr io.Writer) int {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		fmt.Fprintf(stderr, "healthcheck: неверный адрес %q\n", addr)
-		return 1
-	}
-	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		host = "127.0.0.1"
-	}
-	client := &http.Client{Timeout: core.ReadyTimeout + 2*time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/health/ready")
-	if err != nil {
-		fmt.Fprintln(stderr, "healthcheck: сервис не отвечает")
-		return 1
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	fmt.Fprintf(stdout, "%d %s", resp.StatusCode, body)
-	if resp.StatusCode != http.StatusOK {
-		return 1
-	}
-	return 0
-}
-
-// cmdSelfcheck is what a running gateway asks a freshly downloaded binary
-// to do before switching to it: load the live config, log in to the CRM,
-// reach the hub. Exit 0 ok; update.SelfCheckTransientExit when the
-// environment failed; 1 when the binary cannot work with this config.
+// cmdSelfcheck is what a freshly downloaded binary does before the switch:
+// load gateway.yaml and .env, log in to the CRM, reach the hub (not its
+// clubs). Exit 0 ok, 1 this binary cannot work with the config,
+// update.SelfCheckTransientExit the environment failed,
+// update.SelfCheckNotRunExit the CRM rejected the password.
 func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("selfcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -427,41 +625,41 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	getenv, err := core.EnvWithDotEnv(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	s, err := core.LoadFile(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
-	drv, err := core.BuildDriver(s, factories)
+	clubs, _, err := buildInstallation(s, nil)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if _, err := core.NewServer(s, drv, nil); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := drv.Ready(ctx); err != nil {
+	var alert *driver.ConfigAlert
+	if err := clubs.Ready(ctx); err != nil && !errors.As(err, &alert) { // an alert does not stop the update
 		fmt.Fprintln(stderr, "CRM: "+core.ReadyReason(err))
+		if core.ReadyReason(err) == "CRM_AUTH_FAILED" {
+			return update.SelfCheckNotRunExit // the password, not this binary: one login, no verdict
+		}
 		return update.SelfCheckTransientExit
 	}
-	if s.Hub != nil {
-		roots, err := tunnel.LoadRoots(s.Hub.CAFile)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		if _, err := tunnel.FetchWhoami(ctx, tunnel.NewTransport(roots), s.Hub.URL, s.Hub.Secret); err != nil {
-			fmt.Fprintln(stderr, "hub: unreachable or secret rejected")
-			return update.SelfCheckTransientExit
-		}
+	roots, err := tunnel.LoadRoots(s.Hub.CAFile)
+	if err != nil {
+		return fail(err)
+	}
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
+		Handler: http.NotFoundHandler(), Transport: tunnel.NewTransport(roots, s.Hub.Proxy)})
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := c.Whoami(ctx); err != nil {
+		fmt.Fprintln(stderr, "hub: unreachable or secret rejected")
+		return update.SelfCheckTransientExit
 	}
 	fmt.Fprintln(stdout, "ok")
 	return 0

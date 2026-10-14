@@ -1,43 +1,35 @@
 // Command court-gateway serves a CRM-agnostic partner API for one club and,
 // in hub mode, the public hub that partners call and gateways connect to.
-//
-//	court-gateway setup            build gateway.yaml and .env (interactive or --non-interactive --json)
-//	court-gateway serve            run the gateway (connects out to the hub)
-//	court-gateway doctor [--json]  check everything, with stable check codes
-//	court-gateway install-service  register with systemd / launchd / Windows SCM
-//	court-gateway healthcheck      container health probe (exit 0 = ready)
-//	court-gateway hub ...          run the hub, manage join codes
-//	court-gateway version
+// The commands are listed in usage.
 package main
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
+	"time"
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
-	"github.com/Padelapp-Club/court-gateway/internal/driver"
-	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
-	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
+	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
-// Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...".
+// Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...
+// -X main.defaultHubURL=... -X main.defaultHubKey=..." (scripts/build.sh).
 var (
 	version = "dev"
 	// releaseKey is the base64 ed25519 public key of release manifests.
 	// Empty means a self-built binary: it never updates itself.
 	releaseKey = ""
-	// defaultHubURL is offered by setup when --hub-url is not given.
+	// defaultHubURL is the hub setup connects to when --hub-url is not
+	// given. Releases embed it; a self-built binary needs --hub-url.
 	defaultHubURL = ""
+	// defaultHubKey is the public signing key (base64) of that hub: setup
+	// refuses a registration answer with another key. Without it setup
+	// needs the key's fingerprint from the operator.
+	defaultHubKey = ""
 )
-
-// factories lists the available CRM drivers by crm.type.
-var factories = map[string]driver.Factory{
-	"viva": viva.New,
-	"demo": demo.New,
-}
 
 // exitRestart asks the service manager to start the binary again (used
 // where a process cannot replace itself, i.e. Windows, after an update).
@@ -50,8 +42,6 @@ func build() string {
 	return tunnel.BuildRelease
 }
 
-func platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
-
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
 }
@@ -59,18 +49,21 @@ func main() {
 const usage = `court-gateway — партнёрский API клуба поверх его CRM
 
 Установка и работа шлюза:
-  setup            собрать gateway.yaml и .env: вход в CRM, корты, часы, код подключения к хабу
+  setup            собрать gateway.yaml и .env: вход в CRM и код подключения к хабу (клубы задаёт хаб)
+  set-password     сменить пароль CRM в .env, если его поменяли в CRM (код подключения не нужен)
   serve            запустить шлюз (сам подключается к хабу; входящих портов не открывает)
   doctor           проверить всё: конфигурацию, CRM, связь с хабом, версию (--json — для программ)
   install-service  зарегистрировать службу (systemd, launchd, Windows), чтобы шлюз запускался сам
   uninstall-service  удалить службу
-  healthcheck      проверка готовности для Docker (код выхода 0 — готов)
+  healthcheck      проверка для Docker: код 0 — готов, 1 — не готов, 2 — служба не запущена или зависла
+                   (--live: 0 — служба работает, готова она или нет)
   version          показать версию
 
 Хаб (для оператора):
   hub                        запустить хаб (-config hub.yaml)
-  hub join-code create       выдать одноразовый код подключения клуба (--club id --name "Название")
-  hub gateway revoke         отозвать подключение клуба (--club id)
+  hub join-code create       выдать одноразовый код подключения установки (--installation id --name "Название")
+  hub gateway revoke         отозвать подключение установки (--installation id)
+  hub key                    показать открытый ключ хаба и его отпечаток
 
 Общий параметр:
   -config путь     gateway.yaml (по умолчанию gateway.yaml или $GATEWAY_CONFIG)
@@ -98,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return cmdDoctor(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "setup":
 		return cmdSetup(args[1:], stdout, stderr, getenv, defaultConfig)
+	case "set-password":
+		return cmdSetPassword(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "install-service":
 		return cmdInstallService(args[1:], stdout, stderr, defaultConfig, false)
 	case "uninstall-service":
@@ -105,7 +100,10 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	case "hub":
 		return cmdHub(args[1:], stdout, stderr, getenv)
 	case "version":
-		fmt.Fprintf(stdout, "court-gateway %s (%s, %s)\n", version, build(), platform())
+		fmt.Fprintf(stdout, "court-gateway %s (%s, %s)\n", version, build(), update.Platform())
+		if running := update.RunningVersion(core.StateDir(defaultConfig, getenv), version, time.Now()); running != version {
+			fmt.Fprintf(stdout, "служба работает на версии %s (этот файл — установленный запускающий)\n", running)
+		}
 		return 0
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)

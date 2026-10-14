@@ -28,6 +28,9 @@ type PriceCase struct {
 type Env struct {
 	Handler http.Handler
 	Club    string
+	// OtherClubs are the other clubs the same handler serves (an
+	// installation with several clubs); they must be listed too.
+	OtherClubs []string
 	// ReadKey has only the read scope; BookKey has read and book;
 	// OtherBookKey belongs to a second partner with read and book.
 	ReadKey      string
@@ -48,10 +51,8 @@ type Env struct {
 	Logs func() string
 	// PrivacyMarkers must never appear in any response or log line.
 	PrivacyMarkers []string
-	// NoPartnerIsolation, when set, names the reason this configuration
-	// cannot tell one partner's booking from another's; the cross-partner
-	// cancel check is then skipped with that reason, visibly.
-	NoPartnerIsolation string
+	// Advance moves the gateway's clock forward; nil skips what needs it.
+	Advance func(time.Duration)
 }
 
 // Setup builds a fresh Env for one subtest.
@@ -64,6 +65,7 @@ type client struct {
 
 type response struct {
 	Status int
+	Header http.Header
 	Body   []byte
 	JSON   map[string]any
 }
@@ -92,7 +94,7 @@ func (c *client) do(method, path, key string, body any) response {
 	}
 	rec := httptest.NewRecorder()
 	c.env.Handler.ServeHTTP(rec, req)
-	r := response{Status: rec.Code, Body: rec.Body.Bytes()}
+	r := response{Status: rec.Code, Header: rec.Header(), Body: rec.Body.Bytes()}
 	if len(bytes.TrimSpace(r.Body)) > 0 {
 		var m map[string]any
 		if json.Unmarshal(r.Body, &m) == nil {
@@ -206,10 +208,10 @@ func Run(t *testing.T, setup Setup) {
 	t.Run("invalid booking requests", func(t *testing.T) { testInvalidBooking(t, setup(t)) })
 	t.Run("foreign booking cannot be cancelled", func(t *testing.T) { testForeignCancel(t, setup(t)) })
 	t.Run("another partner's booking cannot be cancelled", func(t *testing.T) { testOtherPartnerCancel(t, setup(t)) })
+	t.Run("a started booking cannot be cancelled", func(t *testing.T) { testStartedCancel(t, setup(t)) })
 	t.Run("payment follows capabilities", func(t *testing.T) { testPayment(t, setup(t)) })
 	t.Run("prices and quote", func(t *testing.T) { testPrices(t, setup(t)) })
 	t.Run("privacy: foreign data never leaks", func(t *testing.T) { testPrivacy(t, setup(t)) })
-	t.Run("health", func(t *testing.T) { testHealth(t, setup(t)) })
 }
 
 func testDiscovery(t *testing.T, env *Env) {
@@ -217,8 +219,17 @@ func testDiscovery(t *testing.T, env *Env) {
 	r := c.do(http.MethodGet, "/v1/clubs", env.ReadKey, nil)
 	expect(t, r, http.StatusOK, "")
 	clubs, _ := r.JSON["clubs"].([]any)
-	if len(clubs) != 1 || clubs[0].(map[string]any)["id"] != env.Club {
+	listed := map[any]bool{}
+	for _, c := range clubs {
+		listed[c.(map[string]any)["id"]] = true
+	}
+	if len(clubs) != 1+len(env.OtherClubs) || !listed[env.Club] {
 		t.Fatalf("clubs = %s", r.Body)
+	}
+	for _, o := range env.OtherClubs {
+		if !listed[o] {
+			t.Fatalf("clubs = %s, lacks %s", r.Body, o)
+		}
 	}
 	r = c.do(http.MethodGet, c.base(), env.ReadKey, nil)
 	expect(t, r, http.StatusOK, "")
@@ -344,6 +355,9 @@ func testLifecycle(t *testing.T, env *Env) {
 	}
 	sameInstant(t, r.JSON["start"].(string), start)
 	sameInstant(t, r.JSON["end"].(string), end)
+	if loc := r.Header.Get("Location"); loc != c.base()+"/bookings/"+id {
+		t.Fatalf("Location = %q, want %s", loc, c.base()+"/bookings/"+id)
+	}
 
 	iv, ok := findInterval(c.occupancy(d, d.AddDate(0, 0, 1), court), id)
 	if !ok {
@@ -430,9 +444,6 @@ func testForeignCancel(t *testing.T, env *Env) {
 }
 
 func testOtherPartnerCancel(t *testing.T, env *Env) {
-	if env.NoPartnerIsolation != "" {
-		t.Skip("known residual: " + env.NoPartnerIsolation)
-	}
 	c := &client{t: t, env: env}
 	d := day(env)
 	r := c.create(env.BookKey, env.Courts[0], at(d, 14, 0), at(d, 15, 0), "game", "")
@@ -440,6 +451,25 @@ func testOtherPartnerCancel(t *testing.T, env *Env) {
 	id := r.JSON["id"].(string)
 	expect(t, c.do(http.MethodDelete, c.base()+"/bookings/"+id, env.OtherBookKey, nil), http.StatusForbidden, "NOT_OWNED")
 	expect(t, c.do(http.MethodDelete, c.base()+"/bookings/"+id, env.BookKey, nil), http.StatusNoContent, "")
+}
+
+// testStartedCancel: a booking that has started is not cancelled, with
+// its own code, and still occupies the court.
+func testStartedCancel(t *testing.T, env *Env) {
+	if env.Advance == nil {
+		t.Skip("the gateway's clock cannot be moved in this environment")
+	}
+	c := &client{t: t, env: env}
+	d, court := day(env), env.Courts[0]
+	start := at(d, 9, 0)
+	r := c.create(env.BookKey, court, start, start.Add(time.Hour), "game", "")
+	expect(t, r, http.StatusCreated, "")
+	id, _ := r.JSON["id"].(string)
+	env.Advance(time.Until(start) + time.Minute)
+	expect(t, c.do(http.MethodDelete, c.base()+"/bookings/"+id, env.BookKey, nil), http.StatusConflict, "BOOKING_STARTED")
+	if _, ok := findInterval(c.occupancy(d, d.AddDate(0, 0, 1), court), id); !ok {
+		t.Fatalf("the started booking %s no longer occupies the court", id)
+	}
 }
 
 func testPayment(t *testing.T, env *Env) {
@@ -481,11 +511,12 @@ func testPrices(t *testing.T, env *Env) {
 	if len(periods) == 0 {
 		t.Fatalf("no price periods: %s", r.Body)
 	}
-	prevEnd := ""
+	var prevEnd time.Time
 	for _, p := range periods {
 		m := p.(map[string]any)
-		s, e := m["start"].(string), m["end"].(string)
-		if s >= e || s < prevEnd {
+		s, err1 := time.Parse(time.RFC3339, fmt.Sprint(m["start_at"]))
+		e, err2 := time.Parse(time.RFC3339, fmt.Sprint(m["end_at"]))
+		if err1 != nil || err2 != nil || !e.After(s) || s.Before(prevEnd) {
 			t.Fatalf("periods not ordered: %s", r.Body)
 		}
 		if pp, _ := m["price_per_hour"].(float64); pp <= 0 {
@@ -562,15 +593,5 @@ func testPrivacy(t *testing.T, env *Env) {
 		if strings.Contains(logs, k) {
 			t.Fatalf("logs leak an API key")
 		}
-	}
-}
-
-func testHealth(t *testing.T, env *Env) {
-	c := &client{t: t, env: env}
-	expect(t, c.do(http.MethodGet, "/health/live", "", nil), http.StatusOK, "")
-	r := c.do(http.MethodGet, "/health/ready", "", nil)
-	expect(t, r, http.StatusOK, "")
-	if r.JSON["status"] != "ready" {
-		t.Fatalf("ready = %s", r.Body)
 	}
 }

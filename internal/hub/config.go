@@ -12,9 +12,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +35,6 @@ const (
 	DefaultInterval       = 60 * time.Second
 	DefaultOfflineAfter   = 3 * time.Minute
 	DefaultReadyFailures  = 3
-	minKeyLength          = 24
 )
 
 type fileConfig struct {
@@ -44,27 +44,22 @@ type fileConfig struct {
 		CertFile string `yaml:"cert_file"`
 		KeyFile  string `yaml:"key_file"`
 	} `yaml:"tls"`
-	StateDir       string `yaml:"state_dir"`
-	StatusDir      string `yaml:"status_dir"`
-	OperatorKeyEnv string `yaml:"operator_key_env"`
-	LatestVersion  string `yaml:"latest_version"`
-	RequestTimeout string `yaml:"request_timeout"`
-	PollWait       string `yaml:"poll_wait"`
+	StateDir       string   `yaml:"state_dir"`
+	StatusDir      string   `yaml:"status_dir"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	OperatorKeyEnv string   `yaml:"operator_key_env"`
+	LatestVersion  string   `yaml:"latest_version"`
+	RequestTimeout string   `yaml:"request_timeout"`
+	PollWait       string   `yaml:"poll_wait"`
 	Partners       []struct {
-		Name            string   `yaml:"name"`
-		KeyEnv          string   `yaml:"key_env"`
-		Scopes          []string `yaml:"scopes"`
-		Clubs           []string `yaml:"clubs"`
-		WritesPerMinute *int     `yaml:"writes_per_minute"`
+		core.PartnerEntry `yaml:",inline"`
+		Clubs             []string `yaml:"clubs"`
 	} `yaml:"partners"`
 	Heartbeat struct {
 		Interval      string `yaml:"interval"`
 		OfflineAfter  string `yaml:"offline_after"`
 		ReadyFailures int    `yaml:"ready_failures"`
 	} `yaml:"heartbeat"`
-	Alerts struct {
-		WebhookURLEnv string `yaml:"webhook_url_env"`
-	} `yaml:"alerts"`
 }
 
 // Settings is a validated hub configuration.
@@ -76,8 +71,11 @@ type Settings struct {
 	StateDir    string
 	// StatusDir receives status.json and metrics for an external checker;
 	// empty means the files are not written.
-	StatusDir      string
-	OperatorKey    string
+	StatusDir   string
+	OperatorKey string
+	// TrustedProxies are the reverse proxies whose X-Forwarded-For names
+	// the client; from anyone else the header is ignored.
+	TrustedProxies []netip.Prefix
 	LatestVersion  string
 	RequestTimeout time.Duration
 	PollWait       time.Duration
@@ -87,20 +85,13 @@ type Settings struct {
 	Interval      time.Duration
 	OfflineAfter  time.Duration
 	ReadyFailures int
-	// WebhookURL is an optional alert sink; off when empty.
-	WebhookURL string
 	// Secrets must never appear in logs.
 	Secrets []string
+
+	// publicPath is the path of PublicURL ("" at the root of its host):
+	// the prefix of every path partners see.
+	publicPath string
 }
-
-var (
-	slugRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	partnerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
-	envNameRe     = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
-)
-
-// ValidClubID reports whether id is a valid club id.
-func ValidClubID(id string) bool { return slugRe.MatchString(id) }
 
 // LoadFile reads hub.yaml; secrets come from getenv, which callers usually
 // extend with the .env file next to hub.yaml.
@@ -140,6 +131,8 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	if s.PublicURL != "" {
 		if err := core.CheckHTTPSURL("public_url", s.PublicURL); err != nil {
 			add("%s", err.Error())
+		} else if u, err := url.Parse(s.PublicURL); err == nil {
+			s.publicPath = strings.TrimRight(u.EscapedPath(), "/")
 		}
 	}
 	s.TLSCertFile, s.TLSKeyFile = strings.TrimSpace(fc.TLS.CertFile), strings.TrimSpace(fc.TLS.KeyFile)
@@ -154,10 +147,25 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	if s.StatusDir != "" && s.StateDir != "" && filepath.Clean(s.StatusDir) == filepath.Clean(s.StateDir) {
 		add("status_dir: должен отличаться от state_dir (файлы состояния читает внешняя проверка, а state_dir закрыт)")
 	}
+	for _, p := range fc.TrustedProxies {
+		p = strings.TrimSpace(p)
+		pfx, err := netip.ParsePrefix(p)
+		if err != nil {
+			var a netip.Addr
+			if a, err = netip.ParseAddr(p); err == nil {
+				pfx = netip.PrefixFrom(a, a.BitLen())
+			}
+		}
+		if err != nil {
+			add("trusted_proxies: «%s» — ожидается IP-адрес или сеть вида 10.0.0.0/8", p)
+			continue
+		}
+		s.TrustedProxies = append(s.TrustedProxies, pfx.Masked())
+	}
 	if env := strings.TrimSpace(fc.OperatorKeyEnv); env != "" {
 		s.OperatorKey = strings.TrimSpace(getenv(env))
-		if len(s.OperatorKey) < minKeyLength {
-			add("operator_key_env: ключ оператора в %s не задан или короче %d символов", env, minKeyLength)
+		if len(s.OperatorKey) < core.MinKeyLength {
+			add("operator_key_env: ключ оператора в %s не задан или короче %d символов", env, core.MinKeyLength)
 		} else {
 			s.Secrets = append(s.Secrets, s.OperatorKey)
 		}
@@ -189,75 +197,41 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("heartbeat.ready_failures: %d — от 1 до 100", s.ReadyFailures)
 	}
 
-	seenName, seenKey := map[string]bool{}, map[string]string{}
+	entries := make([]core.PartnerEntry, len(fc.Partners))
 	for i, p := range fc.Partners {
+		entries[i] = p.PartnerEntry
 		path := fmt.Sprintf("partners[%d]", i)
-		name := strings.TrimSpace(p.Name)
-		switch {
-		case !partnerNameRe.MatchString(name):
-			add("%s.name: «%s» — строчные латинские буквы, цифры, дефис и подчёркивание, до 32 символов", path, name)
-		case seenName[name]:
-			add("%s.name: партнёр «%s» указан дважды", path, name)
-		}
-		seenName[name] = true
-		envName := strings.TrimSpace(p.KeyEnv)
-		var key string
-		if !envNameRe.MatchString(envName) {
-			add("%s.key_env: «%s» — имя переменной окружения заглавными латинскими буквами, цифрами и _", path, envName)
-		} else if key = strings.TrimSpace(getenv(envName)); len(key) < minKeyLength {
-			add("%s.key_env: ключ в %s не задан или короче %d символов", path, envName, minKeyLength)
-		} else if other, dup := seenKey[key]; dup {
-			add("%s.key_env: у партнёров «%s» и «%s» одинаковый ключ", path, other, name)
-		} else {
-			seenKey[key] = name
-			s.Secrets = append(s.Secrets, key)
-		}
-		var scopes []auth.Scope
-		if len(p.Scopes) == 0 {
-			add("%s.scopes: укажите права: [read] или [read, book]", path)
-		}
-		for _, sc := range p.Scopes {
-			switch auth.Scope(sc) {
-			case auth.ScopeRead, auth.ScopeBook:
-				scopes = append(scopes, auth.Scope(sc))
-			default:
-				add("%s.scopes: неизвестное право «%s» (допустимы read и book)", path, sc)
-			}
-		}
 		if len(p.Clubs) == 0 {
 			add("%s.clubs: укажите клубы партнёра списком или [\"*\"] — все клубы", path)
 		}
 		for _, c := range p.Clubs {
-			if c != "*" && !slugRe.MatchString(c) {
+			if c != "*" && !core.ValidID(c) {
 				add("%s.clubs: «%s» — не идентификатор клуба", path, c)
 			}
 		}
-		rate := core.DefaultWritesPerMinute
-		if p.WritesPerMinute != nil {
-			rate = *p.WritesPerMinute
-			if rate < 1 || rate > 6000 {
-				add("%s.writes_per_minute: %d — от 1 до 6000", path, rate)
-			}
-		}
-		s.Partners = append(s.Partners, auth.Partner{Name: name, Key: key, Scopes: scopes, WritesPerMinute: rate})
-		s.PartnerClubs[name] = append([]string(nil), p.Clubs...)
+		s.PartnerClubs[strings.TrimSpace(p.Name)] = append([]string(nil), p.Clubs...)
 	}
+	partners, keys := core.ParsePartners(entries, getenv, add)
+	s.Partners, s.Secrets = partners, append(s.Secrets, keys...)
 
-	if env := strings.TrimSpace(fc.Alerts.WebhookURLEnv); env != "" {
-		s.WebhookURL = strings.TrimSpace(getenv(env))
-		if s.WebhookURL == "" {
-			add("alerts.webhook_url_env: переменная %s не задана", env)
-		} else if err := core.CheckHTTPSURL("alerts.webhook_url_env", s.WebhookURL); err != nil {
-			add("alerts.webhook_url_env: адрес в %s должен начинаться с https://", env)
-		} else {
-			// a webhook URL usually embeds its own token
-			s.Secrets = append(s.Secrets, s.WebhookURL)
-		}
-	}
 	if len(errs) > 0 {
 		return nil, &core.ConfigError{Problems: errs}
 	}
 	return s, nil
+}
+
+// partnerScopes are the scopes of partner, as the hub signs them.
+func (s *Settings) partnerScopes(partner string) []string {
+	for _, p := range s.Partners {
+		if p.Name == partner {
+			var out []string
+			for _, sc := range p.Scopes {
+				out = append(out, string(sc))
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // partnerMayReach reports whether partner may call club.
