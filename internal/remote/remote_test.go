@@ -271,3 +271,50 @@ func TestConfigPullBacksOff(t *testing.T) {
 		}
 	}
 }
+
+// The config is pulled again after an hour even when the version stays,
+// so the hub's successor key, which it carries, reaches every gateway;
+// an unchanged version is not applied again.
+func TestConfigIsPulledHourly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	now, pulls := time.Date(2030, 1, 7, 12, 0, 0, 0, time.UTC), 0
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	s := remote.New(remote.Options{Clubs: core.NewClubs(core.ClubsOptions{}), Now: clock,
+		Fetch: func(context.Context) (tunnel.RemoteConfig, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			pulls++
+			return tunnel.RemoteConfig{Version: 3}, nil
+		}})
+	go s.Run(ctx)
+	count := func() int { mu.Lock(); defer mu.Unlock(); return pulls }
+	announce := func(want int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			s.Notify(3)
+			if count() == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d pulls, want %d", count(), want)
+			}
+		}
+	}
+	announce(1)
+	for range 20 { // the same version, within the hour: no pull
+		s.Notify(3)
+		time.Sleep(2 * time.Millisecond)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("%d pulls within the hour", n)
+	}
+	mu.Lock()
+	now = now.Add(time.Hour)
+	mu.Unlock()
+	announce(2)
+	if v := s.State().ConfigVersion; v != 3 {
+		t.Fatalf("applied version %d", v)
+	}
+}

@@ -158,6 +158,11 @@ func (s *Syncer) wanted(v int64) bool {
 // maxRetry bounds the wait between failed pulls.
 const maxRetry = time.Minute
 
+// refreshAfter: the config is pulled again after this long even without a
+// new version, so what it carries besides the clubs (the hub's successor
+// key) reaches a gateway; it is applied only when its version is new.
+const refreshAfter = time.Hour
+
 // Run pulls and applies configs until ctx is done. After a failed pull it
 // waits Retry, doubling with failures in a row up to maxRetry, whatever
 // the hub announces meanwhile (every poll does), then pulls the newest
@@ -166,6 +171,7 @@ const maxRetry = time.Minute
 func (s *Syncer) Run(ctx context.Context) {
 	failures := 0
 	var v int64
+	var pulled time.Time
 	for {
 		if failures == 0 {
 			select {
@@ -179,7 +185,7 @@ func (s *Syncer) Run(ctx context.Context) {
 			default:
 			}
 		}
-		if !s.wanted(v) {
+		if !s.wanted(v) && s.now().Sub(pulled) < refreshAfter {
 			failures = 0
 			continue
 		}
@@ -187,8 +193,10 @@ func (s *Syncer) Run(ctx context.Context) {
 		rc, err := s.fetch(fctx)
 		cancel()
 		if err == nil {
-			failures = 0
-			_ = s.Apply(ctx, rc)
+			failures, pulled = 0, s.now()
+			if s.wanted(rc.Version) {
+				_ = s.Apply(ctx, rc)
+			}
 			continue
 		}
 		if ctx.Err() != nil {

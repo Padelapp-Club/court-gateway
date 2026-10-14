@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -56,7 +57,7 @@ func TestServiceTakesTheNewPasswordFromEnvFile(t *testing.T) {
 	var logs bytes.Buffer
 	log := core.NewLogger(&logs, slog.LevelInfo, []string{"old-password"})
 	procEnv := func(k string) string { return map[string]string{core.PasswordEnv: "service-env-password"}[k] }
-	w := newConfigWatch(cfg, procEnv, acct, log, func() { t.Fatal("restarted for a password") })
+	w := newConfigWatch(cfg, procEnv, acct, func(ed25519.PublicKey) bool { return true }, log, func() { t.Fatal("restarted for a password") })
 	w.check()
 	if len(acct.set) != 0 {
 		t.Fatalf("an unchanged .env set the password: %v", acct.set)

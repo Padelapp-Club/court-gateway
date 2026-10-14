@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
 // The hub's signatures; the trust model is in the package comment.
@@ -119,6 +121,9 @@ func (rc *RemoteConfig) fields(c *canon) {
 		clubs[i] = string(raw)
 	}
 	c.list(clubs)
+	if rc.NextKey != "" { // signed when there is one; a config without stays as before
+		c.str(rc.NextKey)
+	}
 }
 
 func seal(installation, registration string, now time.Time) Seal {
@@ -205,13 +210,16 @@ var ErrSlowTime = errors.New("the hub's time arrived too late to be taken")
 // time as last signed for it (Time), and the hub's announcements of its
 // config version.
 type Verifier struct {
-	key          ed25519.PublicKey
 	installation string
 	registration string
 	now          func() time.Time
 	started      time.Time // this process, on now
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// keys: the pinned hub key, and the successor it announced (Config):
+	// the first message the successor signs makes it the only one (pin)
+	keys   []ed25519.PublicKey
+	onPin  func(key, next ed25519.PublicKey)
 	synced bool                 // the hub has signed its time for this process
 	offset time.Duration        // the hub's clock minus now, as last signed
 	config int64                // the highest config version applied or announced
@@ -227,8 +235,57 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 	if now == nil {
 		now = time.Now
 	}
-	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now, started: now(),
+	return &Verifier{keys: []ed25519.PublicKey{key}, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now, started: now(),
 		seen: map[string]time.Time{}}, nil
+}
+
+// Rollover pins next, a successor key gateway.yaml keeps (hub.next_key),
+// beside the key, and has onPin called with the keys whenever they change
+// (the gateway writes them to gateway.yaml).
+func (v *Verifier) Rollover(next ed25519.PublicKey, onPin func(key, next ed25519.PublicKey)) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(next) == ed25519.PublicKeySize {
+		v.keys = []ed25519.PublicKey{v.keys[0], next}
+	}
+	v.onPin = onPin
+}
+
+// Pinned reports whether k is a key the verifier accepts.
+func (v *Verifier) Pinned(k ed25519.PublicKey) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return slices.ContainsFunc(v.keys, func(p ed25519.PublicKey) bool { return p.Equal(k) })
+}
+
+// verify checks sig by a pinned key; one the successor made means the hub
+// has switched to it, and the old key is dropped.
+func (v *Verifier) verify(msg, sig []byte) bool {
+	v.mu.Lock()
+	keys := v.keys
+	v.mu.Unlock()
+	for i, k := range keys {
+		if ed25519.Verify(k, msg, sig) {
+			if i > 0 {
+				v.pin(k, nil)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (v *Verifier) pin(key, next ed25519.PublicKey) {
+	v.mu.Lock()
+	v.keys = []ed25519.PublicKey{key}
+	if next != nil {
+		v.keys = append(v.keys, next)
+	}
+	onPin := v.onPin
+	v.mu.Unlock()
+	if onPin != nil {
+		onPin(key, next)
+	}
 }
 
 // Time takes the hub's signed time from the answer to a request sent at
@@ -241,7 +298,7 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
 	sig, err2 := base64.StdEncoding.DecodeString(sigText)
-	if err1 != nil || err2 != nil || !ed25519.Verify(v.key, timeMessage(v.installation, v.registration, nonce, version, ms), sig) {
+	if err1 != nil || err2 != nil || !v.verify(timeMessage(v.installation, v.registration, nonce, version, ms), sig) {
 		return fmt.Errorf("%w: the hub's time", ErrBadSignature)
 	}
 	v.mu.Lock()
@@ -298,7 +355,7 @@ func (v *Verifier) clock() (now, started time.Time) {
 func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 	issued, expires := time.UnixMilli(s.IssuedAt), time.UnixMilli(s.ExpiresAt)
 	switch {
-	case !ed25519.Verify(v.key, msg, s.Signature):
+	case !v.verify(msg, s.Signature):
 		return fmt.Errorf("%w: bad signature", ErrBadSignature)
 	case s.Installation != v.installation || s.Registration != v.registration:
 		return fmt.Errorf("%w: signed for another installation or registration", ErrBadSignature)
@@ -348,16 +405,22 @@ func (v *Verifier) Request(rq *Request) error {
 
 // Config accepts a club configuration signed for this gateway, valid
 // now, and not older than one already applied or announced (Time).
-// Replaying it within its validity gives the same configuration.
+// Replaying it within its validity gives the same configuration. A
+// successor key it announces is pinned beside the current one.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err
 	}
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	if rc.Version < v.config {
+		v.mu.Unlock()
 		return fmt.Errorf("%w: config version %d is older than %d, applied or announced", ErrBadSignature, rc.Version, v.config)
 	}
 	v.config = rc.Version
+	key := v.keys[0]
+	v.mu.Unlock()
+	if next, err := core.ParseHubKey(rc.NextKey); err == nil && !v.Pinned(next) {
+		v.pin(key, next)
+	}
 	return nil
 }

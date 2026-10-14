@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
 // The hub key and registration of the client tests: installation "inst",
@@ -158,6 +160,7 @@ func TestVerifierRefusesAnUnsignedConfig(t *testing.T) {
 		"version":      func(rc *RemoteConfig) { rc.Version = 4 },
 		"club":         func(rc *RemoteConfig) { rc.Clubs[0] = []byte(`{"id":"b"}`) },
 		"club added":   func(rc *RemoteConfig) { rc.Clubs = append(rc.Clubs, []byte(`{"id":"b"}`)) },
+		"next key":     func(rc *RemoteConfig) { rc.NextKey = core.EncodeHubKey(otherTestKey.Public().(ed25519.PublicKey)) },
 		"another inst": func(rc *RemoteConfig) { rc.Sign(testKey, "inst-b", testRegistration, time.Now()) },
 		"expired":      func(rc *RemoteConfig) { rc.Sign(testKey, "inst", testRegistration, time.Now().Add(-2*SignedFor)) },
 	} {

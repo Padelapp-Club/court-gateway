@@ -3,6 +3,7 @@ package hub_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,10 +11,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -471,5 +474,66 @@ func TestWhoamiSignsTheHubsTime(t *testing.T) {
 	}
 	if off := c.ClockOffset(); (off - 10*time.Minute).Abs() > 5*time.Second {
 		t.Fatalf("offset %s after whoami, the hub is 10m ahead", off)
+	}
+}
+
+// Key rollover: a successor key (`hub key -next`) is announced in every
+// club config, under the current key's signature; the gateway pins it
+// beside the current one, and when the hub signs with it (after the
+// operator makes it the key) the gateway keeps only the new key.
+func TestHubKeyRollover(t *testing.T) {
+	dir := t.TempDir()
+	next, err := hub.PublicKey(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := hub.OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc, err := hub.CreateJoinCode(dir, "inst-k", "", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := st.Redeem(jc.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := hub.NewServer(&hub.Settings{PollWait: time.Second, RequestTimeout: time.Second, OfflineAfter: time.Minute}, st, hub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serving atomic.Value
+	serving.Store(srv.Handler())
+	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { serving.Load().(http.Handler).ServeHTTP(w, r) }))
+	defer h.Close()
+	v, _ := tunnel.NewVerifier(st.HubKey(), "inst-k", secret, nil)
+	var pins [][2]string
+	v.Rollover(nil, func(key, next ed25519.PublicKey) {
+		pins = append(pins, [2]string{core.EncodeHubKey(key), map[bool]string{true: core.EncodeHubKey(next)}[next != nil]})
+	})
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: h.URL, Secret: secret, HubKey: st.HubKey(), Installation: "inst-k", Verifier: v, Handler: http.NotFoundHandler(), Transport: h.Client().Transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := c.FetchConfig(context.Background())
+	if err != nil || rc.NextKey != core.EncodeHubKey(next) || !v.Pinned(next) || !v.Pinned(st.HubKey()) {
+		t.Fatalf("config %+v (%v): the successor is not pinned beside the key", rc, err)
+	}
+	// the operator switches: the successor signs from now on
+	if err := os.Rename(filepath.Join(dir, "hub-signing.next.key"), filepath.Join(dir, "hub-signing.key")); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := hub.OpenStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2, _ := hub.NewServer(&hub.Settings{PollWait: time.Second, RequestTimeout: time.Second, OfflineAfter: time.Minute}, st2, hub.Options{})
+	serving.Store(srv2.Handler())
+	if _, err := c.FetchConfig(context.Background()); err != nil || v.Pinned(st.HubKey()) || !v.Pinned(next) {
+		t.Fatalf("after the switch (%v): the old key is still pinned or the new one is not", err)
+	}
+	if len(pins) != 2 || pins[0] != [2]string{core.EncodeHubKey(st.HubKey()), core.EncodeHubKey(next)} || pins[1] != [2]string{core.EncodeHubKey(next), ""} {
+		t.Fatalf("pins written: %v", pins)
 	}
 }

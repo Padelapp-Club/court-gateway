@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ type fileConfig struct {
 		URL          string `yaml:"url"`
 		Installation string `yaml:"installation"`
 		Key          string `yaml:"key"`
+		NextKey      string `yaml:"next_key"`
 		CAFile       string `yaml:"ca_file"`
 		SecretEnv    string `yaml:"secret_env"`
 		Polls        int    `yaml:"polls"`
@@ -161,8 +163,11 @@ type HubSettings struct {
 	// registration: the gateway acts only on what that key signed for it.
 	Installation string
 	Key          ed25519.PublicKey
-	CAFile       string
-	Secret       string
+	// NextKey is the hub's successor key, pinned beside Key when the hub
+	// announced it (tunnel.Verifier.Rollover); nil without one.
+	NextKey ed25519.PublicKey
+	CAFile  string
+	Secret  string
 	// Proxy, when set, routes every outbound request (ProxyFunc).
 	Proxy ProxyFunc
 	Polls int
@@ -302,6 +307,12 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			add("hub.key: открытый ключ хаба отсутствует или неверен — выполните court-gateway setup с новым кодом подключения")
 		} else {
 			h.Key = k
+		}
+		if fc.Hub.NextKey != "" {
+			var err error
+			if h.NextKey, err = ParseHubKey(fc.Hub.NextKey); err != nil {
+				add("hub.next_key: следующий ключ хаба неверен — удалите строку, шлюз запишет её снова")
+			}
 		}
 		if h.Polls == 0 {
 			h.Polls = DefaultHubPolls
@@ -467,6 +478,44 @@ func ParseHubKey(s string) (ed25519.PublicKey, error) {
 		return nil, errors.New("not an ed25519 public key")
 	}
 	return ed25519.PublicKey(b), nil
+}
+
+// SetHubKeys rewrites hub.key, and hub.next_key after it (removed when
+// next is nil), in the gateway.yaml at path, keeping every other line:
+// the hub's key rollover (tunnel.Verifier.Rollover).
+func SetHubKeys(path string, key, next ed25519.PublicKey) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var out strings.Builder
+	inHub, done := false, false
+	for _, l := range strings.SplitAfter(string(data), "\n") {
+		t := strings.TrimSpace(l)
+		switch {
+		case t != "" && !strings.HasPrefix(t, "#") && l[0] != ' ' && l[0] != '\t':
+			inHub = strings.HasPrefix(t, "hub:") // a top-level key
+		case inHub && strings.HasPrefix(t, "next_key:"):
+			continue // written after key
+		case inHub && strings.HasPrefix(t, "key:") && !done:
+			indent := l[:len(l)-len(strings.TrimLeft(l, " \t"))]
+			out.WriteString(indent + "key: " + strconv.Quote(EncodeHubKey(key)) + "\n")
+			if next != nil {
+				out.WriteString(indent + "next_key: " + strconv.Quote(EncodeHubKey(next)) + "\n")
+			}
+			done = true
+			continue
+		}
+		out.WriteString(l)
+	}
+	if !done {
+		return errors.New("gateway.yaml: no hub.key line to rewrite")
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(path, []byte(out.String()), st.Mode().Perm())
 }
 
 // HubKeyFingerprint is how the hub's key is checked out of band (the

@@ -1,7 +1,13 @@
 package core
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -161,5 +167,34 @@ func TestURLsWithCredentialsAreRefusedUnechoed(t *testing.T) {
 		if err := CheckHTTPSURL("u", ok); err != nil {
 			t.Errorf("%s refused: %v", ok, err)
 		}
+	}
+}
+
+// The gateway records the hub's key rollover in the gateway.yaml setup
+// wrote: hub.key and hub.next_key change, nothing else does.
+func TestSetHubKeysRewritesOnlyTheKeys(t *testing.T) {
+	k := func(b byte) ed25519.PublicKey {
+		return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{b}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	}
+	p := filepath.Join(t.TempDir(), "gateway.yaml")
+	text := "# written by setup\nhub:\n  url: https://hub.example.test\n  installation: inst\n  # the hub's key\n  key: " + strconv.Quote(EncodeHubKey(k(1))) + "\n  ca_file: \"ca.pem\"\n\ncrm:\n  type: demo\n"
+	if err := os.WriteFile(p, []byte(text), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ key, next ed25519.PublicKey }{{k(1), k(2)}, {k(2), nil}} {
+		if err := SetHubKeys(p, c.key, c.next); err != nil {
+			t.Fatal(err)
+		}
+		s, err := LoadFile(p, env(goodEnv))
+		if err != nil || !s.Hub.Key.Equal(c.key) || !s.Hub.NextKey.Equal(c.next) || s.Hub.CAFile != "ca.pem" {
+			t.Fatalf("after SetHubKeys(%v): %+v %v", c.next != nil, s.Hub, err)
+		}
+	}
+	got, _ := os.ReadFile(p)
+	if want := strings.Replace(text, EncodeHubKey(k(1)), EncodeHubKey(k(2)), 1); string(got) != want {
+		t.Fatalf("other lines changed:\n%s", got)
+	}
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o640 {
+		t.Fatalf("mode %v", st.Mode().Perm())
 	}
 }

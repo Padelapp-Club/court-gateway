@@ -103,7 +103,7 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
 	}
-	key, err := hub.PublicKey(s.StateDir)
+	key, err := hub.PublicKey(s.StateDir, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
@@ -120,18 +120,20 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 }
 
 // cmdHubKey prints the hub's public signing key (DEFAULT_HUB_KEY of a
-// release build) and its fingerprint.
+// release build) and its fingerprint; with -next those of its successor,
+// made if missing.
 func cmdHubKey(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
 	fs := flag.NewFlagSet("hub key", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "hub config file")
+	next := fs.Bool("next", false, "the successor key, announced to the gateways until it replaces the key")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err == nil {
 		var key []byte
-		if key, err = hub.PublicKey(s.StateDir); err == nil {
+		if key, err = hub.PublicKey(s.StateDir, *next); err == nil {
 			fmt.Fprintf(stdout, "key: %s\nfingerprint: %s\n", core.EncodeHubKey(key), core.HubKeyFingerprint(key))
 			return 0
 		}
