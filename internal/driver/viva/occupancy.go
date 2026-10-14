@@ -67,10 +67,18 @@ func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time
 	return day(from, loc).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
-// list reads one kind for the whole studio. Rooms are filtered here
+// pageSizes are list lengths a CRM that cut its lists into pages would
+// answer with. [ASSUMPTION] Viva's lists are not paged: they are a bare
+// JSON array (a paging envelope is not one, and is refused); a list of
+// exactly one of these lengths may still be a first page, so the answer
+// is taken as incomplete.
+var pageSizes = map[int]bool{50: true, 100: true, 200: true, 250: true, 500: true, 1000: true}
+
+// list reads one kind for the whole studio; whole is false when the list
+// may be one page of a longer one (pageSizes). Rooms are filtered here
 // (intervals), never upstream: a break without a room closes the whole
 // studio, and what a room filter on the CRM side leaves out is not known.
-func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Time) ([]slot, error) {
+func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Time) (items []slot, whole bool, err error) {
 	q := url.Values{
 		"studioId":        {d.studio},
 		"dateFrom":        {dateFrom.Format("2006-01-02")},
@@ -79,20 +87,20 @@ func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Ti
 	}
 	status, data, err := d.c.do(ctx, http.MethodGet, "/"+kind, q, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", kind, status))
+		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", kind, status))
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": response is not a JSON array")
+		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": response is not a JSON array")
 	}
 	var out []slot
 	if err := json.Unmarshal(trimmed, &out); err != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": malformed item")
+		return nil, false, driver.Upstream(driver.UpstreamInvalid, "GET /"+kind+": malformed item")
 	}
-	return out, nil
+	return out, !pageSizes[len(out)], nil
 }
 
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
@@ -120,10 +128,11 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		var items []slot
 		for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
-			part, err := d.list(ctx, kind, f, minTime(f.AddDate(0, 0, step-1), dateTo))
+			part, whole, err := d.list(ctx, kind, f, minTime(f.AddDate(0, 0, step-1), dateTo))
 			if err != nil {
 				return driver.Occupancy{}, err
 			}
+			occ.Complete = occ.Complete && whole
 			items = append(items, part...)
 		}
 		prefix := "e-"
@@ -209,7 +218,7 @@ func (d *Driver) Ready(ctx context.Context) error {
 	today := day(now, d.zone(st))
 	rooms := map[string]string{d.courts[0].room: ""}
 	for _, kind := range []string{"exercises", "breaks"} {
-		items, err := d.list(ctx, kind, today, today)
+		items, _, err := d.list(ctx, kind, today, today)
 		if err != nil {
 			return err
 		}

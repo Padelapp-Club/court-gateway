@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -745,6 +746,30 @@ func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 	f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, `[{"id": "00000000-0000-4000-8000-0000000000e1", "timeFrom": "`+from.UTC().Format(time.RFC3339)+`", "timeTo": "`+to.UTC().Format(time.RFC3339)+`"}]`)
 	if st, m, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(24*time.Hour)), contract.ReadKey, ""); st != http.StatusBadGateway || m["code"] != "UPSTREAM_INVALID" {
 		t.Fatalf("room-less exercise: %d %s", st, raw)
+	}
+}
+
+// Viva's lists are taken to be whole; a list exactly as long as a page a
+// paging CRM would cut it to may be a first page, so the occupancy is
+// incomplete and nothing is booked on it.
+func TestPageSizedListIsIncomplete(t *testing.T) {
+	d := futureMidnight()
+	from, to := d.Add(12*time.Hour), d.Add(13*time.Hour)
+	list := func(n int) string {
+		items := make([]string, n)
+		for i := range items {
+			start := d.Add(time.Duration(i) * time.Minute) // all before the interval asked
+			items[i] = fmt.Sprintf(`{"id": "00000000-0000-4000-8000-%012d", "room": {"id": %q}, "timeFrom": %q, "timeTo": %q}`,
+				i, room1, start.UTC().Format(time.RFC3339), start.Add(time.Minute).UTC().Format(time.RFC3339))
+		}
+		return "[" + strings.Join(items, ",") + "]"
+	}
+	for n, complete := range map[int]bool{99: true, 100: false, 101: true} {
+		f := newFixture(t, fixtureOpts{})
+		f.stub.FailNext(http.MethodGet, "/exercises", http.StatusOK, list(n))
+		if st, m, raw := call(t, f, http.MethodGet, occupancyPath(from, to)+"&court=court-1", contract.ReadKey, ""); st != http.StatusOK || m["complete"] != complete {
+			t.Fatalf("a list of %d: %d %.200s, want complete %v", n, st, raw, complete)
+		}
 	}
 }
 
