@@ -130,8 +130,9 @@ func (s *Syncer) State() tunnel.AppliedConfig {
 	return st
 }
 
-// track notes since when the applied version differs from the hub's;
-// s.mu must be held.
+// track notes since when the applied version differs from the hub's and
+// whether the hub's is newer, so a club not served may be in it
+// (core.Clubs.SetPending); s.mu must be held.
 func (s *Syncer) track() {
 	switch {
 	case s.applied == s.hub && s.epoch == s.hubEpoch:
@@ -139,6 +140,7 @@ func (s *Syncer) track() {
 	case s.behind.IsZero():
 		s.behind = s.now()
 	}
+	s.clubs.SetPending(s.hub > s.applied || s.epoch != s.hubEpoch)
 }
 
 // Behind is how long the applied config has differed from the hub's

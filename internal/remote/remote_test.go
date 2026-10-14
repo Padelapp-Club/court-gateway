@@ -317,3 +317,30 @@ func TestANewHubEpochPullsTheSameVersionAgain(t *testing.T) {
 		}
 	}
 }
+
+// A club the gateway does not serve while the hub announces a config it
+// has not applied yet (the club was just added) is 503 CONFIG_PENDING, not
+// 404; once that config is applied without it, 404.
+func TestUnknownClubIsPendingWhileANewerConfigIsAnnounced(t *testing.T) {
+	clubs := core.NewClubs(core.ClubsOptions{})
+	s := remote.New(remote.Options{Clubs: clubs})
+	code := func() string {
+		r := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-new/courts", nil)
+		w := httptest.NewRecorder()
+		clubs.APIHandler().ServeHTTP(w, r.WithContext(auth.WithPartnerName(r.Context(), "reader")))
+		return fmt.Sprint(w.Code, " ", strings.Contains(w.Body.String(), "CONFIG_PENDING"))
+	}
+	if err := s.Apply(context.Background(), tunnel.RemoteConfig{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.Notify(2, "")
+	if got := code(); got != "503 true" {
+		t.Fatalf("version 2 announced, 1 applied: %s", got)
+	}
+	if err := s.Apply(context.Background(), tunnel.RemoteConfig{Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if got := code(); got != "404 false" {
+		t.Fatalf("version 2 applied: %s", got)
+	}
+}

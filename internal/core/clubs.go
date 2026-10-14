@@ -20,8 +20,9 @@ import (
 // restart and without disturbing requests in flight: each request is
 // served by the set that was current when it arrived.
 type Clubs struct {
-	log *slog.Logger
-	cur atomic.Pointer[clubTable]
+	log     *slog.Logger
+	cur     atomic.Pointer[clubTable]
+	pending atomic.Bool // SetPending
 	// readyNoClubs answers readiness while no club is configured (the
 	// CRM login of the account); nil means ready.
 	readyNoClubs func(context.Context) error
@@ -83,6 +84,10 @@ func (c *Clubs) Set(servers []*Server, unavailable ...string) {
 	sort.Strings(t.ids)
 	c.cur.Store(t)
 }
+
+// SetPending says whether the hub announced a config not applied yet: a
+// club not served then answers 503 CONFIG_PENDING, not 404.
+func (c *Clubs) SetPending(p bool) { c.pending.Store(p) }
 
 // IDs returns the ids of the served clubs, sorted.
 func (c *Clubs) IDs() []string { return append([]string(nil), c.cur.Load().ids...) }
@@ -167,7 +172,7 @@ func (c *Clubs) APIHandler() http.Handler {
 		e, ok := t.byID[club]
 		switch {
 		case ok:
-		case !t.loaded:
+		case !t.loaded || c.pending.Load() && !t.unavailable[club]:
 			w.Header().Set("Retry-After", "10")
 			WriteError(w, r, http.StatusServiceUnavailable, "CONFIG_PENDING", "the gateway has not received its club configuration yet")
 			return
