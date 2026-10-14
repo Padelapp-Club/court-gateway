@@ -54,7 +54,7 @@ type ClientConfig struct {
 	// OnHint is called when the hub says a newer release exists.
 	OnHint func(version string)
 	// OnConfigVersion is called with the hub's club configuration version
-	// from every poll and heartbeat answer that carries one.
+	// from every answer whose signed time signs it (polls).
 	OnConfigVersion func(version int64)
 	// Transport defaults to NewTransport(nil, nil).
 	Transport http.RoundTripper
@@ -379,7 +379,6 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 		return nil, cleanError(err)
 	}
 	defer resp.Body.Close()
-	c.noteConfigVersion(resp.Header)
 	if h := resp.Header.Get(HeaderUpdateHint); h != "" && c.cfg.OnHint != nil {
 		if prev, _ := c.lastHint.Load().(string); prev != h {
 			c.lastHint.Store(h)
@@ -413,7 +412,8 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 }
 
 // doTimed sends req with a fresh nonce and takes the hub's signed time
-// from the answer (Verifier.Time).
+// from the answer (Verifier.Time), and the config version it announces
+// when the hub signed it (OnConfigVersion).
 func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	var nonce [16]byte
 	_, _ = crand.Read(nonce[:])
@@ -433,21 +433,12 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 		case err != nil:
 			c.log.Debug("the hub's time not taken", "error", err)
 		}
+		n, perr := strconv.ParseInt(resp.Header.Get(HeaderConfigVersion), 10, 64)
+		if (err == nil || errors.Is(err, ErrSlowTime)) && perr == nil && n >= 0 && c.cfg.OnConfigVersion != nil {
+			c.cfg.OnConfigVersion(n)
+		}
 	}
 	return resp, nil
-}
-
-func (c *Client) noteConfigVersion(h http.Header) {
-	if c.cfg.OnConfigVersion == nil {
-		return
-	}
-	v := h.Get(HeaderConfigVersion)
-	if v == "" {
-		return
-	}
-	if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
-		c.cfg.OnConfigVersion(n)
-	}
 }
 
 // MaxConfigBody bounds the club configuration of an installation.

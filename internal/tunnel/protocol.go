@@ -53,9 +53,10 @@ const (
 	// that runs with the same secret (409 DUPLICATE_GATEWAY).
 	HeaderInstance   = "X-Gateway-Instance"
 	HeaderUpdateHint = "X-Update-Hint"
-	// HeaderConfigVersion is set by the hub on poll and heartbeat answers:
-	// the current version of the installation's club configuration. A
-	// gateway that runs another version pulls PathConfig.
+	// HeaderConfigVersion is set by the hub with HeaderHubTime, which
+	// signs it: the current version of the installation's club
+	// configuration. A gateway that runs another version pulls PathConfig;
+	// an unsigned one is ignored.
 	HeaderConfigVersion = "X-Config-Version"
 	// HeaderNonce is a fresh random value of each poll, and HeaderHubTime
 	// the hub's answer to it: its clock, signed with the nonce and the

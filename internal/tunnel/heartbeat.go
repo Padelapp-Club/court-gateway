@@ -123,7 +123,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb Heartbeat) error {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	c.noteConfigVersion(resp.Header)
 	switch resp.StatusCode {
 	case http.StatusNoContent, http.StatusOK:
 		return nil

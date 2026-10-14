@@ -180,3 +180,32 @@ func TestHubKeyMismatchIsReported(t *testing.T) {
 		}
 	}
 }
+
+// Only a config version the hub signed with its time announces a new
+// config: an unsigned one, or one signed with another key, is ignored.
+func TestOnlyASignedConfigVersionIsAnnounced(t *testing.T) {
+	var key ed25519.PrivateKey
+	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(HeaderConfigVersion, "7")
+		if key != nil {
+			w.Header().Set(HeaderHubTime, SignTime(key, "inst", testRegistration, r.Header.Get(HeaderNonce), "7", time.Now()))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hub.Close()
+	var announced []int64
+	c, err := NewClient(ClientConfig{HubURL: hub.URL, Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.NotFoundHandler(),
+		Transport: hub.Client().Transport, OnConfigVersion: func(v int64) { announced = append(announced, v) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []ed25519.PrivateKey{nil, otherTestKey, testKey} {
+		key = k
+		if _, _, err := c.poll(t.Context(), func() {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(announced) != 1 || announced[0] != 7 {
+		t.Fatalf("announced %v, want only the signed [7]", announced)
+	}
+}

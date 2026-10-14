@@ -330,7 +330,6 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 	}
 	release()
 	s.monitor.Heartbeat(g.Installation, hb)
-	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10))
 	w.WriteHeader(http.StatusNoContent)
 }
 
