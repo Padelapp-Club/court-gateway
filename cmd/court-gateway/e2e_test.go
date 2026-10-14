@@ -726,6 +726,10 @@ func TestSelfcheckWithARejectedPasswordIsNotRun(t *testing.T) {
 	if rc := run([]string{"selfcheck", "-config", cfg}, io.Discard, &errb, env{"CRM_PASSWORD": "changed-in-the-crm"}.get); rc != update.SelfCheckNotRunExit || s.stub.LoginAttempts() != before+1 {
 		t.Fatalf("selfcheck with a rejected password: rc=%d %s, %d logins", rc, errb.String(), s.stub.LoginAttempts()-before)
 	}
+	// with the password of .env it logs in and reaches the hub
+	if rc := run([]string{"selfcheck", "-config", cfg}, &out, &errb, env{}.get); rc != 0 || !strings.HasSuffix(out.String(), "ok\n") {
+		t.Fatalf("selfcheck: rc=%d %s %s", rc, out.String(), errb.String())
+	}
 }
 
 // setup --force while the service runs (a new join code: a new secret)
