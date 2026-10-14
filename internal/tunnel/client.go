@@ -200,6 +200,10 @@ func (c *Client) Unauthorized() bool { return c.authFail.Load() }
 // because another one with the same secret is connected.
 func (c *Client) Duplicate() bool { return c.dup.Load() }
 
+// Refused counts the requests and configs refused because the hub did
+// not sign them for this gateway (heartbeats report it).
+func (c *Client) Refused() int64 { return c.refused.Load() }
+
 // HubKeyMismatch reports whether the hub's last signed time failed the
 // pinned key: the hub signs with another key (a new one, or not the hub).
 func (c *Client) HubKeyMismatch() bool { return c.badKey.Load() }

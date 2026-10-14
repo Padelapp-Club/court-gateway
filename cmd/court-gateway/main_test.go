@@ -134,6 +134,7 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		{"clock far off", true, hubState{connected: true, clockOffset: -2 * time.Hour}, false, "CLOCK_SKEW"},
 		{"no signed hub time", true, hubState{connected: true}, false, "CLOCK_UNKNOWN"},
 		{"hub signs with another key", true, hubState{connected: true, keyMismatch: true}, false, "HUB_KEY_MISMATCH"},
+		{"signatures refused lately", true, hubState{connected: true, clockKnown: true, refusedGrew: true}, false, "SIGNATURE_REFUSED"},
 	}
 	for _, c := range cases {
 		reason := ""

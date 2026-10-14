@@ -182,11 +182,13 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		lastSeen := time.Now()  // the hub, or the start
 		files := newConfigWatch(cfgPath, procEnv, s.Driver.Account, log, askRestart)
 		clockSkewed := false
+		var refused int64    // refused signatures, at the last self-check
+		refusedGrew := false // since the self-check before
 		for {
 			files.check()
 			_, clockKnown := verifier.Now()
 			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown,
-				keyMismatch: client.HubKeyMismatch()}
+				keyMismatch: client.HubKeyMismatch(), refusedGrew: refusedGrew}
 			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
 				clockSkewed = skewed
 				if skewed {
@@ -207,6 +209,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 			hs.configBehind = syncer.Behind()
 			if due {
 				crm, checked = hb, true
+				n := client.Refused()
+				refusedGrew, refused = n > refused, n
+				hs.refusedGrew = refusedGrew
 			}
 			ready, reason := readiness(crm.Ready, crm.Reason, hs)
 			// a newly applied config is reported at once, not with the
@@ -456,6 +461,7 @@ type hubState struct {
 	clockOffset   time.Duration // the hub's clock minus this computer's, as the hub signed it
 	clockKnown    bool          // the hub's time is known (tunnel.Verifier.Now)
 	keyMismatch   bool          // the hub signs with another key than the pinned one
+	refusedGrew   bool          // signatures were refused since the self-check before
 }
 
 func (h hubState) String() string {
@@ -482,6 +488,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "HUB_KEY_MISMATCH" // a new hub key: a new join code is needed
 	case h.connected && !h.clockKnown:
 		return false, "CLOCK_UNKNOWN" // the hub sends no signed time: nothing is booked
+	case h.refusedGrew:
+		return false, "SIGNATURE_REFUSED"
 
 	case !h.connected && h.silentFor > hubOfflineAfter:
 		return false, "HUB_UNREACHABLE"
