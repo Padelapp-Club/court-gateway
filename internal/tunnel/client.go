@@ -587,7 +587,7 @@ func (c *Client) Execute(ctx context.Context, rq Request, nonce string) Response
 		r.Header["Retry-After"] = "5"
 		return r
 	}
-	if errors.Is(err, ErrUnconfirmedRun) {
+	if errors.Is(err, ErrUnconfirmedRun) || errors.Is(err, ErrOtherRun) {
 		r := fail(http.StatusServiceUnavailable, "CONFIG_PENDING", "the hub restarted; the club's gateway is taking its configuration, retry")
 		r.Header["Retry-After"] = "5"
 		return r

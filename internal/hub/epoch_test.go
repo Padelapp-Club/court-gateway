@@ -554,14 +554,28 @@ func vivaGateway(t *testing.T, h *testkit.Hub, wrap func(http.RoundTripper) http
 }
 
 // holdBody delays the body of the first poll answer that carries a
-// request until released; it never makes or changes a message.
+// request until released, and keeps the gateway's replies as it sends
+// them; it never makes or changes a message.
 type holdBody struct {
 	base          http.RoundTripper
 	once          sync.Once
 	held, release chan struct{}
+
+	mu      sync.Mutex
+	replies []tunnel.Response
 }
 
 func (x *holdBody) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == tunnel.PathReply && r.GetBody != nil {
+		if body, err := r.GetBody(); err == nil {
+			var rp tunnel.Response
+			if json.NewDecoder(body).Decode(&rp) == nil {
+				x.mu.Lock()
+				x.replies = append(x.replies, rp)
+				x.mu.Unlock()
+			}
+		}
+	}
 	resp, err := x.base.RoundTrip(r)
 	if err != nil || r.URL.Path != tunnel.PathPoll || resp.StatusCode != http.StatusOK {
 		return resp, err
@@ -583,7 +597,8 @@ func (x *holdBody) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // A booking the first hub run signed, its poll answer delivered only after
 // the restarted run's config (court-1 moved to room B) is applied, is not
-// run: it is refused, and nothing reaches the CRM.
+// run: it is answered 503 CONFIG_PENDING, nothing reaches the CRM, and it
+// is not counted as a refused signature (a genuine request, late).
 func TestRequestOfAReplacedHubRunIsNotRun(t *testing.T) {
 	h := startOperatorHub(t, hub.Options{})
 	x := &holdBody{held: make(chan struct{}), release: make(chan struct{})}
@@ -614,9 +629,17 @@ func TestRequestOfAReplacedHubRunIsNotRun(t *testing.T) {
 	written := func() bool {
 		return slices.ContainsFunc(stub.Calls(), func(call string) bool { return !strings.HasPrefix(call, "GET ") })
 	}
-	testkit.WaitFor(t, "the first run's booking answered", 5*time.Second, func() bool { return g.Client.Refused() > 0 || written() })
-	if written() || g.Client.Refused() == 0 {
+	replied := func() []tunnel.Response {
+		x.mu.Lock()
+		defer x.mu.Unlock()
+		return slices.Clone(x.replies)
+	}
+	testkit.WaitFor(t, "the first run's booking answered", 5*time.Second, func() bool { return len(replied()) > 0 || written() })
+	if written() || g.Client.Refused() != 0 {
 		t.Fatalf("the first run's booking run: CRM calls %q, refused %d", stub.Calls(), g.Client.Refused())
+	}
+	if r := replied()[0]; r.Status != http.StatusServiceUnavailable || !strings.Contains(string(r.Body), "CONFIG_PENDING") {
+		t.Fatalf("the first run's booking answered %d %s", r.Status, r.Body)
 	}
 }
 

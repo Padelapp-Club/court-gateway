@@ -207,6 +207,11 @@ var ErrSlowTime = errors.New("the hub's time arrived too late to be taken")
 // confirmed as the current one (Verifier.Time): no request runs until it is.
 var ErrUnconfirmedRun = errors.New("the hub's current run is not confirmed yet")
 
+// ErrOtherRun: a request signed in a hub run other than the current one (a
+// genuine one, delivered after a restart): it is not run, nor taken for a
+// forgery.
+var ErrOtherRun = errors.New("the request was signed in another hub run than the current one")
+
 // Verifier checks the hub's signatures on the gateway against the hub's
 // time as last signed (Time), and its config version announcements.
 type Verifier struct {
@@ -368,7 +373,7 @@ func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 // request runs once with nothing kept to remember it. Until the hub's
 // time is known it accepts nothing (ErrClockUnknown), nor while its run
 // is not confirmed (ErrUnconfirmedRun), nor a request of a run other than
-// the current one.
+// the current one (ErrOtherRun).
 func (v *Verifier) Request(rq *Request, nonce string) error {
 	if err := v.check(rq.Seal, rq.message(nonce), true); err != nil {
 		return err
@@ -379,7 +384,7 @@ func (v *Verifier) Request(rq *Request, nonce string) error {
 	case v.unsure:
 		return ErrUnconfirmedRun
 	case rq.run != v.epoch:
-		return fmt.Errorf("%w: signed in another hub run than the current one", ErrBadSignature)
+		return ErrOtherRun
 	}
 	return nil
 }
