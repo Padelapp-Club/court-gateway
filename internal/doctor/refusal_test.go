@@ -28,6 +28,12 @@ const (
 // doctorAgainst runs doctor for a Viva installation whose hub serves cfg
 // (one club, club-a) and reports who about the running service.
 func doctorAgainst(t *testing.T, clubStudio string, who tunnel.Whoami) doctor.Report {
+	return doctorAgainstHub(t, clubStudio, who, 0)
+}
+
+// doctorAgainstHub is doctorAgainst with a hub whose clock is ahead of
+// this computer's by ahead; it signs its time on whoami, as the hub does.
+func doctorAgainstHub(t *testing.T, clubStudio string, who tunnel.Whoami, ahead time.Duration) doctor.Report {
 	t.Helper()
 	stub := vivastub.New("review@example.test", "fixture-password", studio)
 	stub.AddRoom(room, "Court")
@@ -38,15 +44,19 @@ func doctorAgainst(t *testing.T, clubStudio string, who tunnel.Whoami) doctor.Re
 	raw, _ := json.Marshal(spec)
 	who.Installation, who.Connected, who.ConfigVersion, who.Clubs = "inst-a", true, 1, []string{"club-a"}
 	pub, key, _ := ed25519.GenerateKey(nil)
+	reg := tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-hub-secret"))
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health/live":
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "live"})
 		case tunnel.PathWhoami:
+			if nonce := r.Header.Get(tunnel.HeaderNonce); nonce != "" {
+				w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(key, "inst-a", reg, nonce, "", time.Now().Add(ahead)))
+			}
 			_ = json.NewEncoder(w).Encode(who)
 		case tunnel.PathConfig:
 			rc := tunnel.RemoteConfig{Version: 1, Clubs: []json.RawMessage{raw}}
-			rc.Sign(key, "inst-a", tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-hub-secret")), time.Now())
+			rc.Sign(key, "inst-a", reg, time.Now().Add(ahead))
 			_ = json.NewEncoder(w).Encode(rc)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -96,6 +106,18 @@ func TestDoctorReportsAConfigTheServiceDoesNotRun(t *testing.T) {
 				t.Fatalf("HUB_CONFIG %s (%s), ok=%v; want %s", c.Status, c.Message, rep.OK, tc.want)
 			}
 		})
+	}
+}
+
+// doctor checks the hub's signatures against the hub's own time, which it
+// learns first, as the service does: a club computer some minutes off
+// the hub is no reason to call the club config unsigned.
+func TestDoctorChecksTheConfigOnTheHubsClock(t *testing.T) {
+	for _, ahead := range []time.Duration{10 * time.Minute, -10 * time.Minute} {
+		rep := doctorAgainstHub(t, studio, tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}, ahead)
+		if c := hubConfig(rep); c.Status != doctor.OK {
+			t.Fatalf("hub %s ahead: HUB_CONFIG %s (%s)", ahead, c.Status, c.Message)
+		}
 	}
 }
 

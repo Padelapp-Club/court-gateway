@@ -434,7 +434,7 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	if err != nil {
 		return out, err
 	}
-	status, err := exchange(c.http, req, MaxConfigBody, &out)
+	status, err := exchange(c.http.Do, req, MaxConfigBody, &out)
 	switch {
 	case status == 0:
 		return out, err

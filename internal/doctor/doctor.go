@@ -241,7 +241,13 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 		reach = "хаб отвечает (loopback без TLS)"
 	}
 	out = append(out, Check{Code: CodeHubReach, Status: OK, Message: reach})
-	who, err := tunnel.FetchWhoami(hctx, rt, s.Hub.URL, s.Hub.Secret)
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
+		Handler: http.NotFoundHandler(), Transport: rt})
+	if err != nil {
+		out = append(out, Check{Code: CodeHubAuth, Status: Fail, Message: err.Error()})
+		return skipRest(2, "нет доступа к хабу"), nil
+	}
+	who, err := c.Whoami(hctx) // and the hub's time, which the club config is checked against
 	switch {
 	case errors.Is(err, tunnel.ErrUnauthorized):
 		out = append(out, Check{Code: CodeHubAuth, Status: Fail, Message: "хаб не принял секрет подключения", Hint: "попросите новый код подключения и выполните court-gateway setup --force"})
@@ -261,11 +267,6 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 	}
 
 	// the club config on the hub, loaded with this gateway's driver
-	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
-		Handler: http.NotFoundHandler(), Transport: rt})
-	if err != nil {
-		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: err.Error()}), nil
-	}
 	rc, err := c.FetchConfig(hctx)
 	switch {
 	case errors.Is(err, tunnel.ErrBadSignature):

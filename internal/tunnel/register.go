@@ -31,7 +31,7 @@ func Register(ctx context.Context, rt http.RoundTripper, hubURL, code, version s
 		return out, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	status, err := exchange(hubClient(rt), req, 64<<10, &out)
+	status, err := exchange(hubClient(rt).Do, req, 64<<10, &out)
 	switch {
 	case status == 0:
 		return out, err
@@ -56,13 +56,27 @@ func validKey(s string) bool {
 
 // FetchWhoami asks the hub how it sees this gateway.
 func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret string) (Whoami, error) {
-	var out Whoami
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hubURL, "/")+PathWhoami, nil)
 	if err != nil {
-		return out, err
+		return Whoami{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
-	status, err := exchange(hubClient(rt), req, 64<<10, &out)
+	return whoami(hubClient(rt).Do, req)
+}
+
+// Whoami is FetchWhoami that also takes the hub's signed time from the
+// answer, so what the hub signs is checked against its clock (doctor).
+func (c *Client) Whoami(ctx context.Context) (Whoami, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, PathWhoami, nil)
+	if err != nil {
+		return Whoami{}, err
+	}
+	return whoami(c.doTimed, req)
+}
+
+func whoami(do func(*http.Request) (*http.Response, error), req *http.Request) (Whoami, error) {
+	var out Whoami
+	status, err := exchange(do, req, 64<<10, &out)
 	switch {
 	case status == 0:
 		return out, err
@@ -77,8 +91,8 @@ func FetchWhoami(ctx context.Context, rt http.RoundTripper, hubURL, secret strin
 // exchange sends req and, when the hub answers 200, decodes at most limit
 // bytes of JSON into out. status is 0 when no answer came (err says why);
 // otherwise err is a decoding failure of a 200 answer.
-func exchange(hc *http.Client, req *http.Request, limit int64, out any) (status int, err error) {
-	resp, err := hc.Do(req)
+func exchange(do func(*http.Request) (*http.Response, error), req *http.Request, limit int64, out any) (status int, err error) {
+	resp, err := do(req)
 	if err != nil {
 		return 0, cleanError(err)
 	}

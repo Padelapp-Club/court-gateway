@@ -264,11 +264,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 	if s.cfg.LatestVersion != "" && m.Build == tunnel.BuildRelease && version.Newer(s.cfg.LatestVersion, m.Version) {
 		w.Header().Set(tunnel.HeaderUpdateHint, s.cfg.LatestVersion)
 	}
-	version := strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10)
-	w.Header().Set(tunnel.HeaderConfigVersion, version)
-	if nonce := r.Header.Get(tunnel.HeaderNonce); nonce != "" && len(nonce) <= 64 {
-		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version, s.now()))
-	}
+	s.signTime(w, r, g)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -283,6 +279,16 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 	rq.Sign(s.store.key, g.Installation, g.registration(), s.now())
 	if err := json.NewEncoder(w).Encode(rq); err != nil {
 		s.log.Warn("poll answer not delivered", "installation", g.Installation, "request_id", rq.RequestID)
+	}
+}
+
+// signTime sets the config version on an answer and, when the gateway
+// sent a nonce, the hub's time signed with it (tunnel.SignTime).
+func (s *Server) signTime(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
+	version := strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10)
+	w.Header().Set(tunnel.HeaderConfigVersion, version)
+	if nonce := r.Header.Get(tunnel.HeaderNonce); nonce != "" && len(nonce) <= 64 {
+		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version, s.now()))
 	}
 }
 
@@ -336,6 +342,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayR
 }
 
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
+	s.signTime(w, r, g)
 	info := s.broker.Info(g.Installation)
 	h := s.monitor.Health(g.Installation)
 	out := tunnel.Whoami{Installation: g.Installation, Connected: info.Connected,

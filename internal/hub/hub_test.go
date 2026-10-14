@@ -457,3 +457,19 @@ func TestGatewayFollowsTheHubsClock(t *testing.T) {
 		})
 	}
 }
+
+// whoami carries the hub's signed time as a poll answer does: doctor
+// learns it there before it checks the club config.
+func TestWhoamiSignsTheHubsTime(t *testing.T) {
+	w := newWorld(t, hub.Options{Now: func() time.Time { return time.Now().Add(10 * time.Minute) }}, "")
+	c, err := tunnel.NewClient(w.hub.ClientConfig("demo-club", w.hub.Register("demo-club", "Демо-клуб"), http.NotFoundHandler(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Whoami(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if off := c.ClockOffset(); (off - 10*time.Minute).Abs() > 5*time.Second {
+		t.Fatalf("offset %s after whoami, the hub is 10m ahead", off)
+	}
+}
