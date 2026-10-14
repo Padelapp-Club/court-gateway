@@ -411,7 +411,8 @@ const MaxStartAttempts = 3
 
 // Confirm runs in the version that was started. When the state directory
 // says this very version was just installed, it waits for check (the
-// gateway becoming ready) and either confirms the update or rolls it back.
+// gateway becoming ready) and either confirms the update or rolls it back
+// — or, when check fails with ErrNotRun, leaves it pending.
 // restart is true after a rollback: the installed binary must be started
 // again and will run the version that is current then.
 func Confirm(ctx context.Context, v *Versions, current string, check func(context.Context) error, log *slog.Logger, now func() time.Time) (restart bool, err error) {
@@ -437,6 +438,12 @@ func Confirm(ctx context.Context, v *Versions, current string, check func(contex
 		return false, clearPending(v.Dir)
 	case ctx.Err() != nil:
 		return false, ctx.Err() // shutting down: decide on the next start
+	case errors.Is(err, ErrNotRun):
+		// the password, not this binary: still pending, decided on a later
+		// start, which this one does not count against (Versions.Next)
+		log.Warn("update neither confirmed nor rolled back: the CRM rejected the password", "version", current)
+		p.Attempts = 0
+		return false, writePending(v.Dir, *p)
 	}
 	log.Error("updated binary failed its start check, rolling back", "version", current, "error", err)
 	return true, v.rollBackPending(current, now())

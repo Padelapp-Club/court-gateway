@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
 
 func noEnv(string) string { return "" }
@@ -230,4 +233,19 @@ func TestUsageOfSetup(t *testing.T) {
 		}
 	}
 	t.Fatal("usage has no setup line")
+}
+
+// After an update, a CRM that still rejects the password at the deadline
+// is update.ErrNotRun (the update stays pending); any other failure is
+// not.
+func TestWaitHealthyRejectedPasswordIsUndecided(t *testing.T) {
+	up := func() bool { return true }
+	rejected := func(context.Context) error { return driver.Upstream(driver.UpstreamAuth, "rejected") }
+	if err := waitHealthy(context.Background(), rejected, up, 50*time.Millisecond); !errors.Is(err, update.ErrNotRun) {
+		t.Fatalf("rejected password: %v", err)
+	}
+	down := func(context.Context) error { return driver.Upstream(driver.UpstreamUnavailable, "down") }
+	if err := waitHealthy(context.Background(), down, up, 50*time.Millisecond); err == nil || errors.Is(err, update.ErrNotRun) {
+		t.Fatalf("CRM down: %v", err)
+	}
 }

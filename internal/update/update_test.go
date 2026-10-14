@@ -550,3 +550,40 @@ func TestUpdaterFollowsOnlyHTTPSRedirects(t *testing.T) {
 		t.Fatalf("%d requests went to plain HTTP", n)
 	}
 }
+
+// An update whose start check found the CRM password rejected
+// (ErrNotRun) is neither confirmed nor rolled back nor marked bad: it
+// stays pending, its starts so far not counted, until a later check
+// decides.
+func TestRejectedPasswordLeavesTheUpdatePending(t *testing.T) {
+	r := newRelease(t, "1.1.0", []byte("NEW BINARY 1.1.0"))
+	g := newRig(t, r, "1.0.0")
+	if _, err := g.u.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
+		t.Fatalf("runs %q", got)
+	}
+	if err := writePending(g.state, Pending{Version: "1.1.0", From: "1.0.0", Attempts: MaxStartAttempts - 1}); err != nil {
+		t.Fatal(err)
+	}
+	restart, err := Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return ErrNotRun }, nil, nil)
+	if err != nil || restart {
+		t.Fatalf("restart=%v %v", restart, err)
+	}
+	if p, _ := ReadPending(g.state); p == nil || p.Version != "1.1.0" || p.Attempts != 0 {
+		t.Fatalf("pending: %+v", p)
+	}
+	if _, bad := readBad(g.state)["1.1.0"]; bad {
+		t.Fatal("marked bad for a rejected password")
+	}
+	if got := g.runs(t, "1.0.0"); got != "NEW BINARY 1.1.0" {
+		t.Fatalf("rolled back: runs %q", got)
+	}
+	if again, err := Confirm(context.Background(), g.v, "1.1.0", func(context.Context) error { return nil }, nil, nil); err != nil || again {
+		t.Fatalf("confirm once the password works: %v %v", again, err)
+	}
+	if p, _ := ReadPending(g.state); p != nil {
+		t.Fatal("pending marker left after the confirmation")
+	}
+}

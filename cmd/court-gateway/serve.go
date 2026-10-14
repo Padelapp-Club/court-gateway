@@ -511,7 +511,8 @@ func sendHeartbeat(ctx context.Context, c *tunnel.Client, hb tunnel.Heartbeat, l
 }
 
 // waitHealthy waits until the CRM login works and the hub connection is
-// up.
+// up. A login the CRM still rejects at the deadline is update.ErrNotRun:
+// the password, not the binary.
 func waitHealthy(ctx context.Context, login func(context.Context) error, connected func() bool, deadline time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
@@ -532,6 +533,9 @@ func waitHealthy(ctx context.Context, login func(context.Context) error, connect
 		}
 		select {
 		case <-ctx.Done():
+			if reason == "CRM: CRM_AUTH_FAILED" {
+				return update.ErrNotRun
+			}
 			return fmt.Errorf("not healthy within %s: %s", deadline, reason)
 		case <-t.C:
 		}
