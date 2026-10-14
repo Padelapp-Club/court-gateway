@@ -239,3 +239,38 @@ func TestMismatchFoundByReadinessBlocksTheClub(t *testing.T) {
 		t.Fatalf("occupancy after the room is back: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// A club whose changed config is not served keeps its previous one only
+// while no other club's config books its room: once the room is given to
+// club B, A is unavailable (not served on the old room) and B books it.
+// The change fails the CRM check (a room missing in the CRM) or does not
+// load at all (not a room id).
+func TestPreviousConfigIsDroppedWhenItsRoomIsReassigned(t *testing.T) {
+	for name, changed := range map[string]string{"check fails": "00000000-0000-4000-8000-000000000013", "does not load": "not-a-room"} {
+		t.Run(name, func(t *testing.T) {
+			in := newVivaInstallation(t)
+			if err := in.syncer.Apply(context.Background(), vivaConfig(1, vivaClub(vStudio, vRoom))); err != nil {
+				t.Fatal(err)
+			}
+			a, b := vivaClub(vStudio, changed), vivaClub(vStudio, vRoom)
+			b.ID = "club-b"
+			_ = in.syncer.Apply(context.Background(), vivaConfig(2, a))
+			if _, ok := in.clubs.Server("club-a"); !ok {
+				t.Fatal("the previous config is not kept while nobody else books its room")
+			}
+			rawA, _ := json.Marshal(a)
+			rawB, _ := json.Marshal(b)
+			_ = in.syncer.Apply(context.Background(), tunnel.RemoteConfig{Version: 3, Clubs: []json.RawMessage{rawA, rawB}})
+			if st := in.syncer.State(); !strings.Contains(st.ClubErrors["club-a"], "ROOM_CONFLICT") {
+				t.Fatalf("state: %+v", st)
+			}
+			_ = in.syncer.Ready(context.Background())
+			if w := in.create(); !blocked(w) {
+				t.Fatalf("create through club A on the room of club B: %d %s", w.Code, w.Body.String())
+			}
+			if w := in.call("GET", "/v1/clubs/club-b/occupancy?from="+vStart.Format(time.RFC3339)+"&to="+vEnd.Format(time.RFC3339), ""); w.Code != http.StatusOK {
+				t.Fatalf("club B: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}

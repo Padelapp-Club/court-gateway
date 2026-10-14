@@ -223,7 +223,8 @@ const configCheckTimeout = 20 * time.Second
 // Apply serves the clubs of rc that load with the driver and that the CRM
 // confirms (driver.ConfigChecker). Until it does — the club does not match
 // the CRM, or the CRM could not be asked — a club keeps its previous
-// config if it had one, otherwise partners get 503 for it; Ready asks the
+// config if it had one and no other club's config now books one of its
+// rooms, otherwise partners get 503 for it; Ready asks the
 // CRM again on every readiness round, without a new config from the hub.
 // Apply returns the problems found (nil when every club is served as
 // configured).
@@ -333,26 +334,80 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 	defer s.mu.Unlock()
 	var servers []*core.Server
 	var unavailable, problems []string
+	claims := map[string]string{} // CRM resource -> club whose current config books it
+	retained := map[string]*core.Server{}
 	for id := range s.configured {
 		if srv, ok := confirmed[id]; ok {
 			delete(s.waiting, id)
 			delete(s.refused, id)
 			servers = append(servers, srv)
+			claim(claims, id, srv)
 			continue
 		}
 		if f, ok := failed[id]; ok {
 			s.refused[id] = f
 			problems = append(problems, f)
 		}
-		if old, ok := s.clubs.Server(id); ok {
-			servers = append(servers, old)
-		} else {
-			unavailable = append(unavailable, id)
+		if w, ok := s.waiting[id]; ok {
+			claim(claims, id, w)
 		}
+		old, ok := s.clubs.Server(id)
+		switch {
+		case !ok:
+			unavailable = append(unavailable, id)
+		case s.waiting[id] != nil || s.refused[id] != "": // its previous config
+			retained[id] = old
+		default:
+			servers = append(servers, old)
+			claim(claims, id, old)
+		}
+	}
+	// a previous config is not served once another club's config books
+	// one of its rooms: two clubs never book one room
+	for id, old := range retained {
+		if other := claimedByOther(claims, id, old); other != "" {
+			why := fmt.Sprintf("клуб «%s»: прежняя конфигурация не обслуживается — её комнату теперь бронирует клуб «%s» (ROOM_CONFLICT)", id, other)
+			s.refused[id] = strings.TrimPrefix(s.refused[id]+"; "+why, "; ")
+			problems = append(problems, why)
+			unavailable = append(unavailable, id)
+			continue
+		}
+		servers = append(servers, old)
 	}
 	s.clubs.Set(servers, unavailable...)
 	slices.Sort(problems)
 	return problems
+}
+
+// resources are the CRM resources the courts of srv book
+// (driver.Resourcer; none when the driver does not name them).
+func resources(srv *core.Server) []string {
+	r, ok := srv.Driver().(driver.Resourcer)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, c := range srv.Settings().Courts {
+		out = append(out, r.Resource(c.ID))
+	}
+	return out
+}
+
+func claim(claims map[string]string, club string, srv *core.Server) {
+	for _, r := range resources(srv) {
+		claims[r] = club
+	}
+}
+
+// claimedByOther returns a club other than club that books one of the
+// resources of srv, or "".
+func claimedByOther(claims map[string]string, club string, srv *core.Server) string {
+	for _, r := range resources(srv) {
+		if other := claims[r]; other != "" && other != club {
+			return other
+		}
+	}
+	return ""
 }
 
 // Refusal is a club of a hub config that does not load. Club is empty
