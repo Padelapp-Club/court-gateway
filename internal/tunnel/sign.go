@@ -9,12 +9,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
 
 // The hub's signatures; the trust model is in the package comment.
@@ -209,13 +213,18 @@ type Verifier struct {
 	installation string
 	registration string
 	now          func() time.Time
-	started      time.Time // this process, on now
+	started      time.Time // this process, on now (time.Now: monotonic)
 
 	mu     sync.Mutex
 	synced bool                 // the hub has signed its time for this process
 	offset time.Duration        // the hub's clock minus now, as last signed
+	start  int64                // this process's start on the hub's clock, unix ms
 	config int64                // the highest config version applied or announced
 	seen   map[string]time.Time // request id -> until when (hub time) it is remembered
+	// the watermark (KeepWatermark): the newest issue time of a request
+	// accepted, kept in file; floor is what the file held at the start
+	file        string
+	floor, high int64
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
@@ -250,9 +259,13 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	if rtt := received.Sub(sent); rtt > MaxTimeRoundTrip {
 		return fmt.Errorf("%w: %s after the request", ErrSlowTime, rtt.Round(time.Millisecond))
 	}
-	// the hub signed before this arrived, so the offset may come out low by
-	// the answer's travel time, never high: the start below is never later
-	// than the true one
+	// the hub signed before this arrived, so its time comes out low by the
+	// answer's travel time, never high: the start is never later than the
+	// true one. It is pinned by the first time, from the time elapsed on the
+	// monotonic clock, so a later step of this computer's clock leaves it.
+	if !v.synced {
+		v.start = ms - received.Sub(v.started).Milliseconds()
+	}
 	v.synced, v.offset = true, time.UnixMilli(ms).Sub(received)
 	if n, err := strconv.ParseInt(version, 10, 64); err == nil {
 		v.config = max(v.config, n)
@@ -274,22 +287,19 @@ func (v *Verifier) Offset() time.Duration {
 func (v *Verifier) Now() (time.Time, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	now, _ := v.clock()
-	return now, v.known()
+	return v.clock(), v.known()
 }
 
 // known: the hub signed its time, and it is at most MaxClockSkew off this
 // computer's; v.mu must be held.
 func (v *Verifier) known() bool { return v.synced && v.offset.Abs() <= MaxClockSkew }
 
-// clock is the hub's time now and at this process's start, as far as it
-// is known; v.mu must be held.
-func (v *Verifier) clock() (now, started time.Time) {
-	var off time.Duration
+// clock is the hub's time now, as far as it is known; v.mu must be held.
+func (v *Verifier) clock() time.Time {
 	if v.known() {
-		off = v.offset
+		return v.now().Add(v.offset)
 	}
-	return v.now().Add(off), v.started.Add(off)
+	return v.now()
 }
 
 // check verifies a seal: signed by the pinned key for this registration,
@@ -306,8 +316,7 @@ func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 		return fmt.Errorf("%w: invalid validity window", ErrBadSignature)
 	}
 	v.mu.Lock()
-	now, _ := v.clock()
-	known := v.known()
+	now, known := v.clock(), v.known()
 	v.mu.Unlock()
 	switch {
 	case needClock && !known:
@@ -318,19 +327,39 @@ func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 	return nil
 }
 
+// KeepWatermark keeps the issue time of the newest request accepted in
+// file, and refuses every request issued at or before the one file holds:
+// a request run before a restart, however late the hub's time arrives.
+func (v *Verifier) KeepWatermark(file string) error {
+	var ms int64
+	data, err := os.ReadFile(file)
+	if err == nil {
+		ms, err = strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s: %w", file, err)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.file, v.floor, v.high = file, ms, ms
+	return nil
+}
+
 // Request accepts rq once: signed for this gateway, valid now, issued
 // after this process started by the hub's clock (what it saw before a
 // restart is forgotten, and the hub signs a request as a poll of this
-// process takes it), and not seen before within its validity. Until the
-// hub's time is known it accepts nothing (ErrClockUnknown).
+// process takes it) and after the watermark, and not seen before within
+// its validity. Until the hub's time is known it accepts nothing
+// (ErrClockUnknown). A request is accepted only once the watermark holds
+// it.
 func (v *Verifier) Request(rq *Request) error {
 	if err := v.check(rq.Seal, rq.Seal.message("request", rq.fields), true); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	now, started := v.clock()
-	if rq.IssuedAt < started.UnixMilli() { // in the seal's own unit
+	now := v.clock()
+	if rq.IssuedAt < v.start || rq.IssuedAt <= v.floor { // in the seal's own unit
 		return fmt.Errorf("%w: issued before this gateway started", ErrBadSignature)
 	}
 	if _, dup := v.seen[rq.ID]; dup {
@@ -341,6 +370,12 @@ func (v *Verifier) Request(rq *Request) error {
 		if len(v.seen) >= maxSeen {
 			return fmt.Errorf("%w: too many requests within the validity window", ErrBadSignature)
 		}
+	}
+	if v.file != "" && rq.IssuedAt > v.high {
+		if err := core.WriteFileAtomic(v.file, []byte(strconv.FormatInt(rq.IssuedAt, 10)), 0o600); err != nil {
+			return fmt.Errorf("the request is not run, its issue time is not recorded: %w", err)
+		}
+		v.high = rq.IssuedAt
 	}
 	v.seen[rq.ID] = time.UnixMilli(rq.ExpiresAt).Add(clockSkew)
 	return nil

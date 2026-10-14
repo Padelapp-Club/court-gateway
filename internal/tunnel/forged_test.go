@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -209,6 +210,70 @@ func TestReplayAfterRestartIsRefused(t *testing.T) {
 	restarted := sg.Client(t, clubs.TunnelHandler())
 	if r := restarted.Execute(t.Context(), create); r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") || posts() != 1 {
 		t.Fatalf("the create replayed after a restart: %d %s, %d CRM writes", r.Status, r.Body, posts())
+	}
+}
+
+// A booking replayed to a restarted gateway is refused also when the
+// hub's first signed time reaches it late (4 s, within MaxTimeRoundTrip):
+// the start by the hub's clock comes out early by that delay, but the
+// watermark the first process kept holds the requests it ran.
+func TestReplayAfterRestartWithALateSignedTimeIsRefused(t *testing.T) {
+	sg := testkit.NewSigning("inst")
+	clubs, stub := vivaClub(t, sg.Secret)
+	pub, reg := sg.Key.Public().(ed25519.PublicKey), tunnel.RegistrationOf(tunnel.SecretSHA256(sg.Secret))
+	watermark := filepath.Join(t.TempDir(), "request-watermark")
+	t0 := time.Now().Truncate(time.Millisecond)
+	local := t0.Add(-10 * time.Second) // this computer's clock, and the hub's
+	// a gateway process started at at, whose first poll answer, signed by
+	// the hub at at, arrives at received
+	process := func(at, received time.Time) *tunnel.Client {
+		local = at
+		v, _ := tunnel.NewVerifier(pub, "inst", sg.Secret, func() time.Time { return local })
+		if err := v.KeepWatermark(watermark); err != nil {
+			t.Fatal(err)
+		}
+		local = received
+		if err := v.Time("n", tunnel.SignTime(sg.Key, "inst", reg, "n", "0", at), "0", at); err != nil {
+			t.Fatal(err)
+		}
+		c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: sg.Secret, HubKey: pub, Installation: "inst", Verifier: v, Handler: clubs.TunnelHandler()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	sign := func(rq tunnel.Request, at time.Time) tunnel.Request {
+		rq.ID = at.String()
+		rq.Sign(sg.Key, "inst", reg, at)
+		return rq
+	}
+	c := process(local, local)
+	start := t0.UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	body, _ := json.Marshal(map[string]string{"court": "court-one", "start": start.Format(time.RFC3339), "end": start.Add(time.Hour).Format(time.RFC3339), "kind": "game"})
+	local = t0.Add(-2 * time.Second)
+	create := sign(tunnel.Request{Method: http.MethodPost, Path: "/v1/clubs/club-one/bookings", Body: body, Partner: "booker", Scopes: []string{"read", "book"}}, local)
+	first := c.Execute(t.Context(), create)
+	var b struct{ ID string }
+	if json.Unmarshal(first.Body, &b); first.Status != http.StatusCreated {
+		t.Fatalf("create: %d %s", first.Status, first.Body)
+	}
+	local = t0.Add(-time.Second)
+	if r := c.Execute(t.Context(), sign(tunnel.Request{Method: http.MethodDelete, Path: create.Path + "/" + b.ID, Partner: "booker", Scopes: []string{"book"}}, local)); r.Status != http.StatusNoContent {
+		t.Fatalf("cancel: %d %s", r.Status, r.Body)
+	}
+	// restarted at t0; the hub's first signed time, from t0, arrives 4 s later
+	restarted := process(t0, t0.Add(4*time.Second))
+	if r := restarted.Execute(t.Context(), create); r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "SIGNATURE_REJECTED") {
+		t.Fatalf("the create replayed after a restart: %d %s", r.Status, r.Body)
+	}
+	posts := 0
+	for _, call := range stub.Calls() {
+		if strings.HasPrefix(call, "POST /breaks") {
+			posts++
+		}
+	}
+	if posts != 1 {
+		t.Fatalf("%d CRM creates, want 1", posts)
 	}
 }
 

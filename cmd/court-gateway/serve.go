@@ -44,6 +44,10 @@ const confirmDeadline = 3 * time.Minute
 // process (update.Restart); a variable for tests.
 var restartProcess = update.Restart
 
+// watermarkFile, in the state directory, holds the hub's issue time of the
+// newest request the gateway accepted (tunnel.Verifier.KeepWatermark).
+const watermarkFile = "request-watermark"
+
 // maxHandovers bounds how often one start of the installed binary hands
 // over in a row (Windows: a version that exits to be restarted).
 const maxHandovers = 10
@@ -104,6 +108,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	// the hub's signed time: what the tunnel checks signatures against and
 	// the clubs take "now" from
 	verifier, err := tunnel.NewVerifier(s.Hub.Key, s.Hub.Installation, s.Hub.Secret, nil)
+	if err == nil {
+		// what ran before a restart is not run again
+		if err = os.MkdirAll(s.StateDir, 0o700); err == nil {
+			err = verifier.KeepWatermark(filepath.Join(s.StateDir, watermarkFile))
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
 		return 2

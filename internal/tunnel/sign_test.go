@@ -327,3 +327,26 @@ func TestVerifierRefusesAnOlderConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A step back of this computer's clock after the start does not move the
+// start by the hub's clock: it is pinned by the first signed time, from
+// the elapsed time, so a request the hub issues later is accepted.
+func TestClockStepBackDoesNotMoveTheStart(t *testing.T) {
+	hubNow := time.Now().Truncate(time.Millisecond)
+	local := hubNow
+	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
+	at := func(nonce string, hub time.Time) {
+		if err := v.Time(nonce, SignTime(testKey, "inst", testRegistration, nonce, "0", hub), "0", local); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local = hubNow.Add(time.Second)
+	at("a", hubNow.Add(time.Second))
+	local = hubNow.Add(-time.Hour + 2*time.Second) // the clock is set back an hour
+	at("b", hubNow.Add(2*time.Second))
+	rq := sampleRequest()
+	rq.Sign(testKey, "inst", testRegistration, hubNow.Add(3*time.Second))
+	if err := v.Request(&rq); err != nil {
+		t.Fatalf("a request issued after the start, past a clock step: %v", err)
+	}
+}
