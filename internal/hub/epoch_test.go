@@ -421,6 +421,80 @@ func TestRestartDuringTheFirstPolls(t *testing.T) {
 	})
 }
 
+// holdWhoami delays the answer to the next whoami while armed, until
+// released; it never makes or changes a message.
+type holdWhoami struct {
+	base          http.RoundTripper
+	armed         atomic.Bool
+	held, release chan struct{}
+}
+
+func (x *holdWhoami) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := x.base.RoundTrip(r)
+	if err != nil || r.URL.Path != tunnel.PathWhoami || !x.armed.CompareAndSwap(true, false) {
+		return resp, err
+	}
+	close(x.held)
+	if err := wait(r.Context(), x.release); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	return resp, nil
+}
+
+// An answer of the first hub run, to a request sent before the restarted
+// run was seen, arrives after it was seen and before it is confirmed: it
+// does not confirm the ended run. The next exchange confirms the restarted
+// run and the gateway serves it.
+func TestLateAnswerOfAnEndedRunDoesNotConfirmIt(t *testing.T) {
+	h := testkit.StartHub(t, hubYAML, testkit.HubEnv(), hub.Options{})
+	secret := h.Register("club-a", "Club A")
+	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/club-a/clubs/club-a", testkit.Club("club-a", "Club A", "Court 1"))
+	x := &holdWhoami{base: h.Transport(), held: make(chan struct{}), release: make(chan struct{})}
+	c, syncer, _ := epochGateway(t, h, "club-a", secret, x)
+	syncer.SetFetch(c.FetchConfig)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	who := func() {
+		t.Helper()
+		if _, err := c.Whoami(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	who()
+	rc, err := c.FetchConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = syncer.Apply(ctx, rc)
+	x.armed.Store(true)
+	late := make(chan error, 1)
+	go func() { _, err := c.Whoami(ctx); late <- err }()
+	<-x.held // answered by the first run, not delivered yet
+	h.Restart()
+	who() // the restarted run seen
+	close(x.release)
+	if err := <-late; err != nil {
+		t.Fatal(err)
+	}
+	who() // an exchange sent after the restarted run was seen
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	rctx, rcancel := context.WithCancel(ctx)
+	defer rcancel()
+	wg.Add(2)
+	go func() { defer wg.Done(); c.Run(rctx) }()
+	go func() { defer wg.Done(); syncer.Run(rctx) }()
+	var last partnerResp
+	for i := 0; i < 40; i++ {
+		if last = call(t, h, http.MethodGet, "/v1/clubs/club-a/courts", contract.ReadKey, ""); last.status == http.StatusOK {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Errorf("the restarted run is not served: %d %s, refused %d", last.status, last.body, c.Refused())
+}
+
 // vivaGateway is a gateway of installation test-net on h, reaching it
 // through wrap(the hub's transport), serving vivaClub(roomA) on a Viva
 // stub. No syncer runs: pull takes the config the hub announces now, as
