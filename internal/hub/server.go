@@ -272,10 +272,14 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_ = http.NewResponseController(w).Flush()
-	rq := s.broker.Poll(r.Context(), g.Installation, g.gen, m)
-	if rq == nil {
+	call := s.broker.Poll(r.Context(), g.Installation, g.gen, m)
+	if call == nil {
 		return
 	}
+	// signed now, as the poll takes it: so it is never older than the
+	// gateway process that sent this poll (tunnel.Verifier.Request)
+	rq := *call
+	rq.Sign(s.store.key, g.Installation, g.registration(), s.now())
 	if err := json.NewEncoder(w).Encode(rq); err != nil {
 		s.log.Warn("poll answer not delivered", "installation", g.Installation, "request_id", rq.RequestID)
 	}
@@ -420,7 +424,6 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 			rq.Header[h] = v
 		}
 	}
-	rq.Sign(s.store.key, inst, g.registration(), s.now())
 	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):

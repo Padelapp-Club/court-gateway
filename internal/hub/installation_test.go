@@ -208,6 +208,17 @@ func TestDiscoveryReturnsDraft(t *testing.T) {
 	h.MustOperator(t, http.StatusServiceUnavailable, http.MethodPost, "/hub/installations/net-3/discover", map[string]any{})
 }
 
+// The hub signs a discovery with its own clock, the one it signs its
+// time with: a hub whose clock is ahead of the club computer's still gets
+// its discovery run.
+func TestDiscoverySignedOnTheHubsClock(t *testing.T) {
+	h := startOperatorHub(t, hub.Options{Now: func() time.Time { return time.Now().Add(20 * time.Minute) }})
+	demoInstallation(t, h, "net-c", demoClub("club-north", "demo-north", "Корт 1"))
+	if code, body := h.Operator(t, testkit.OperatorKey, http.MethodPost, "/hub/installations/net-c/discover", map[string]any{}); code != http.StatusOK {
+		t.Fatalf("discovery with the hub's clock 20 minutes ahead: %d %s", code, body)
+	}
+}
+
 func TestOperatorAPIAuthAndValidation(t *testing.T) {
 	h := startOperatorHub(t, hub.Options{})
 	paths := []struct{ method, path string }{
