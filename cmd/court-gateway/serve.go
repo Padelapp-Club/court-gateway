@@ -175,7 +175,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		for {
 			files.check()
 			_, clockKnown := verifier.Now()
-			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown}
+			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset(), clockKnown: clockKnown,
+				keyMismatch: client.HubKeyMismatch()}
 			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
 				clockSkewed = skewed
 				if skewed {
@@ -444,6 +445,7 @@ type hubState struct {
 	configBehind  time.Duration // how long the hub's config version has not been applied
 	clockOffset   time.Duration // the hub's clock minus this computer's, as the hub signed it
 	clockKnown    bool          // the hub's time is known (tunnel.Verifier.Now)
+	keyMismatch   bool          // the hub signs with another key than the pinned one
 }
 
 func (h hubState) String() string {
@@ -466,6 +468,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "DUPLICATE_GATEWAY"
 	case h.clockOffset.Abs() > tunnel.MaxClockSkew:
 		return false, "CLOCK_SKEW"
+	case h.connected && h.keyMismatch:
+		return false, "HUB_KEY_MISMATCH" // a new hub key: a new join code is needed
 	case h.connected && !h.clockKnown:
 		return false, "CLOCK_UNKNOWN" // the hub sends no signed time: nothing is booked
 

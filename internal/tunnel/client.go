@@ -77,6 +77,7 @@ type Client struct {
 	lastHint atomic.Value // string
 	authFail atomic.Bool
 	dup      atomic.Bool
+	badKey   atomic.Bool // the hub's last signed time failed the pinned key
 	mu       sync.Mutex
 	state    string // "connected" / "disconnected", for transition logs
 }
@@ -198,6 +199,10 @@ func (c *Client) Unauthorized() bool { return c.authFail.Load() }
 // Duplicate reports whether the hub's last answer refused this copy
 // because another one with the same secret is connected.
 func (c *Client) Duplicate() bool { return c.dup.Load() }
+
+// HubKeyMismatch reports whether the hub's last signed time failed the
+// pinned key: the hub signs with another key (a new one, or not the hub).
+func (c *Client) HubKeyMismatch() bool { return c.badKey.Load() }
 
 // ClockOffset is how far the hub's clock is ahead of this computer's, as
 // the hub last signed it; beyond MaxClockSkew the gateway refuses what
@@ -400,6 +405,7 @@ func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
 	}
 	if h := resp.Header.Get(HeaderHubTime); h != "" {
 		err := c.verify.Time(req.Header.Get(HeaderNonce), h, resp.Header.Get(HeaderConfigVersion), sent)
+		c.badKey.Store(errors.Is(err, ErrBadSignature))
 		switch {
 		case errors.Is(err, ErrBadSignature):
 			c.refused.Add(1)

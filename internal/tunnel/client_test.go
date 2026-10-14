@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/pem"
 	"net/http"
@@ -148,5 +149,34 @@ func TestCAFilePinsTheHubCA(t *testing.T) {
 	}
 	if pool, err := LoadRoots(""); pool != nil || err != nil {
 		t.Fatalf("without hub.ca_file: %v %v", pool, err)
+	}
+}
+
+// A hub that signs its time with another key than the pinned one (its key
+// was replaced) is reported as such, not as a hub without a clock.
+func TestHubKeyMismatchIsReported(t *testing.T) {
+	key := testKey
+	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(HeaderConfigVersion, "0")
+		w.Header().Set(HeaderHubTime, SignTime(key, "inst", testRegistration, r.Header.Get(HeaderNonce), "0", time.Now()))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hub.Close()
+	c, err := NewClient(ClientConfig{HubURL: hub.URL, Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.NotFoundHandler(),
+		Transport: hub.Client().Transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key      ed25519.PrivateKey
+		mismatch bool
+	}{{otherTestKey, true}, {testKey, false}} {
+		key = tc.key
+		if _, err := c.poll(t.Context(), func() {}); err != nil {
+			t.Fatal(err)
+		}
+		if c.HubKeyMismatch() != tc.mismatch {
+			t.Fatalf("mismatch reported %v, want %v", c.HubKeyMismatch(), tc.mismatch)
+		}
 	}
 }
