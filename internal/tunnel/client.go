@@ -107,6 +107,19 @@ func answerError(status int, what string) error {
 	return fmt.Errorf("hub answered HTTP %d to %s", status, what)
 }
 
+// hubError is answerError, noting a rejected secret and a refused copy
+// for Unauthorized and Duplicate.
+func (c *Client) hubError(status int, what string) error {
+	err := answerError(status, what)
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		c.authFail.Store(true)
+	case errors.Is(err, ErrDuplicate):
+		c.dup.Store(true)
+	}
+	return err
+}
+
 // hubClient is the HTTP client of every request to the hub.
 func hubClient(rt http.RoundTripper) *http.Client {
 	return &http.Client{Transport: rt, CheckRedirect: core.RefuseRedirects}
@@ -379,14 +392,8 @@ func (c *Client) pollAnswer(req *http.Request, connected func()) (*Request, erro
 		return nil, nil
 	case http.StatusOK:
 		connected()
-	case http.StatusUnauthorized:
-		c.authFail.Store(true)
-		return nil, ErrUnauthorized
-	case http.StatusConflict:
-		c.dup.Store(true)
-		return nil, ErrDuplicate
 	default:
-		return nil, answerError(resp.StatusCode, "a poll")
+		return nil, c.hubError(resp.StatusCode, "a poll")
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxEnvelope))
 	if err != nil {
@@ -457,11 +464,8 @@ func (c *Client) FetchConfig(ctx context.Context) (RemoteConfig, error) {
 	switch {
 	case status == 0:
 		return out, err
-	case status == http.StatusUnauthorized:
-		c.authFail.Store(true)
-		return out, ErrUnauthorized
 	case status != http.StatusOK:
-		return out, answerError(status, "a config request")
+		return out, c.hubError(status, "a config request")
 	case err != nil:
 		return RemoteConfig{}, errors.New("hub sent a malformed config")
 	}
