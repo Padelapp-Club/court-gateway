@@ -273,22 +273,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		Header: map[string]string{"Content-Type": "application/json"}, Body: body, TimeoutMS: int(timeout / time.Millisecond),
 	}
 	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, timeout+5*time.Second)
-	switch {
-	case errors.Is(err, ErrOffline):
-		w.Header().Set("Retry-After", "60")
-		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_OFFLINE", "the installation's gateway is not connected")
-		return
-	case errors.Is(err, ErrBusy):
-		w.Header().Set("Retry-After", "5")
-		core.WriteError(w, r, http.StatusServiceUnavailable, "GATEWAY_BUSY", "the gateway is busy with other requests, retry")
-		return
-	case errors.Is(err, ErrTimeout):
-		core.WriteError(w, r, http.StatusGatewayTimeout, "GATEWAY_TIMEOUT", "the gateway did not answer in time")
-		return
-	case errors.Is(err, ErrReplaced):
-		core.WriteError(w, r, http.StatusBadGateway, "OUTCOME_UNKNOWN", "outcome unknown after gateway replacement")
-		return
-	case err != nil:
+	if writeBrokerError(w, r, err, "GATEWAY", "the installation's gateway") {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

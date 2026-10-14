@@ -439,23 +439,8 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
-	switch {
-	case errors.Is(err, ErrOffline):
-		w.Header().Set("Retry-After", "60")
-		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_OFFLINE", "the club's gateway is not connected")
+	if writeBrokerError(w, r, err, "CLUB", "the club's gateway") {
 		return
-	case errors.Is(err, ErrBusy):
-		w.Header().Set("Retry-After", "5")
-		core.WriteError(w, r, http.StatusServiceUnavailable, "CLUB_BUSY", "the club's gateway is busy with other requests, retry")
-		return
-	case errors.Is(err, ErrTimeout):
-		core.WriteError(w, r, http.StatusGatewayTimeout, "CLUB_TIMEOUT", "the club's gateway did not answer in time")
-		return
-	case errors.Is(err, ErrReplaced):
-		core.WriteError(w, r, http.StatusBadGateway, "OUTCOME_UNKNOWN", "outcome unknown after gateway replacement")
-		return
-	case err != nil:
-		return // the partner went away
 	}
 	for _, h := range tunnel.ResponseHeaders {
 		v := resp.Header[h]
@@ -706,4 +691,25 @@ func Run(ctx context.Context, cfg *Settings, srv *Server, log *slog.Logger) erro
 		}
 		return err
 	}
+}
+
+// writeBrokerError answers a failed Broker.Do with the codes of who
+// (CLUB_OFFLINE, GATEWAY_BUSY, …) and reports whether err was one;
+// nothing is written when the caller went away.
+func writeBrokerError(w http.ResponseWriter, r *http.Request, err error, who, gateway string) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, ErrOffline):
+		w.Header().Set("Retry-After", "60")
+		core.WriteError(w, r, http.StatusServiceUnavailable, who+"_OFFLINE", gateway+" is not connected")
+	case errors.Is(err, ErrBusy):
+		w.Header().Set("Retry-After", "5")
+		core.WriteError(w, r, http.StatusServiceUnavailable, who+"_BUSY", gateway+" is busy with other requests, retry")
+	case errors.Is(err, ErrTimeout):
+		core.WriteError(w, r, http.StatusGatewayTimeout, who+"_TIMEOUT", gateway+" did not answer in time")
+	case errors.Is(err, ErrReplaced):
+		core.WriteError(w, r, http.StatusBadGateway, "OUTCOME_UNKNOWN", "outcome unknown after gateway replacement")
+	}
+	return true
 }
