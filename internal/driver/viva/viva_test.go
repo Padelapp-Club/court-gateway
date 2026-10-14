@@ -709,14 +709,17 @@ func TestQuoteAcrossSkippedMidnight(t *testing.T) {
 
 // A break without a room closes the studio: it occupies every court
 // asked about, also when one court is asked (as every create does), so a
-// booking during it is refused. The break is seeded, not injected: the
+// booking during it is refused; read by its id it is on the first court. The break is seeded, not injected: the
 // stub's list filters by roomId like the CRM may, and the driver asks for
 // that filter on no list: rooms are filtered locally.
 func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 	d := futureMidnight()
 	f := newFixture(t, fixtureOpts{})
 	from, to := d.Add(12*time.Hour), d.Add(13*time.Hour)
-	f.stub.SeedBreak(map[string]any{"timeFrom": from.UTC().Format(time.RFC3339), "timeTo": to.UTC().Format(time.RFC3339), "room": nil, "canceled": false})
+	id := f.stub.SeedBreak(map[string]any{"timeFrom": from.UTC().Format(time.RFC3339), "timeTo": to.UTC().Format(time.RFC3339), "room": nil, "canceled": false})
+	if status, m, raw := call(t, f, http.MethodGet, "/v1/clubs/test-club/bookings/b-"+id, contract.ReadKey, ""); status != http.StatusOK || m["court"] != "court-1" {
+		t.Fatalf("a room-less break read by its id: %d %s, want it on the first court", status, raw)
+	}
 	for _, path := range []string{occupancyPath(from, to), occupancyPath(from, to) + "&court=court-1"} {
 		status, m, raw := call(t, f, http.MethodGet, path, contract.ReadKey, "")
 		if status != http.StatusOK {
