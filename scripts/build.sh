@@ -12,6 +12,10 @@
 #   DEFAULT_HUB_URL   the hub a release connects to unless setup is given
 #                     --hub-url; empty (a self-build): setup needs --hub-url.
 #                     Written to $OUT/hub-url.txt, published with the release
+#   DEFAULT_HUB_KEY   that hub's public signing key (base64, as
+#                     `court-gateway hub key` prints it): setup refuses a hub answering with
+#                     another key. Required with DEFAULT_HUB_URL and only
+#                     with it. Written to $OUT/hub-key.txt, published too
 #   OUT               output directory (default: dist)
 #   TARGETS           space-separated os/arch list (default: all release targets)
 #
@@ -31,13 +35,18 @@ if [ -n "${RELEASE_KEY_FILE:-}" ]; then
 	RELEASE_KEY="$(tr -d ' \n' < "$RELEASE_KEY_FILE")"
 fi
 DEFAULT_HUB_URL="${DEFAULT_HUB_URL:-}"
+DEFAULT_HUB_KEY="${DEFAULT_HUB_KEY:-}"
+if [ -n "$DEFAULT_HUB_URL$DEFAULT_HUB_KEY" ] && { [ -z "$DEFAULT_HUB_URL" ] || [ -z "$DEFAULT_HUB_KEY" ]; }; then
+	echo "build.sh: DEFAULT_HUB_URL and DEFAULT_HUB_KEY go together" >&2
+	exit 2
+fi
 OUT="${OUT:-dist}"
 TARGETS="${TARGETS:-linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64 windows/arm64}"
 
 export CGO_ENABLED=0
 export GOFLAGS=-mod=readonly
 export GOAMD64=v1 GOARM64=v8.0
-LDFLAGS="-s -w -buildid= -X main.version=${VERSION} -X main.releaseKey=${RELEASE_KEY} -X main.defaultHubURL=${DEFAULT_HUB_URL}"
+LDFLAGS="-s -w -buildid= -X main.version=${VERSION} -X main.releaseKey=${RELEASE_KEY} -X main.defaultHubURL=${DEFAULT_HUB_URL} -X main.defaultHubKey=${DEFAULT_HUB_KEY}"
 
 mkdir -p "$OUT"
 echo "go: $(go version)"
@@ -59,5 +68,6 @@ done
 )
 if [ -n "$DEFAULT_HUB_URL" ]; then
 	printf '%s\n' "$DEFAULT_HUB_URL" > "$OUT/hub-url.txt"
+	printf '%s\n' "$DEFAULT_HUB_KEY" > "$OUT/hub-key.txt"
 fi
 cat "$OUT/SHA256SUMS"

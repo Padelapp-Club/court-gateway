@@ -50,6 +50,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	// secret. The environment is read after parsing.
 	fs.StringVar(&in.HubURL, "hub-url", "", "hub address (env GATEWAY_HUB_URL)")
 	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "trust only this CA certificate for the hub (a self-hosted hub, or pinning)")
+	fs.StringVar(&in.HubKeyFingerprint, "hub-key-fingerprint", "", "fingerprint of the hub's key, given with the join code (env GATEWAY_HUB_KEY_FINGERPRINT); a release's own hub needs none")
 	fs.StringVar(&in.JoinCode, "join-code", "", "one-time join code (env GATEWAY_JOIN_CODE)")
 	fs.StringVar(&in.CRMType, "crm", "", "CRM type: viva (default) or demo")
 	fs.StringVar(&in.Username, "crm-username", "", "CRM administrator login (env CRM_USERNAME)")
@@ -59,6 +60,8 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		return 2
 	}
 	in.HubURL = cmp.Or(in.HubURL, getenv("GATEWAY_HUB_URL"), defaultHubURL)
+	in.HubKeyFingerprint = strings.TrimSpace(cmp.Or(in.HubKeyFingerprint, getenv("GATEWAY_HUB_KEY_FINGERPRINT")))
+	in.HubKey = embeddedHubKey(in.HubURL)
 	in.Username = cmp.Or(in.Username, getenv("CRM_USERNAME"))
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
@@ -181,6 +184,14 @@ func passwordSetHint(goos string, exists func(string) bool, home string) string 
 	return "Пароль CRM проверен и записан в .env. Служба увидит его после перезапуска: " + restartHint(goos, exists, home)
 }
 
+// embeddedHubKey is the hub key a release embeds, for its own hub only.
+func embeddedHubKey(hubURL string) string {
+	if defaultHubKey == "" || strings.TrimRight(hubURL, "/") != strings.TrimRight(defaultHubURL, "/") {
+		return ""
+	}
+	return defaultHubKey
+}
+
 func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 	line := func(q, def string) (string, error) {
 		if def != "" {
@@ -217,6 +228,12 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 	fmt.Fprintln(w, "Клубы, корты и часы работы здесь не задаются: их подключит оператор на хабе.")
 	if in.HubURL == "" {
 		if in.HubURL, err = line("Адрес хаба (пришёл вместе с кодом подключения)", ""); err != nil {
+			return err
+		}
+		in.HubKey = embeddedHubKey(in.HubURL)
+	}
+	if in.HubKey == "" && in.HubKeyFingerprint == "" {
+		if in.HubKeyFingerprint, err = line("Отпечаток ключа хаба (пришёл вместе с кодом подключения)", ""); err != nil {
 			return err
 		}
 	}

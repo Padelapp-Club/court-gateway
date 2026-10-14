@@ -311,6 +311,10 @@ func TestOperatorJoinCodes(t *testing.T) {
 	if err != nil || rr.Installation != "inst-1" || rr.Name != "Сеть Один" {
 		t.Fatalf("register: %+v %v", rr, err)
 	}
+	// the code comes with the fingerprint of the key the gateway will pin
+	if key, _ := core.ParseHubKey(rr.HubKey); jc.HubKeyFingerprint == "" || jc.HubKeyFingerprint != core.HubKeyFingerprint(key) {
+		t.Fatalf("fingerprint %q of key %s", jc.HubKeyFingerprint, rr.HubKey)
+	}
 	if _, err := tunnel.Register(ctx, h.Transport(), h.URL(), jc.Code, ""); !errors.Is(err, tunnel.ErrJoinCodeRejected) {
 		t.Fatalf("second use: %v", err)
 	}

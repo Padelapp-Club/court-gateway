@@ -33,7 +33,8 @@ func TestHubJoinCodePrintsPublicURLWithPath(t *testing.T) {
 	printed := out.String()
 	for _, want := range []string{
 		"Адрес хаба: https://hub.example.test/gateway-hub\n",
-		"--hub-url https://hub.example.test/gateway-hub\n",
+		"--hub-url https://hub.example.test/gateway-hub --hub-key-fingerprint ",
+		"Отпечаток ключа хаба: ",
 	} {
 		if !strings.Contains(printed, want) {
 			t.Fatalf("missing %q in:\n%s", want, printed)

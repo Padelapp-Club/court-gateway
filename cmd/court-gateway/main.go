@@ -24,7 +24,7 @@ import (
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.releaseKey=...
-// -X main.defaultHubURL=..." (scripts/build.sh).
+// -X main.defaultHubURL=... -X main.defaultHubKey=..." (scripts/build.sh).
 var (
 	version = "dev"
 	// releaseKey is the base64 ed25519 public key of release manifests.
@@ -33,6 +33,10 @@ var (
 	// defaultHubURL is the hub setup connects to when --hub-url is not
 	// given. Releases embed it; a self-built binary needs --hub-url.
 	defaultHubURL = ""
+	// defaultHubKey is the public signing key (base64) of that hub: setup
+	// refuses a registration answer with another key. Without it setup
+	// needs the key's fingerprint from the operator.
+	defaultHubKey = ""
 )
 
 // exitRestart asks the service manager to start the binary again (used
@@ -66,6 +70,7 @@ const usage = `court-gateway — партнёрский API клуба пове�
   hub                        запустить хаб (-config hub.yaml)
   hub join-code create       выдать одноразовый код подключения установки (--installation id --name "Название")
   hub gateway revoke         отозвать подключение установки (--installation id)
+  hub key                    показать открытый ключ хаба и его отпечаток
 
 Общий параметр:
   -config путь     gateway.yaml (по умолчанию gateway.yaml или $GATEWAY_CONFIG)

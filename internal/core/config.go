@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -472,6 +474,29 @@ func ParseHubKey(s string) (ed25519.PublicKey, error) {
 		return nil, errors.New("not an ed25519 public key")
 	}
 	return ed25519.PublicKey(b), nil
+}
+
+// HubKeyFingerprint is how the hub's key is checked out of band (the
+// operator's admin panel shows it with the join code): the first 16 bytes
+// of the key's SHA-256 in base32, in groups of four.
+func HubKeyFingerprint(k ed25519.PublicKey) string {
+	sum := sha256.Sum256(k)
+	s := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:16])
+	var groups []string
+	for ; len(s) > 4; s = s[4:] {
+		groups = append(groups, s[:4])
+	}
+	return strings.Join(append(groups, s), "-")
+}
+
+// NormalizeFingerprint upper-cases a typed fingerprint and drops the
+// dashes and spaces; "" when it is not a fingerprint's 26 base32 letters.
+func NormalizeFingerprint(s string) string {
+	s = strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(s))
+	if len(s) != 26 || strings.Trim(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") != "" {
+		return ""
+	}
+	return s
 }
 
 // CheckHTTPSURL accepts https URLs, and plain http only for loopback hosts

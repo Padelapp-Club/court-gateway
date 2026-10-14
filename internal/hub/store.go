@@ -206,6 +206,19 @@ func loadSigningKey(dir string) (ed25519.PrivateKey, error) {
 // HubKey is the public half of the hub's signing key.
 func (s *Store) HubKey() ed25519.PublicKey { return s.key.Public().(ed25519.PublicKey) }
 
+// PublicKey reads the public half of the signing key kept in dir, making
+// the key as the hub's first start would (for the command line).
+func PublicKey(dir string) (ed25519.PublicKey, error) {
+	if err := ensureDirs(dir); err != nil {
+		return nil, err
+	}
+	k, err := loadSigningKey(dir)
+	if err != nil {
+		return nil, err
+	}
+	return k.Public().(ed25519.PublicKey), nil
+}
+
 // joinAlphabet is Crockford's base32: no I, L, O, U, so a code read aloud
 // or copied by hand survives.
 const joinAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

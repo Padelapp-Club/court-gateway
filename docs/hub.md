@@ -25,7 +25,10 @@
 - **Доверие.** Хаб узнаёт шлюз по его секрету (`Authorization: Bearer`), шлюз хаб — по
   TLS-сертификату и, главное, по **подписи**: у хаба свой ключ ed25519 (`state_dir/hub-signing.key`,
   создаётся при первом запуске и хаб не покидает). Открытую половину хаб отдаёт в ответе на
-  регистрацию, и `setup` записывает её в `gateway.yaml` (`hub.key`) — клубу ничего делать не нужно.
+  регистрацию, `setup` сверяет её независимо от TLS — с ключом, встроенным в выпуск для его хаба
+  (`DEFAULT_HUB_KEY`), а у самосборки или другого хаба — с отпечатком, который оператор выдаёт
+  вместе с кодом (`hub_key_fingerprint`, `--hub-key-fingerprint`), — и записывает в `gateway.yaml`
+  (`hub.key`); не совпало — `HUB_KEY_MISMATCH`, ничего не записано (код израсходован).
   Каждый запрос через туннель и каждую конфигурацию клубов хаб подписывает: подпись покрывает все
   поля запроса (метод, путь, запрос, заголовки, SHA-256 тела, партнёра и его права, таймаут),
   установку, регистрацию (новый код подключения её меняет) и срок — 60 секунд. Шлюз проверяет
@@ -35,12 +38,14 @@
   **Что это значит.** Прокси с проверкой TLS, которому доверяет компьютер клуба (корпоративный),
   видит трафик и секрет шлюза. С секретом он может выдавать себя за шлюз перед хабом (забирать
   запросы партнёров, слать сигналы и ответы), но не может заставить шлюз выполнить запрос к CRM:
-  подписать его может только хаб. `hub.ca_file` по-прежнему ограничивает доверие одним центром
+  подписать его может только хаб, и это верно с самой установки — подменённый при регистрации ключ
+  не сойдётся со встроенным или с отпечатком. `hub.ca_file` по-прежнему ограничивает доверие одним центром
   сертификации (для хаба со своим центром). Перенаправлениям (3xx) шлюз не следует ни к хабу, ни
   к CRM; логин и адреса CRM с хаба не меняются.
   **Смена ключа хаба** (утечка или потеря `state_dir`): остановить хаб, убрать `hub-signing.key`
-  (при запуске появится новый), выдать каждой установке новый код подключения — `setup --force`
-  запишет новый ключ. До этого шлюзы отказывают хабу (`SIGNATURE_REJECTED`).
+  (при запуске появится новый), выдать каждой установке новый код подключения с новым отпечатком —
+  `setup --force` сверит и запишет новый ключ; выпускам со встроенным ключом нужна новая сборка
+  (`DEFAULT_HUB_KEY`). До этого шлюзы отказывают хабу (`SIGNATURE_REJECTED`).
 - **Конфигурация клубов.** Номер её версии хаб сообщает в каждом ответе; заметив новую, шлюз
   забирает её, проверяет каждый клуб драйвером и по самой CRM (для Viva: студия есть в учётной
   записи, комнаты — её) и подменяет набор
@@ -153,7 +158,8 @@ curl -s -H "$AUTH" -X POST $H/hub/installations \
 
 # 2. код подключения — его клуб вводит при установке (покажите его в админ-панели)
 curl -s -H "$AUTH" -X POST $H/hub/installations/my-net/join-codes -d '{"ttl": "24h"}'
-# 201 {"code":"ABCD-EFGH-JKMN-PQRS","installation_id":"my-net","expires_at":"…"}
+# 201 {"code":"ABCD-EFGH-JKMN-PQRS","installation_id":"my-net","expires_at":"…",
+#      "hub_key_fingerprint":"ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ"} — отпечаток показать вместе с кодом
 
 # 3. черновик клуба из CRM (шлюз установки должен быть на связи); ничего не сохраняет
 curl -s -H "$AUTH" -X POST $H/hub/installations/my-net/discover -d '{}'
@@ -179,7 +185,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `POST /hub/installations` | `{"installation_id", "name"}` | `201` установка; `409 INSTALLATION_EXISTS` |
 | `GET /hub/installations/{id}` | — | `200 {"installation_id", "name", "created_at", "config_version", "clubs": [клуб…], "gateway": строка /hub/status или null}` |
 | `DELETE /hub/installations/{id}` | — | `204`; шлюз получает `401` при следующем запросе, неиспользованные коды гаснут |
-| `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at"}` |
+| `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at", "hub_key_fingerprint"}` |
 | `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки |
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
 | `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN` |
@@ -225,13 +231,15 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 ```sh
 court-gateway hub join-code create -config hub.yaml --installation my-net --name "Моя сеть" [--ttl 24h]
 court-gateway hub gateway revoke -config hub.yaml --installation my-net
+court-gateway hub key -config hub.yaml
 ```
 
-`join-code create` печатает код и адрес хаба (`public_url`); установка, которой хаб ещё не знает,
+`join-code create` печатает код, отпечаток ключа хаба и адрес хаба (`public_url`); установка, которой хаб ещё не знает,
 создаётся при использовании кода. Команду можно выполнять на работающем хабе (в Docker: `docker exec
 <контейнер> /court-gateway hub join-code create …`): коды читаются с диска в момент обмена.
 `gateway revoke` отзывает секрет шлюза (работающий хаб перестаёт его принимать при следующем
-запросе), клубы установки остаются.
+запросе), клубы установки остаются. `hub key` печатает открытый ключ хаба (`DEFAULT_HUB_KEY`
+сборки выпуска) и его отпечаток.
 
 ## Ключи партнёров
 
@@ -427,19 +435,22 @@ curl -s -H "Authorization: Bearer $HUB_OPERATOR_KEY" https://hub.example.test/hu
 
 Автообновление доверяет только манифесту, подписанному ключом выпусков (ed25519). Открытый ключ
 вшивается в официальные сборки (`-X main.releaseKey=…`), как и адрес хаба, к которому `setup`
-подключает без `--hub-url` (`-X main.defaultHubURL=…`). **В репозитории ключа нет:** сборка
+подключает без `--hub-url` (`-X main.defaultHubURL=…`), и ключ этого хаба
+(`-X main.defaultHubKey=…`, `court-gateway hub key`). **В репозитории ключа нет:** сборка
 выпуска получает его явно — `RELEASE_KEY` или файлом `RELEASE_KEY_FILE` вне дерева исходников
-(`build.sh` откажется от файла внутри дерева), адрес хаба — `DEFAULT_HUB_URL`. Закрытый ключ
+(`build.sh` откажется от файла внутри дерева), адрес и ключ хаба — `DEFAULT_HUB_URL` и
+`DEFAULT_HUB_KEY` (только вместе). Закрытый ключ
 хранится вне репозитория и никогда не коммитится. Как собрать выпуск самому и сверить суммы —
 [README](../README.md#собрать-самому-и-сверить-с-выпуском).
 
 ```sh
 go run ./tools/release keygen -out ~/keys/release.key > ~/keys/release.pub   # один раз
-RELEASE_KEY_FILE=~/keys/release.pub DEFAULT_HUB_URL=https://hub.example.test VERSION=0.2.0 scripts/build.sh
+RELEASE_KEY_FILE=~/keys/release.pub DEFAULT_HUB_URL=https://hub.example.test \
+  DEFAULT_HUB_KEY="$(court-gateway hub key -config hub.yaml | sed -n 's/^key: //p')" VERSION=0.2.0 scripts/build.sh
 go run ./tools/release manifest -version 0.2.0 -dist dist -key ~/keys/release.key \
   -base-url https://github.com/Padelapp-Club/court-gateway/releases/download/v0.2.0
-# загрузить в выпуск: бинарники, SHA256SUMS, manifest.json, manifest.json.sig, release.pub
-# и dist/hub-url.txt — с ним и release.pub любой пересоберёт выпуск побайтно
+# загрузить в выпуск: бинарники, SHA256SUMS, manifest.json, manifest.json.sig, release.pub,
+# dist/hub-url.txt и dist/hub-key.txt — с ними любой пересоберёт выпуск побайтно
 ```
 
 Шлюз ищет `https://github.com/Padelapp-Club/court-gateway/releases/latest/download/manifest.json`

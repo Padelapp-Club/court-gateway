@@ -18,7 +18,7 @@ func TestTerminalPasswordIsNotTrimmed(t *testing.T) {
 	answers := []string{" synthetic password ", " AAAA-AAAA-AAAA-AAAA "}
 	isTerminal = func() bool { return true }
 	readSecret = func() (string, error) { a := answers[0]; answers = answers[1:]; return a, nil }
-	in := setup.Input{HubURL: "https://hub.example.test", CRMType: "viva", Username: "user@example.test"}
+	in := setup.Input{HubURL: "https://hub.example.test", CRMType: "viva", Username: "user@example.test", HubKeyFingerprint: "AAAA"}
 	if err := prompt(&in, bufio.NewReader(strings.NewReader("")), io.Discard); err != nil {
 		t.Fatal(err)
 	}

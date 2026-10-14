@@ -10,7 +10,7 @@
 // CA of hub.ca_file) and follows no redirect; the hub authenticates the
 // gateway by its secret (Bearer). What the gateway acts on — requests and
 // club configurations — is signed by the hub's own key, pinned at
-// registration (sign.go).
+// registration once checked out of band (sign.go).
 package tunnel
 
 import (

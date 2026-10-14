@@ -82,11 +82,14 @@ func newStack(t *testing.T, hubYAML ...string) *stack {
 func (s *stack) setupArgs(extra ...string) []string {
 	return append([]string{"setup", "--non-interactive", "--json",
 		"--config", filepath.Join(s.dir, "gateway.yaml"),
-		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
+		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile, "--hub-key-fingerprint", s.fingerprint(),
 		"--crm-username", crmUser,
 		"--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1",
 	}, extra...)
 }
+
+// fingerprint is the test hub's key fingerprint, as the operator gives it.
+func (s *stack) fingerprint() string { return core.HubKeyFingerprint(s.hub.Server().Store().HubKey()) }
 
 func decodeSetup(t *testing.T, out []byte) setup.Result {
 	t.Helper()
@@ -200,8 +203,10 @@ func TestSetupThenInstallService(t *testing.T) {
 	}
 }
 
-// A release knows its hub, so the human gives the agent only the Viva login,
-// the password and the join code; a self-built binary needs --hub-url.
+// A release knows its hub and that hub's key, so the human gives the agent
+// only the Viva login, the password and the join code; a self-built binary
+// needs --hub-url and the key's fingerprint. A hub answering with another
+// key than the embedded one is refused.
 func TestSetupUsesTheEmbeddedHub(t *testing.T) {
 	s := newStack(t)
 	args := []string{"setup", "--non-interactive", "--json", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-ca-file", s.hub.CAFile,
@@ -211,8 +216,14 @@ func TestSetupUsesTheEmbeddedHub(t *testing.T) {
 	if rc := run(args, &out, io.Discard, getenv); rc != 1 || !strings.Contains(decodeSetup(t, out.Bytes()).Error.Message, "--hub-url") {
 		t.Fatalf("self-built, no --hub-url: rc=%d %s", rc, out.String())
 	}
-	defaultHubURL = s.hub.URL()
-	defer func() { defaultHubURL = "" }()
+	defaultHubURL, defaultHubKey = s.hub.URL(), core.EncodeHubKey(make([]byte, 32))
+	defer func() { defaultHubURL, defaultHubKey = "", "" }()
+	out.Reset()
+	if rc := run(args, &out, io.Discard, getenv); rc != 1 || decodeSetup(t, out.Bytes()).Error.Code != "HUB_KEY_MISMATCH" {
+		t.Fatalf("release whose hub answers with another key: rc=%d %s", rc, out.String())
+	}
+	defaultHubKey = core.EncodeHubKey(s.hub.Server().Store().HubKey())
+	getenv = env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб")}.get
 	out.Reset()
 	if rc := run(args, &out, io.Discard, getenv); rc != 0 || decodeSetup(t, out.Bytes()).Hub != s.hub.URL() {
 		t.Fatalf("release with an embedded hub: rc=%d %s", rc, out.String())
@@ -252,6 +263,7 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	stdin = strings.NewReader(answers)
 	var out, errb bytes.Buffer
 	args := []string{"setup", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
+		"--hub-key-fingerprint", s.fingerprint(),
 		"--crm-username", crmUser, "--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
 	if rc := run(args, &out, &errb, env{}.get); rc != 0 {
 		t.Fatalf("interactive: %d\n%s\n%s", rc, out.String(), errb.String())
@@ -278,7 +290,7 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	args = []string{"setup", "--non-interactive", "--json", "--password-stdin", "--config", filepath.Join(dir2, "gateway.yaml"),
 		"--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile, "--crm-username", crmUser,
 		"--crm-auth-url", s.crm.URL + "/token", "--crm-api-url", s.crm.URL + "/api/v1"}
-	if rc := run(args, &out, &errb, env{"GATEWAY_JOIN_CODE": s.hub.JoinCode("club-three", "Клуб Три")}.get); rc != 0 {
+	if rc := run(args, &out, &errb, env{"GATEWAY_JOIN_CODE": s.hub.JoinCode("club-three", "Клуб Три"), "GATEWAY_HUB_KEY_FINGERPRINT": s.fingerprint()}.get); rc != 0 {
 		t.Fatalf("password-stdin: %d %s", rc, out.String())
 	}
 }

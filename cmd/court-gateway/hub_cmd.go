@@ -27,8 +27,11 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 	if len(args) >= 2 && args[0] == "gateway" && args[1] == "revoke" {
 		return cmdRevoke(args[2:], stdout, stderr, getenv, defaultConfig)
 	}
+	if len(args) >= 1 && args[0] == "key" {
+		return cmdHubKey(args[1:], stdout, stderr, getenv, defaultConfig)
+	}
 	if len(args) > 0 && (len(args[0]) == 0 || args[0][0] != '-') {
-		fmt.Fprintf(stderr, "hub: неизвестная команда %q (есть: hub, hub join-code create, hub gateway revoke)\n", args[0])
+		fmt.Fprintf(stderr, "hub: неизвестная команда %q (есть: hub, hub join-code create, hub gateway revoke, hub key)\n", args[0])
 		return 2
 	}
 	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
@@ -100,13 +103,41 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
 		return 2
 	}
+	key, err := hub.PublicKey(s.StateDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+		return 2
+	}
+	fp := core.HubKeyFingerprint(key)
 	fmt.Fprintf(stdout, "Код подключения установки %s: %s\n", jc.Installation, jc.Code)
 	fmt.Fprintf(stdout, "Действует до %s UTC, один раз.\n", jc.Expires.UTC().Format("2006-01-02 15:04"))
+	fmt.Fprintf(stdout, "Отпечаток ключа хаба: %s\n", fp)
 	if s.PublicURL != "" {
 		fmt.Fprintf(stdout, "Адрес хаба: %s\n", s.PublicURL)
-		fmt.Fprintf(stdout, "Команда для клуба: court-gateway setup --hub-url %s\n", s.PublicURL)
+		fmt.Fprintf(stdout, "Команда для клуба: court-gateway setup --hub-url %s --hub-key-fingerprint %s\n", s.PublicURL, fp)
 	}
 	return 0
+}
+
+// cmdHubKey prints the hub's public signing key (DEFAULT_HUB_KEY of a
+// release build) and its fingerprint.
+func cmdHubKey(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
+	fs := flag.NewFlagSet("hub key", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", defaultConfig, "hub config file")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	s, err := loadHub(*cfgPath, getenv)
+	if err == nil {
+		var key []byte
+		if key, err = hub.PublicKey(s.StateDir); err == nil {
+			fmt.Fprintf(stdout, "key: %s\nfingerprint: %s\n", core.EncodeHubKey(key), core.HubKeyFingerprint(key))
+			return 0
+		}
+	}
+	fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+	return 2
 }
 
 func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {

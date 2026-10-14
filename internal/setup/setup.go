@@ -8,6 +8,7 @@ package setup
 import (
 	"cmp"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -30,11 +31,18 @@ type Input struct {
 	HubURL     string
 	HubCAFile  string
 	JoinCode   string
-	CRMType    string // viva (default) or demo
-	Username   string
-	Password   string
-	AuthURL    string // optional CRM endpoint overrides (test doubles)
-	APIURL     string
+	// HubKey is the hub's public key embedded in a release for its own hub
+	// (base64), HubKeyFingerprint the key's fingerprint given by the
+	// operator (core.HubKeyFingerprint): one of them is required, and the
+	// key the hub answers with must match every one given. So the key the
+	// gateway pins is authenticated apart from the TLS of the enrollment.
+	HubKey            string
+	HubKeyFingerprint string
+	CRMType           string // viva (default) or demo
+	Username          string
+	Password          string
+	AuthURL           string // optional CRM endpoint overrides (test doubles)
+	APIURL            string
 }
 
 // Deps are injectable for tests.
@@ -97,6 +105,9 @@ func (in Input) Missing() []string {
 	if in.JoinCode == "" {
 		out = append(out, "--join-code (или GATEWAY_JOIN_CODE)")
 	}
+	if in.HubKey == "" && in.HubKeyFingerprint == "" {
+		out = append(out, "--hub-key-fingerprint (или GATEWAY_HUB_KEY_FINGERPRINT; отпечаток ключа хаба приходит вместе с кодом подключения)")
+	}
 	if in.crmType() == "viva" {
 		if in.Username == "" {
 			out = append(out, "--crm-username")
@@ -134,6 +145,17 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	if err := core.CheckHTTPSURL("--hub-url", in.HubURL); err != nil {
 		return fail(problem("INVALID_INPUT", "%s", err.Error()))
+	}
+	var wantKey ed25519.PublicKey
+	if in.HubKey != "" {
+		var err error
+		if wantKey, err = core.ParseHubKey(in.HubKey); err != nil {
+			return fail(problem("INVALID_INPUT", "встроенный в программу ключ хаба повреждён — скачайте выпуск заново"))
+		}
+	}
+	wantPrint := core.NormalizeFingerprint(in.HubKeyFingerprint)
+	if in.HubKeyFingerprint != "" && wantPrint == "" {
+		return fail(problem("INVALID_INPUT", "--hub-key-fingerprint: ожидается отпечаток вида XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX (буквы A–Z и цифры 2–7)"))
 	}
 	factory, ok := deps.Accounts[in.crmType()]
 	if !ok {
@@ -220,7 +242,15 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		return fail(problem("HUB_UNREACHABLE", "хаб недоступен: %v", err))
 	}
 
-	// 3. write; the hub's key is pinned here, and again at every new join code
+	// 3. the hub's key, checked out of band: the embedded key or the
+	// operator's fingerprint (an interceptor of the TLS above could have
+	// put in its own); then write, pinning it here and again at every new
+	// join code
+	got, _ := core.ParseHubKey(reg.HubKey) // Register refuses an invalid one
+	if (wantKey != nil && !got.Equal(wantKey)) || (wantPrint != "" && core.NormalizeFingerprint(core.HubKeyFingerprint(got)) != wantPrint) {
+		return fail(problem("HUB_KEY_MISMATCH", "хаб ответил ключом %s, а ожидался другой (встроенный в выпуск или отпечаток от оператора): соединение с хабом перехвачено или отпечаток неверный — ничего не записано; код подключения израсходован, попросите у оператора новый и сверьте отпечаток",
+			core.HubKeyFingerprint(got)))
+	}
 	d.HubKey = reg.HubKey
 	if p := validate(d, in.Password, reg.Secret); p != nil {
 		return fail(p)

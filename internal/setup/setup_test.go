@@ -60,7 +60,7 @@ func TestRenderedConfigHasNoClub(t *testing.T) {
 
 func TestMissingInputs(t *testing.T) {
 	m := strings.Join(Input{}.Missing(), " ")
-	for _, w := range []string{"--hub-url", "--join-code", "--crm-username", "CRM_PASSWORD"} {
+	for _, w := range []string{"--hub-url", "--join-code", "--hub-key-fingerprint", "--crm-username", "CRM_PASSWORD"} {
 		if !strings.Contains(m, w) {
 			t.Fatalf("missing list %q lacks %q", m, w)
 		}
@@ -68,7 +68,7 @@ func TestMissingInputs(t *testing.T) {
 	if strings.Contains(m, "studio") {
 		t.Fatalf("setup asks for a studio: %q", m)
 	}
-	demo := Input{CRMType: "demo", HubURL: "https://x", JoinCode: "y"}
+	demo := Input{CRMType: "demo", HubURL: "https://x", JoinCode: "y", HubKeyFingerprint: "z"}
 	if m := demo.Missing(); len(m) != 0 {
 		t.Fatalf("demo needs no CRM login: %v", m)
 	}
@@ -83,7 +83,7 @@ func (s statusTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // A hub that limits failed registrations answers 429: setup says to try
 // again later instead of reporting the hub as unreachable.
 func TestSetupRateLimitedByTheHub(t *testing.T) {
-	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
+	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: printOf(testHubKey)}
 	res, err := Run(context.Background(), in, Deps{HubTransport: statusTransport(http.StatusTooManyRequests)})
 	if err == nil || res.Error == nil || res.Error.Code != "HUB_RATE_LIMITED" || !strings.Contains(res.Error.Message, "повторите позже") {
 		t.Fatalf("result: %+v %v", res.Error, err)
@@ -114,7 +114,7 @@ func (c countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	env := filepath.Join(dir, core.EnvFileName)
-	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
+	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: printOf(testHubKey)}
 	var events []string
 	hubCalls := 0
 	deps := Deps{HubTransport: countingTransport{&hubCalls}, ProtectSecrets: func(p string) error {
@@ -137,7 +137,7 @@ func TestSetupProtectsSecretsFirstAndFailsClosed(t *testing.T) {
 
 	for _, failOn := range []string{"folder", core.EnvFileName} {
 		fresh := t.TempDir()
-		in := Input{ConfigPath: filepath.Join(fresh, "gateway.yaml"), HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo"}
+		in := Input{ConfigPath: filepath.Join(fresh, "gateway.yaml"), HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo", HubKeyFingerprint: in.HubKeyFingerprint}
 		hubCalls = 0
 		deps.ProtectSecrets = func(p string) error {
 			if (filepath.Base(p) == core.EnvFileName) == (failOn == core.EnvFileName) {
@@ -166,14 +166,14 @@ func (k keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: r}, nil
 }
 
-// setup pins the hub's signing key from the registration answer, with no
-// step for the club, and every new join code pins it again; a hub that
-// sends no key is refused.
+// setup pins the hub's signing key from the registration answer, and
+// every new join code pins it again; a hub that sends no key is refused.
 func TestSetupPinsTheHubKey(t *testing.T) {
 	dir := t.TempDir()
 	in := Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo"}
 	other := core.EncodeHubKey(make([]byte, 32))
 	for _, key := range []string{testHubKey, other} {
+		in.HubKeyFingerprint = printOf(key)
 		if _, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(key)}); err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +184,7 @@ func TestSetupPinsTheHubKey(t *testing.T) {
 		in.Force = true
 	}
 	fresh := filepath.Join(t.TempDir(), "gateway.yaml")
-	res, err := Run(context.Background(), Input{ConfigPath: fresh, HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo"}, Deps{HubTransport: keyTransport("")})
+	res, err := Run(context.Background(), Input{ConfigPath: fresh, HubURL: in.HubURL, JoinCode: in.JoinCode, CRMType: "demo", HubKeyFingerprint: in.HubKeyFingerprint}, Deps{HubTransport: keyTransport("")})
 	if err == nil || res.Error.Code != "HUB_UNREACHABLE" {
 		t.Fatalf("a hub without a key: %+v %v", res.Error, err)
 	}
@@ -202,7 +202,7 @@ func TestSetupRefusesURLCredentials(t *testing.T) {
 		{HubURL: "https://hub.example.test", Username: "admin@example.test", Password: "pw", AuthURL: "https://u:" + marker + "@crm.example.test/token"},
 	} {
 		dir := t.TempDir()
-		in.ConfigPath, in.JoinCode = filepath.Join(dir, "gateway.yaml"), "AAAA-AAAA-AAAA-AAAA"
+		in.ConfigPath, in.JoinCode, in.HubKeyFingerprint = filepath.Join(dir, "gateway.yaml"), "AAAA-AAAA-AAAA-AAAA", printOf(testHubKey)
 		calls := 0
 		res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{&calls}})
 		encoded, _ := json.Marshal(res)
@@ -212,5 +212,55 @@ func TestSetupRefusesURLCredentials(t *testing.T) {
 		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 			t.Fatalf("files written: %v", entries)
 		}
+	}
+}
+
+func printOf(b64 string) string {
+	k, err := core.ParseHubKey(b64)
+	if err != nil {
+		panic(err)
+	}
+	return core.HubKeyFingerprint(k)
+}
+
+// The key a hub answers with at registration is checked out of band
+// before it is pinned: against the key a release embeds for its own hub,
+// or against the fingerprint the operator gives with the join code (a
+// self-build, a custom hub), also at re-enrollment (--force). A TLS
+// interceptor substituting its own key is refused with HUB_KEY_MISMATCH
+// and nothing is written; a malformed fingerprint is refused before the
+// join code is spent.
+func TestSetupAuthenticatesTheHubKey(t *testing.T) {
+	forged := core.EncodeHubKey(make([]byte, 32)) // what an interceptor would put in
+	for name, in := range map[string]Input{
+		"embedded":    {HubKey: testHubKey},
+		"fingerprint": {HubKeyFingerprint: strings.ToLower(printOf(testHubKey))}, // as typed: case and dashes do not matter
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			in.ConfigPath, in.HubURL, in.JoinCode, in.CRMType = filepath.Join(dir, "gateway.yaml"), "https://hub.example.test", "AAAA-AAAA-AAAA-AAAA", "demo"
+			res, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(forged)})
+			if err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
+				t.Fatalf("a substituted key: %+v %v", res.Error, err)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Fatalf("files written: %v", entries)
+			}
+			if _, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(testHubKey)}); err != nil {
+				t.Fatalf("the hub's own key: %v", err)
+			}
+			in.Force = true // re-enrollment checks again
+			if res, err := Run(context.Background(), in, Deps{HubTransport: keyTransport(forged)}); err == nil || res.Error.Code != "HUB_KEY_MISMATCH" {
+				t.Fatalf("a substituted key at --force: %+v %v", res.Error, err)
+			}
+			if s, err := core.LoadFile(in.ConfigPath, envFor("", "cgs_x")); err != nil || core.EncodeHubKey(s.Hub.Key) != testHubKey {
+				t.Fatalf("pinned key after a refused --force: %v", err)
+			}
+		})
+	}
+	calls := 0
+	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA", CRMType: "demo", HubKeyFingerprint: "NOT-A-FINGERPRINT"}
+	if res, err := Run(context.Background(), in, Deps{HubTransport: countingTransport{&calls}}); err == nil || res.Error.Code != "INVALID_INPUT" || calls != 0 {
+		t.Fatalf("a malformed fingerprint: %+v %v, hub calls %d", res.Error, err, calls)
 	}
 }

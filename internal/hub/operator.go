@@ -29,11 +29,14 @@ type InstallationDTO struct {
 	Gateway *GatewayStatus `json:"gateway"`
 }
 
-// JoinCodeDTO is a freshly created join code, shown once.
+// JoinCodeDTO is a freshly created join code, shown once, with the
+// fingerprint of the hub's key (core.HubKeyFingerprint): setup of a
+// self-built gateway needs it to authenticate the key it pins.
 type JoinCodeDTO struct {
-	Code         string `json:"code"`
-	Installation string `json:"installation_id"`
-	ExpiresAt    string `json:"expires_at"`
+	Code              string `json:"code"`
+	Installation      string `json:"installation_id"`
+	ExpiresAt         string `json:"expires_at"`
+	HubKeyFingerprint string `json:"hub_key_fingerprint"`
 }
 
 // ClubPutDTO answers a club change.
@@ -173,7 +176,8 @@ func (s *Server) handleCreateJoinCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("join code created", "installation", jc.Installation, "expires", ts(jc.Expires))
-	core.WriteJSON(w, http.StatusCreated, JoinCodeDTO{Code: jc.Code, Installation: jc.Installation, ExpiresAt: ts(jc.Expires)})
+	core.WriteJSON(w, http.StatusCreated, JoinCodeDTO{Code: jc.Code, Installation: jc.Installation, ExpiresAt: ts(jc.Expires),
+		HubKeyFingerprint: core.HubKeyFingerprint(s.store.HubKey())})
 }
 
 // PUT /hub/installations/{inst}/clubs/{club} with a core.ClubSpec body.

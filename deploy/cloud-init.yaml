@@ -24,8 +24,9 @@ write_files:
       CRM_USERNAME=''
       CRM_PASSWORD=''
       GATEWAY_JOIN_CODE=''
-      # только для самостоятельно собранной программы:
+      # только для другого хаба, не того, что знает выпуск (оба значения — от оператора):
       GATEWAY_HUB_URL=''
+      GATEWAY_HUB_KEY_FINGERPRINT=''
 
 runcmd:
   - - sh
