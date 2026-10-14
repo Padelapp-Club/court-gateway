@@ -17,6 +17,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/doctor"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
@@ -52,7 +53,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "trust only this CA certificate for the hub (a self-hosted hub, or pinning)")
 	fs.StringVar(&in.HubKeyFingerprint, "hub-key-fingerprint", "", "fingerprint of the hub's key, given with the join code (env GATEWAY_HUB_KEY_FINGERPRINT); a release's own hub needs none")
 	fs.StringVar(&in.JoinCode, "join-code", "", "one-time join code (env GATEWAY_JOIN_CODE)")
-	fs.StringVar(&in.CRMType, "crm", "", "CRM type: viva (default) or demo")
+	fs.StringVar(&in.CRMType, "crm", "viva", "CRM type")
 	fs.StringVar(&in.Username, "crm-username", "", "CRM administrator login (env CRM_USERNAME)")
 	fs.StringVar(&in.AuthURL, "crm-auth-url", "", "CRM login endpoint override (test doubles)")
 	fs.StringVar(&in.APIURL, "crm-api-url", "", "CRM API endpoint override (test doubles)")
@@ -66,9 +67,6 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
 	in.JoinCode = strings.TrimSpace(cmp.Or(in.JoinCode, getenv("GATEWAY_JOIN_CODE")))
-	if *nonInteractive && in.CRMType == "" {
-		in.CRMType = "viva"
-	}
 	in.Password = getenv("CRM_PASSWORD")
 	reader := bufio.NewReader(stdin)
 	if *passwordStdin {
@@ -89,7 +87,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if !*asJSON {
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
-	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets}
+	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets, Accounts: setupAccounts(getenv)}
 	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -201,7 +199,7 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		return strings.TrimRight(s, "\r\n"), nil
 	}
 	var err error
-	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся тип CRM, логин и пароль администратора CRM и код подключения.")
+	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся логин и пароль администратора Viva и код подключения.")
 	fmt.Fprintln(w, "Клубы, корты и часы работы здесь не задаются: их подключит оператор на хабе.")
 	if in.HubURL == "" {
 		if in.HubURL, err = line("Адрес хаба (пришёл вместе с кодом подключения)", ""); err != nil {
@@ -211,11 +209,6 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 	}
 	if in.HubKey == "" && in.HubKeyFingerprint == "" {
 		if in.HubKeyFingerprint, err = line("Отпечаток ключа хаба (пришёл вместе с кодом подключения)", ""); err != nil {
-			return err
-		}
-	}
-	if in.CRMType == "" {
-		if in.CRMType, err = line("Тип CRM (viva или demo)", "viva"); err != nil {
 			return err
 		}
 	}
@@ -238,6 +231,18 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		in.JoinCode = strings.TrimSpace(in.JoinCode)
 	}
 	return nil
+}
+
+// demoCRMEnv=1 lets setup take the demo CRM (--crm demo): for tests and
+// demonstrations, never offered to a club.
+const demoCRMEnv = "GATEWAY_DEMO_CRM"
+
+// setupAccounts are the CRM types setup takes.
+func setupAccounts(getenv func(string) string) map[string]driver.AccountFactory {
+	if getenv(demoCRMEnv) == "1" {
+		return drivers.Accounts
+	}
+	return map[string]driver.AccountFactory{"viva": drivers.Accounts["viva"]}
 }
 
 func printSetup(w io.Writer, r setup.Result) {

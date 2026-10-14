@@ -265,8 +265,8 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	defer func() { stdin = old }()
 	isTerminal = func() bool { return false }
 
-	// CRM type (default), password, join code: nothing about clubs
-	answers := strings.Join([]string{"", crmPass, s.hub.JoinCode("club-two", "Клуб Два")}, "\n") + "\n"
+	// password, join code: nothing about clubs, nor the CRM type
+	answers := strings.Join([]string{crmPass, s.hub.JoinCode("club-two", "Клуб Два")}, "\n") + "\n"
 	stdin = strings.NewReader(answers)
 	var out, errb bytes.Buffer
 	args := []string{"setup", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
@@ -275,7 +275,7 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	if rc := run(args, &out, &errb, env{}.get); rc != 0 {
 		t.Fatalf("interactive: %d\n%s\n%s", rc, out.String(), errb.String())
 	}
-	if !strings.Contains(errb.String(), "Код подключения") || !strings.Contains(errb.String(), "Пароль администратора Viva") || !strings.Contains(errb.String(), "Тип CRM") {
+	if !strings.Contains(errb.String(), "Код подключения") || !strings.Contains(errb.String(), "Пароль администратора Viva") || strings.Contains(errb.String(), "Тип CRM") {
 		t.Fatalf("prompts: %s", errb.String())
 	}
 	for _, q := range []string{"Часовой пояс", "студии", "клуба"} {
@@ -636,6 +636,21 @@ func TestAppliedConfigIsReportedAtOnce(t *testing.T) {
 		h := mon.Health("club-one")
 		return h.ConfigVersion == 1 && strings.Join(h.Clubs, ",") == "club-one"
 	})
+}
+
+// setup takes only Viva: the demo CRM is for tests and demonstrations,
+// behind GATEWAY_DEMO_CRM=1, and is refused before anything is sent.
+func TestSetupTakesOnlyViva(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "gateway.yaml")
+	var out bytes.Buffer
+	rc := run([]string{"setup", "--non-interactive", "--json", "--crm", "demo", "--config", cfg, "--hub-url", "https://hub.invalid",
+		"--hub-key-fingerprint", "AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AA", "--join-code", "AAAA-AAAA-AAAA-AAAA"}, &out, io.Discard, env{}.get)
+	if rc != 1 || !strings.Contains(out.String(), `"INVALID_INPUT"`) || !strings.Contains(out.String(), "demo") {
+		t.Fatalf("setup --crm demo: %d %s", rc, out.String())
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Fatalf("a config was written: %v", err)
+	}
 }
 
 // A state directory the service cannot write is its own reason at the

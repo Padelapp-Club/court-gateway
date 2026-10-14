@@ -39,7 +39,7 @@ type Input struct {
 	// gateway pins is authenticated apart from the TLS of the enrollment.
 	HubKey            string
 	HubKeyFingerprint string
-	CRMType           string // viva (default) or demo
+	CRMType           string // viva (default), or another of Deps.Accounts
 	Username          string
 	Password          string
 	AuthURL           string // optional CRM endpoint overrides (test doubles)
@@ -160,7 +160,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	factory, ok := deps.Accounts[in.crmType()]
 	if !ok {
-		return fail(problem("INVALID_INPUT", "тип CRM «%s» не поддерживается (viva или demo)", in.CRMType))
+		return fail(problem("INVALID_INPUT", "тип CRM «%s» не поддерживается (viva)", in.CRMType))
 	}
 	if in.ConfigPath == "" {
 		in.ConfigPath = "gateway.yaml"
