@@ -217,10 +217,12 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 
 // Admit decides whether gateway process instance may serve registration
 // gen of installation. The first instance is bound to it. Another is
-// refused while the bound one keeps a poll open (Broker.Polling), and
-// takes over as soon as it has none: a process that crashed or lost power
-// has its polls closed or ended. An instance that released itself (it
-// stopped) is not bound again. No instance id survives a restart.
+// refused while the bound one keeps a poll open or runs a call it picked
+// up (Broker.Serving), and takes over as soon as it does neither: a
+// process that crashed or lost power has its polls closed or ended, and
+// its calls end with the time the gateway gives them. An instance that
+// released itself (it stopped) is not bound again. No instance id
+// survives a restart.
 func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 	now := m.now()
 	m.mu.Lock()
@@ -233,7 +235,7 @@ func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 	case instance == h.instance:
 	case instance == h.released:
 		return false
-	case h.instance == "" || m.broker == nil || !m.broker.Polling(installation, h.instance):
+	case h.instance == "" || m.broker == nil || !m.broker.Serving(installation, h.instance):
 		if h.instance != "" {
 			m.log.Warn("another copy of a gateway took over from one that stopped polling", "installation", installation)
 		}

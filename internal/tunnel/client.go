@@ -530,11 +530,7 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 	if len(rq.Body) > MaxRequestBody {
 		return fail(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body is too large")
 	}
-	timeout := min(max(time.Duration(rq.TimeoutMS)*time.Millisecond, time.Second), MaxRequestTimeout)
-	if rq.TimeoutMS <= 0 {
-		timeout = 30 * time.Second
-	}
-	rctx, cancel := context.WithTimeout(ctx, timeout)
+	rctx, cancel := context.WithTimeout(ctx, ExecTimeout(rq.TimeoutMS))
 	defer cancel()
 	if rq.Partner != "" {
 		rctx = auth.WithPartnerName(rctx, rq.Partner)

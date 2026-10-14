@@ -93,3 +93,57 @@ func TestSecondCopyIsRefused(t *testing.T) {
 	third := copyOf("third-copy")
 	testkit.WaitFor(t, "the next copy is served at once", 10*time.Second, third.Client.Connected)
 }
+
+// A busy gateway keeps its place: with one poll (hub.polls: 1), the copy
+// that picked up a slow create and has no poll open while it runs it —
+// longer than the moment between two polls — is still the one served; a
+// second copy is refused until the call is replied to, or until the time
+// the gateway gives the call is up (a copy that died with it).
+func TestBusyGatewayIsNotTakenOver(t *testing.T) {
+	for _, end := range []string{"reply", "deadline"} {
+		t.Run(end, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			clk := newFakeClock()
+			b := hub.NewBroker(time.Minute, clk.Now)
+			m := hub.NewMonitor(nil, b, hub.MonitorConfig{OfflineAfter: 3 * time.Minute, Now: clk.Now})
+			if !m.Admit("installation", 1, "first") {
+				t.Fatal("first refused")
+			}
+			picked := make(chan *tunnel.Request, 1)
+			go func() { picked <- b.Poll(ctx, "installation", 1, hub.ConnMeta{Instance: "first", Polls: 1}) }()
+			testkit.WaitFor(t, "first polls", 5*time.Second, func() bool { return b.Serving("installation", "first") })
+			done := make(chan error, 1)
+			go func() {
+				_, err := b.Do(ctx, "installation", 1, tunnel.Request{ID: "slow-create", TimeoutMS: 20000}, time.Second, time.Minute)
+				done <- err
+			}()
+			if rq := <-picked; rq == nil {
+				t.Fatal("the call was not picked up")
+			}
+			time.Sleep(3200 * time.Millisecond) // past the moment between two polls
+			if m.Admit("installation", 1, "second") {
+				t.Fatal("a second copy was admitted while the first runs a call")
+			}
+			switch end {
+			case "reply":
+				if !b.Reply("installation", tunnel.Response{ID: "slow-create", Status: http.StatusCreated}) {
+					t.Fatal("the reply was refused")
+				}
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+			case "deadline":
+				clk.Advance(19 * time.Second)
+				if m.Admit("installation", 1, "second") {
+					t.Fatal("admitted before the call's time was up")
+				}
+				clk.Advance(time.Second)
+			}
+			if !m.Admit("installation", 1, "second") {
+				t.Fatalf("the second copy was not admitted after the %s", end)
+			}
+		})
+	}
+}

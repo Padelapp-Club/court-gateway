@@ -73,6 +73,15 @@ const (
 	maxEnvelope = MaxResponseBody*4/3 + 64<<10
 )
 
+// ExecTimeout is the time a gateway gives a request whose TimeoutMS is
+// timeoutMS: within [1s, MaxRequestTimeout], 30s when unset.
+func ExecTimeout(timeoutMS int) time.Duration {
+	if timeoutMS <= 0 {
+		return 30 * time.Second
+	}
+	return min(max(time.Duration(timeoutMS)*time.Millisecond, time.Second), MaxRequestTimeout)
+}
+
 // Request is a partner request handed to a gateway in a poll response.
 type Request struct {
 	// ID correlates the reply with the waiting partner request.

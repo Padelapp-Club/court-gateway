@@ -51,6 +51,17 @@ type gwConn struct {
 type instancePolls struct {
 	open    int
 	lastEnd time.Time
+	// calls it picked up and may still be running: id -> the end of the
+	// time the gateway gives the call (tunnel.ExecTimeout), on b.now. A
+	// reply ends one; a partner who stops waiting does not.
+	calls map[string]time.Time
+}
+
+// running reports whether a call ip picked up may still run at now; it
+// forgets the calls whose time is up.
+func (ip *instancePolls) running(now time.Time) bool {
+	maps.DeleteFunc(ip.calls, func(_ string, until time.Time) bool { return !now.Before(until) })
+	return len(ip.calls) > 0
 }
 
 // ConnMeta is what a gateway reports about itself on every poll.
@@ -67,6 +78,8 @@ type ConnMeta struct {
 type call struct {
 	req  tunnel.Request
 	resp chan tunnel.Response
+	// by is the gateway process that picked it up.
+	by *instancePolls
 	// abandoned is set, under Broker.mu, when the sender gave up after the
 	// handoff; a poll that sees it drops the call instead of recording it.
 	abandoned bool
@@ -149,10 +162,13 @@ func (b *Broker) Poll(ctx context.Context, inst string, gen uint64, meta ConnMet
 	c.active++
 	c.lastSeen = b.now()
 	c.meta = meta
-	maps.DeleteFunc(c.instances, func(_ string, p *instancePolls) bool { return p.open == 0 && time.Since(p.lastEnd) > b.grace })
+	now := b.now()
+	maps.DeleteFunc(c.instances, func(_ string, p *instancePolls) bool {
+		return p.open == 0 && time.Since(p.lastEnd) > b.grace && !p.running(now)
+	})
 	ip := c.instances[meta.Instance]
 	if ip == nil {
-		ip = &instancePolls{}
+		ip = &instancePolls{calls: map[string]time.Time{}}
 		c.instances[meta.Instance] = ip
 	}
 	ip.open++
@@ -179,6 +195,8 @@ func (b *Broker) Poll(ctx context.Context, inst string, gen uint64, meta ConnMet
 			return nil // nobody waits, or not for this registration: do not run it
 		}
 		c.inflight[cl.req.ID] = cl
+		cl.by = ip
+		ip.calls[cl.req.ID] = b.now().Add(tunnel.ExecTimeout(cl.req.TimeoutMS))
 		return &cl.req
 	case <-c.dead:
 		return nil
@@ -200,6 +218,9 @@ func (b *Broker) Reply(club string, r tunnel.Response) bool {
 	}
 	cl, ok := c.inflight[r.ID]
 	delete(c.inflight, r.ID)
+	if ok {
+		delete(cl.by.calls, r.ID)
+	}
 	b.mu.Unlock()
 	if !ok {
 		return false
@@ -220,11 +241,13 @@ func (b *Broker) Connected(club string) bool {
 	return c.active > 0 || len(c.inflight) > 0 || (!c.lastEnd.IsZero() && time.Since(c.lastEnd) < b.grace)
 }
 
-// Polling reports whether gateway process instance of club has a poll
-// open, or had one a moment ago (between two polls). A process that
-// crashed or lost its connection stops polling at once, or when its last
-// poll ends.
-func (b *Broker) Polling(club, instance string) bool {
+// Serving reports whether gateway process instance of club has a poll
+// open, had one a moment ago (between two polls), or runs a call it
+// picked up: until it replies or the time the gateway gives the call is
+// up, so a busy gateway whose polls are all taken still holds its place.
+// A process that crashed or lost its connection stops polling at once, or
+// when its last poll ends, and its calls end with their time.
+func (b *Broker) Serving(club, instance string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	c, ok := b.conns[club]
@@ -232,7 +255,7 @@ func (b *Broker) Polling(club, instance string) bool {
 		return false
 	}
 	ip := c.instances[instance]
-	return ip != nil && (ip.open > 0 || time.Since(ip.lastEnd) < b.grace)
+	return ip != nil && (ip.open > 0 || time.Since(ip.lastEnd) < b.grace || ip.running(b.now()))
 }
 
 // ConnInfo is the broker's view of one gateway.
