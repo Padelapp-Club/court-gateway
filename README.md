@@ -136,12 +136,8 @@ sudo -u court-gateway /opt/court-gateway/court-gateway setup --config /opt/court
   sudo /opt/court-gateway/court-gateway install-service -config /opt/court-gateway/gateway.yaml --run-as court-gateway
 ```
 
-**Пароль Viva в пользовательские данные не вписывайте.** Облако хранит их в настройках машины, и
-любая программа на машине может прочитать их через сервис метаданных облака всё время её жизни.
-Скрипт удаляет известные ему копии на диске (`/var/lib/cloud/instance`, `/run/cloud-init`), но
-cloud-init может записать их снова, например при перезагрузке, а копию в облаке удалить нельзя. Вписанные в файл пароль и код (так шлюз
-ставится без SSH; итог — в `/root/court-gateway-setup.json` и `/root/court-gateway-doctor.txt`)
-остаются читаемыми там же.
+**Пароль Viva в пользовательские данные не вписывайте:** облако хранит их, и программы на машине
+могут их прочитать (почему — в начале [deploy/cloud-init.yaml](deploy/cloud-init.yaml)).
 
 ### Docker
 
