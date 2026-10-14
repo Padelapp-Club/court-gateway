@@ -23,6 +23,9 @@ type slot struct {
 	Room     *struct {
 		ID string `json:"id"`
 	} `json:"room"`
+	Studio *struct {
+		ID string `json:"id"`
+	} `json:"studio"`
 	Canceled *bool `json:"canceled"`
 }
 

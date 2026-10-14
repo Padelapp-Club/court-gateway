@@ -161,8 +161,12 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	prefix := id[:2]
 	rooms := d.byRoom
 	if s.Room == nil || s.Room.ID == "" {
-		// a break without a room closes the studio: occupancy shows it on
-		// every court, and it reads on the first one
+		// a break without a room closes its studio: occupancy shows it on
+		// every court, and it reads on the first one; another studio's is
+		// not this club's
+		if s.Studio == nil || !strings.EqualFold(s.Studio.ID, d.studio) {
+			return driver.Booking{}, driver.ErrNotFound
+		}
 		rooms = map[string]string{d.courts[0].room: d.byRoom[d.courts[0].room]}
 	}
 	ivs, err := d.intervals(kind, prefix, slot{ID: s.ID, TimeFrom: s.TimeFrom, TimeTo: s.TimeTo, Room: s.Room}, rooms)

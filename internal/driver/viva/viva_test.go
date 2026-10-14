@@ -717,9 +717,16 @@ func TestRoomlessBreakBlocksEveryCourt(t *testing.T) {
 	d := futureMidnight()
 	f := newFixture(t, fixtureOpts{})
 	from, to := d.Add(12*time.Hour), d.Add(13*time.Hour)
-	id := f.stub.SeedBreak(map[string]any{"timeFrom": from.UTC().Format(time.RFC3339), "timeTo": to.UTC().Format(time.RFC3339), "room": nil, "canceled": false})
-	if status, m, raw := call(t, f, http.MethodGet, "/v1/clubs/test-club/bookings/b-"+id, contract.ReadKey, ""); status != http.StatusOK || m["court"] != "court-1" {
+	roomless := func(studioID string) string {
+		return f.stub.SeedBreak(map[string]any{"timeFrom": from.UTC().Format(time.RFC3339), "timeTo": to.UTC().Format(time.RFC3339), "room": nil,
+			"studio": map[string]any{"id": studioID}, "canceled": false})
+	}
+	if status, m, raw := call(t, f, http.MethodGet, "/v1/clubs/test-club/bookings/b-"+roomless(studio), contract.ReadKey, ""); status != http.StatusOK || m["court"] != "court-1" {
 		t.Fatalf("a room-less break read by its id: %d %s, want it on the first court", status, raw)
+	}
+	// another studio's (of the same account) is not this club's
+	if status, _, raw := call(t, f, http.MethodGet, "/v1/clubs/test-club/bookings/b-"+roomless("00000000-0000-4000-8000-0000000000f7"), contract.ReadKey, ""); status != http.StatusNotFound {
+		t.Fatalf("another studio's room-less break read by its id: %d %s, want 404", status, raw)
 	}
 	for _, path := range []string{occupancyPath(from, to), occupancyPath(from, to) + "&court=court-1"} {
 		status, m, raw := call(t, f, http.MethodGet, path, contract.ReadKey, "")
