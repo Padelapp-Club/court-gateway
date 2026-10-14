@@ -363,7 +363,7 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 		case !ok:
 			unavailable = append(unavailable, id)
 		case s.waiting[id] != nil || s.refused[id] != "": // its previous config
-			retained[id] = old
+			retained[id] = without(old, s.waiting[id])
 		default:
 			servers = append(servers, old)
 			claim(id, old)
@@ -390,6 +390,23 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 	s.clubs.Set(servers, unavailable...)
 	slices.Sort(problems)
 	return problems
+}
+
+// without is the previous config old less the courts that next, the
+// club's newer config not served, removed; old itself when none are.
+func without(old, next *core.Server) *core.Server {
+	if next == nil {
+		return old
+	}
+	st := *old.Settings()
+	st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool {
+		_, kept := next.Settings().CourtByID(c.ID)
+		return !kept
+	})
+	if len(st.Courts) == len(old.Settings().Courts) {
+		return old
+	}
+	return core.NewServer(&st, old.Driver(), st.Driver.Logger)
 }
 
 // resources are the CRM resources the courts of srv book

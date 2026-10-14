@@ -178,6 +178,33 @@ func TestUnconfirmedChangeKeepsThePreviousConfig(t *testing.T) {
 	}
 }
 
+// A court the newer config removed is dropped from the previous config
+// the club keeps while the newer one is not confirmed: it is no longer
+// bookable, the other courts are.
+func TestRetainedConfigDropsTheRemovedCourts(t *testing.T) {
+	in := newVivaInstallation(t)
+	in.stub.AddRoom(vRoom2, "Court 2")
+	if err := in.syncer.Apply(context.Background(), vivaConfig(1, vivaClub(vStudio, vRoom, vRoom2))); err != nil {
+		t.Fatal(err)
+	}
+	in.stub.FailNext("GET", "/studios", 503, `{}`)
+	if err := in.syncer.Apply(context.Background(), vivaConfig(2, vivaClub(vStudio, vRoom))); err == nil {
+		t.Fatal("an unconfirmed change was reported as applied")
+	}
+	srv, ok := in.clubs.Server("club-a")
+	if !ok || len(srv.Settings().Courts) != 1 || srv.Settings().Courts[0].ID != "court-1" {
+		t.Fatalf("the previous config, less court-2, is not served: %v", ok)
+	}
+	w := in.call("POST", "/v1/clubs/club-a/bookings",
+		fmt.Sprintf(`{"court":"court-2","start":%q,"end":%q,"kind":"game"}`, vStart.Format(time.RFC3339), vEnd.Format(time.RFC3339)))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("create on the removed court: %d %s", w.Code, w.Body.String())
+	}
+	if w := in.create(); w.Code != http.StatusCreated {
+		t.Fatalf("create on the kept court: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // A room the club creates in the CRM after the config named it: the
 // refusal is not final, the next readiness round serves the club (no new
 // config version needed). A room created just before the config arrives
