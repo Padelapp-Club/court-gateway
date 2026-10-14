@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -330,23 +329,39 @@ func TestClockStepDoesNotMoveTheHubsTime(t *testing.T) {
 	}
 }
 
-// The config version the hub announces in its signed time stands, also
-// when it went down (the hub was restored from a backup): that config is
-// accepted, an older one still refused.
-func TestAnnouncedConfigVersionStandsWhenItGoesDown(t *testing.T) {
+// The config version the hub announces in its signed time stands, however
+// slow the answer (these all are), and belongs to its epoch (hub run).
+// Within an epoch a late answer does not lower it; a new epoch (the hub
+// restarted or was restored from a backup) may, and then a config of the
+// earlier run still in flight is refused, as is a late announcement of it.
+func TestAnnouncedConfigVersionAndEpoch(t *testing.T) {
 	v, _ := NewVerifier(testPub, "inst", "s", nil)
+	t0 := time.Now().Add(-time.Hour)
+	type cfg struct {
+		version int64
+		epoch   string
+		ok      bool
+	}
 	for _, step := range []struct {
-		announced, version int64
-		ok                 bool
-	}{{5, 5, true}, {4, 4, true}, {4, 3, false}} {
-		n := strconv.FormatInt(step.announced, 10)
-		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", n, time.Now()), n, time.Now()); err != nil {
-			t.Fatal(err)
+		announced string
+		sent      time.Duration // after t0
+		configs   []cfg
+	}{
+		{"5 run-a", 1 * time.Second, []cfg{{5, "run-a", true}}},
+		{"7 run-a", 3 * time.Second, []cfg{{6, "run-a", false}}},
+		{"6 run-a", 2 * time.Second, []cfg{{6, "run-a", false}, {7, "run-a", true}}}, // an older poll's answer, late
+		{"4 run-b", 5 * time.Second, []cfg{{7, "run-a", false}, {4, "run-b", true}}}, // restored
+		{"9 run-a", 4 * time.Second, []cfg{{9, "run-a", false}, {4, "run-b", true}}}, // run A's answer, late
+	} {
+		if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", step.announced, time.Now()), step.announced, t0.Add(step.sent)); !errors.Is(err, ErrSlowTime) {
+			t.Fatalf("%s: %v", step.announced, err)
 		}
-		rc := &RemoteConfig{Version: step.version, Clubs: []json.RawMessage{}}
-		rc.Sign(testKey, "inst", testRegistration, time.Now())
-		if err := v.Config(rc); (err == nil) != step.ok {
-			t.Fatalf("config %d with %d announced: %v", step.version, step.announced, err)
+		for _, c := range step.configs {
+			rc := &RemoteConfig{Version: c.version, Epoch: c.epoch, Clubs: []json.RawMessage{}}
+			rc.Sign(testKey, "inst", testRegistration, time.Now())
+			if err := v.Config(rc); (err == nil) != c.ok {
+				t.Fatalf("config %d %s with %s announced: %v", c.version, c.epoch, step.announced, err)
+			}
 		}
 	}
 }

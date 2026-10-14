@@ -196,8 +196,9 @@ var ErrBadSignature = errors.New("not signed by the hub for this gateway")
 // more than MaxClockSkew off it: a request is refused, not executed.
 var ErrClockUnknown = errors.New("the hub's time is not known")
 
-// ErrStaleConfig: a config older than the version announced or applied
-// since, a pull that crossed a newer version: it is pulled again.
+// ErrStaleConfig: a config of another hub run (epoch) than announced, or
+// older than announced or applied since: a pull that crossed a newer
+// version or a hub restart; it is pulled again.
 var ErrStaleConfig = errors.New("the config is older than the one announced or applied")
 
 // ErrSlowTime: the hub's time arrived too late to be taken (MaxTimeRoundTrip).
@@ -217,6 +218,8 @@ type Verifier struct {
 	at     time.Time     // when it arrived, on time.Now: its monotonic reading carries hubAt on
 	offset time.Duration // the hub's clock minus now, then
 	config int64         // the config version announced, or applied since
+	epoch  string        // the hub run it belongs to
+	since  time.Time     // when the first request answered with that epoch was sent
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
@@ -234,9 +237,11 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 
 // Time takes the hub's signed time (header, signed with the request's
 // nonce and version, "<number> <epoch>") from the answer to a request sent
-// at sent: signatures are then checked against the hub's clock, and a
-// config older than the number refused, also when it went down (a restored
-// hub). An answer slower than MaxTimeRoundTrip is not taken (ErrSlowTime).
+// at sent: signatures are then checked against the hub's clock, unless the
+// answer was slower than MaxTimeRoundTrip (ErrSlowTime). The version is
+// taken whatever the round trip: within an epoch it only goes up; a new
+// epoch (a restarted or restored hub) replaces it, also with a lower
+// number, unless its request was sent before one the current epoch answered.
 func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
@@ -246,16 +251,18 @@ func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	number, epoch, _ := strings.Cut(version, " ")
+	if n, err := strconv.ParseInt(number, 10, 64); err == nil && epoch == v.epoch {
+		v.config = max(v.config, n)
+	} else if err == nil && sent.After(v.since) {
+		v.config, v.epoch, v.since = n, epoch, sent
+	}
 	received := v.now()
 	if rtt := received.Sub(sent); rtt > MaxTimeRoundTrip {
 		return fmt.Errorf("%w: %s after the request", ErrSlowTime, rtt.Round(time.Millisecond))
 	}
 	hub := time.UnixMilli(ms)
 	v.synced, v.hubAt, v.at, v.offset = true, hub, time.Now(), hub.Sub(received)
-	number, _, _ := strings.Cut(version, " ") // and the epoch
-	if n, err := strconv.ParseInt(number, 10, 64); err == nil {
-		v.config = n
-	}
 	return nil
 }
 
@@ -313,16 +320,17 @@ func (v *Verifier) Request(rq *Request, nonce string) error {
 	return v.check(rq.Seal, rq.message(nonce), true)
 }
 
-// Config accepts a club configuration signed for this gateway, valid now
-// and not older than announced (Time) or applied since (ErrStaleConfig);
-// a replay within its validity gives the same configuration.
+// Config accepts a club configuration signed for this gateway, valid now,
+// of the epoch announced and not older than announced (Time) or applied
+// since (ErrStaleConfig); a replay within its validity gives the same
+// configuration.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if rc.Version < v.config {
+	if rc.Epoch != v.epoch || rc.Version < v.config {
 		return fmt.Errorf("%w: version %d, %d announced or applied", ErrStaleConfig, rc.Version, v.config)
 	}
 	v.config = rc.Version
