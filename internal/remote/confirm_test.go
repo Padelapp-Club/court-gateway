@@ -290,6 +290,79 @@ func TestRetainedConfigDoesNotReachTheDroppedCourts(t *testing.T) {
 	}
 }
 
+// Through the hub, a newer config that does not build (a malformed price
+// list on one court) still drops the courts it removed or moved from the
+// previous config the club keeps, and a court whose entry it changed: its
+// room is not known. No write reaches the CRM for them; a court it left
+// as it was is still booked, and with no court left the club is
+// unavailable, the reason in its error.
+func TestRetainedConfigWhenTheNewerOneDoesNotBuild(t *testing.T) {
+	malformed := func(s core.ClubSpec, court int) core.ClubSpec {
+		s.Courts[court].Params["price_list"] = "not-a-uuid"
+		return s
+	}
+	for name, tc := range map[string]struct {
+		previous, next core.ClubSpec
+		refused        []string // courts not booked
+		kept           string   // a court still booked
+	}{
+		"removed":           {vivaClub(vStudio, vRoom, vRoom2), malformed(vivaClub(vStudio, vRoom), 0), []string{"court-1", "court-2"}, ""},
+		"moved":             {vivaClub(vStudio, vRoom, vRoom2), malformed(vivaClub(vStudio, vRoom3, vRoom2), 1), []string{"court-1", "court-2"}, ""},
+		"one court is left": {vivaClub(vStudio, vRoom, vRoom2, vRoom3), malformed(vivaClub(vStudio, vRoom, vRoom3), 1), []string{"court-2", "court-3"}, "court-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := vivastub.New("review@example.test", "fixture-password", vStudio)
+			stub.AddRoom(vRoom, "Court 1")
+			stub.AddRoom(vRoom2, "Court 2")
+			stub.AddRoom(vRoom3, "Court 3")
+			crm := httptest.NewServer(stub)
+			t.Cleanup(crm.Close)
+			h := testkit.StartHub(t, "poll_wait: 1s\n"+testkit.OperatorYAML+testkit.HubPartnersYAML, testkit.HubEnv(), hub.Options{})
+			in := testkit.StartInstallation(t, h, "test-net", testkit.InstallationOptions{
+				CRMYAML: fmt.Sprintf("crm: {type: viva, username: review@example.test, auth_url: %s/token, api_url: %s/api/v1}\n", crm.URL, crm.URL),
+				Env:     map[string]string{"CRM_PASSWORD": "fixture-password"}, CRMType: "viva", Factory: viva.New, Account: viva.NewAccount,
+				Clubs: []core.ClubSpec{tc.previous},
+			})
+			h.MustOperator(t, http.StatusOK, "PUT", "/hub/installations/test-net/clubs/club-a", tc.next)
+			testkit.WaitFor(t, "the change refused", 10*time.Second, func() bool {
+				st := in.Syncer.State()
+				return st.ConfigVersion == 2 && strings.Contains(st.ConfigError, "price_list")
+			})
+			start := time.Now().UTC().Truncate(time.Hour).Add(48 * time.Hour)
+			book := func(court string) (*http.Response, []byte) {
+				body := fmt.Sprintf(`{"court":%q,"start":%q,"end":%q,"kind":"game"}`, court, start.Format(time.RFC3339), start.Add(time.Hour).Format(time.RFC3339))
+				return h.Do(t, 10*time.Second, "POST", "/v1/clubs/club-a/bookings", contract.BookKey, strings.NewReader(body))
+			}
+			calls := len(stub.Calls())
+			for _, court := range tc.refused {
+				resp, data := book(court)
+				if s := resp.StatusCode; s != http.StatusNotFound && s != http.StatusConflict && s != http.StatusServiceUnavailable {
+					t.Errorf("create on %s: %d %s", court, s, data)
+				}
+			}
+			for _, call := range stub.Calls()[calls:] {
+				if !strings.HasPrefix(call, "GET ") {
+					t.Errorf("CRM write for a court not served: %s", call)
+				}
+			}
+			if tc.kept == "" {
+				if st := in.Syncer.State(); !strings.Contains(st.ClubErrors["club-a"], "прежняя конфигурация не обслуживается") {
+					t.Errorf("the reason the previous config is not served: %q", st.ClubErrors["club-a"])
+				}
+				return
+			}
+			resp, data := book(tc.kept)
+			var b struct{ ID string }
+			if json.Unmarshal(data, &b); resp.StatusCode != http.StatusCreated {
+				t.Fatalf("create on %s: %d %s", tc.kept, resp.StatusCode, data)
+			}
+			if room, _ := stub.Break(strings.TrimPrefix(b.ID, "b-"))["room"].(map[string]any); room["id"] != vRoom {
+				t.Errorf("%s booked in room %v", tc.kept, room["id"])
+			}
+		})
+	}
+}
+
 // A room the club creates in the CRM after the config named it: the
 // refusal is not final, the next readiness round serves the club (no new
 // config version needed). A room created just before the config arrives
@@ -356,9 +429,9 @@ func TestMismatchFoundByReadinessBlocksTheClub(t *testing.T) {
 // while no other club's config books its room: once the room is given to
 // club B, A is unavailable (not served on the old room) and B books it.
 // The change fails the CRM check (a new court on a room missing in the
-// CRM) or does not load at all (not a room id).
+// CRM) or does not load at all (a new court on a value not a room id).
 func TestPreviousConfigIsDroppedWhenItsRoomIsReassigned(t *testing.T) {
-	for name, a := range map[string]core.ClubSpec{"check fails": vivaClub(vStudio, vRoom, vRoom3), "does not load": vivaClub(vStudio, "not-a-room")} {
+	for name, a := range map[string]core.ClubSpec{"check fails": vivaClub(vStudio, vRoom, vRoom3), "does not load": vivaClub(vStudio, vRoom, "not-a-room")} {
 		t.Run(name, func(t *testing.T) {
 			in := newVivaInstallation(t)
 			if err := in.syncer.Apply(context.Background(), vivaConfig(1, vivaClub(vStudio, vRoom))); err != nil {

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -45,14 +46,15 @@ type Syncer struct {
 
 	mu         sync.Mutex
 	applied    int64
-	hub        int64                   // the hub's version, as last announced
-	epoch      string                  // of the applied version
-	hubEpoch   string                  // of the hub's
-	behind     time.Time               // since when applied differs from hub
-	configured map[string]bool         // clubs of the applied config
-	waiting    map[string]*core.Server // built, not yet confirmed by the CRM
-	refused    map[string]string       // club -> why its config is not served
-	ignored    map[string]bool         // unknown club fields already logged
+	hub        int64                       // the hub's version, as last announced
+	epoch      string                      // of the applied version
+	hubEpoch   string                      // of the hub's
+	behind     time.Time                   // since when applied differs from hub
+	configured map[string]bool             // clubs of the applied config
+	waiting    map[string]*core.Server     // built, not yet confirmed by the CRM
+	courts     map[string][]core.CourtSpec // of the clubs whose config does not build
+	refused    map[string]string           // club -> why its config is not served
+	ignored    map[string]bool             // unknown club fields already logged
 }
 
 // Options configure New.
@@ -250,7 +252,7 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 	}
 	s.applied, s.epoch = rc.Version, rc.Epoch
 	s.track()
-	s.configured, s.waiting, s.refused = map[string]bool{}, map[string]*core.Server{}, map[string]string{}
+	s.configured, s.waiting, s.courts, s.refused = map[string]bool{}, map[string]*core.Server{}, map[string][]core.CourtSpec{}, map[string]string{}
 	var problems []string
 	for _, r := range refused {
 		problems = append(problems, r.Problems...)
@@ -261,6 +263,7 @@ func (s *Syncer) Apply(ctx context.Context, rc tunnel.RemoteConfig) error {
 		s.refused[r.Club] = why
 		if r.Club != "" {
 			s.configured[r.Club] = true
+			s.courts[r.Club] = r.Courts
 		}
 	}
 	for _, srv := range servers {
@@ -363,9 +366,12 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 		case !ok:
 			unavailable = append(unavailable, id)
 		case s.waiting[id] != nil || s.refused[id] != "": // its previous config
-			if srv := s.without(old, s.waiting[id]); srv != nil {
+			if srv, err := s.without(old, s.gone(id, old)); err == nil {
 				retained[id] = srv
 			} else {
+				why := fmt.Sprintf("клуб «%s»: прежняя конфигурация не обслуживается: %v", id, err)
+				s.refused[id] = strings.TrimPrefix(s.refused[id]+"; "+why, "; ")
+				problems = append(problems, why)
 				unavailable = append(unavailable, id)
 			}
 		default:
@@ -396,30 +402,44 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 	return problems
 }
 
-// without is the previous config old less the courts that next, the
-// club's newer config not served, removed or moved to another CRM
-// resource (old itself when none are). Its driver is built for the courts
-// left, so it neither books, reads nor cancels on the others; nil when it
-// cannot be built (no court left).
-func (s *Syncer) without(old, next *core.Server) *core.Server {
-	if next == nil {
-		return old
+// gone tells the courts of old, the previous config of club id, that its
+// newer config not served removed or moved to another CRM resource. When
+// that config does not build, the resources it names are not known: a
+// court whose entry it changed counts as moved. s.mu must be held.
+func (s *Syncer) gone(id string, old *core.Server) func(court string) bool {
+	if next := s.waiting[id]; next != nil {
+		return func(c string) bool {
+			_, ok := next.Settings().CourtByID(c)
+			return !ok || resource(old, c) != resource(next, c)
+		}
 	}
-	gone := func(id string) bool {
-		_, ok := next.Settings().CourtByID(id)
-		return !ok || resource(old, id) != resource(next, id)
+	params := map[string]map[string]any{}
+	for _, c := range s.courts[id] {
+		params[strings.TrimSpace(c.ID)] = c.Params
 	}
+	return func(c string) bool {
+		i := slices.IndexFunc(old.Settings().Driver.Courts, func(d driver.CourtConfig) bool { return d.ID == c })
+		p, ok := params[c]
+		return !ok || i < 0 || !reflect.DeepEqual(p, map[string]any(old.Settings().Driver.Courts[i].Params))
+	}
+}
+
+// without is the previous config old less the courts gone (old itself
+// when none are). Its driver is built for the courts left, so it neither
+// books, reads nor cancels on the others; an error when it cannot be
+// built (no court left).
+func (s *Syncer) without(old *core.Server, gone func(court string) bool) (*core.Server, error) {
 	st := *old.Settings()
 	st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool { return gone(c.ID) })
 	if len(st.Courts) == len(old.Settings().Courts) {
-		return old
+		return old, nil
 	}
 	st.Driver.Courts = slices.DeleteFunc(slices.Clone(st.Driver.Courts), func(c driver.CourtConfig) bool { return gone(c.ID) })
 	d, err := core.BuildDriver(&st, s.factories)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return core.NewServer(&st, d, st.Driver.Logger)
+	return core.NewServer(&st, d, st.Driver.Logger), nil
 }
 
 // resource is the CRM resource court of srv books ("" when the driver
@@ -450,6 +470,7 @@ func resources(srv *core.Server) []string {
 type Refusal struct {
 	Club     string
 	Problems []string
+	Courts   []core.CourtSpec // of the club's entry, when Club is known
 }
 
 // Build builds the server of every club in rc that loads, a refusal (in
@@ -478,7 +499,7 @@ func Build(base *core.Settings, factories map[string]driver.Factory, hook func(*
 		seen[spec.ID] = true
 		srv, err := buildClub(base, factories, hook, spec)
 		if err != nil {
-			r := Refusal{Club: spec.ID, Problems: []string{err.Error()}}
+			r := Refusal{Club: spec.ID, Problems: []string{err.Error()}, Courts: spec.Courts}
 			var ce *core.ConfigError
 			if errors.As(err, &ce) {
 				r.Problems = ce.Problems
