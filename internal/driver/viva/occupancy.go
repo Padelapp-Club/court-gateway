@@ -45,9 +45,9 @@ func day(t time.Time, loc *time.Location) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 }
 
-// clockSkew is how far the CRM's clock may run ahead of the gateway's:
+// crmClockLead is how far the CRM's clock may run ahead of the gateway's:
 // near midnight the CRM's "today" may already be the gateway's tomorrow.
-const clockSkew = 5 * time.Minute
+const crmClockLead = 5 * time.Minute
 
 // listDays is the longest date range asked in one list request: a club's
 // month of exercises in one answer would be large, so long ranges are
@@ -58,7 +58,7 @@ const listDays = 7
 // loc and whether the answer can be complete. Viva selects list records by
 // their start date in the studio's day and leaves out exercises of past
 // days (docs/hub.md, completeness bounds). So exercises are listed from
-// the day before the range; a range before the CRM's today (clockSkew
+// the day before the range; a range before the CRM's today (crmClockLead
 // ahead of ours) plus overnight_minutes is incomplete; breaks are listed
 // break_lookback_days back.
 func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
@@ -66,7 +66,7 @@ func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time
 	if kind == "breaks" {
 		return day(from, loc).AddDate(0, 0, -d.lookback), dateTo, true
 	}
-	today := day(now.Add(clockSkew), loc)
+	today := day(now.Add(crmClockLead), loc)
 	return day(from, loc).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
@@ -131,7 +131,11 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		var items []slot
 		for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
-			part, whole, err := d.list(ctx, kind, f, minTime(f.AddDate(0, 0, step-1), dateTo))
+			last := f.AddDate(0, 0, step-1)
+			if last.After(dateTo) {
+				last = dateTo
+			}
+			part, whole, err := d.list(ctx, kind, f, last)
 			if err != nil {
 				return driver.Occupancy{}, err
 			}
@@ -193,13 +197,6 @@ func (d *Driver) intervals(kind, prefix string, it slot, rooms map[string]string
 		}
 	}
 	return out, nil // a room that is not a configured court occupies none
-}
-
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
 }
 
 // Ready checks the club's config against the account (CheckConfig, which
