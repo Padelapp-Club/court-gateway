@@ -667,7 +667,13 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if _, err := tunnel.FetchWhoami(ctx, tunnel.NewTransport(roots, s.Hub.Proxy), s.Hub.URL, s.Hub.Secret); err != nil {
+	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
+		Handler: http.NotFoundHandler(), Transport: tunnel.NewTransport(roots, s.Hub.Proxy)})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if _, err := c.Whoami(ctx); err != nil {
 		fmt.Fprintln(stderr, "hub: unreachable or secret rejected")
 		return update.SelfCheckTransientExit
 	}
