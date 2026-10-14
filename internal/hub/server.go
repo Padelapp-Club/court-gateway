@@ -111,9 +111,6 @@ func (s *Server) Monitor() *Monitor { return s.monitor }
 
 func (s *Server) Store() *Store { return s.store }
 
-// Broker returns the broker.
-func (s *Server) Broker() *Broker { return s.broker }
-
 // Handler returns the hub's HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()

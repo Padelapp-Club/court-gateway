@@ -23,6 +23,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
 // Obviously fake identifiers.
@@ -336,9 +337,8 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 			t.Errorf("serve exit %d", rc)
 		}
 	}()
-	testkit.WaitFor(t, "gateway connected", 15*time.Second, func() bool { return s.hub.Server().Broker().Connected("club-one") })
 	mon := s.hub.Server().Monitor()
-	testkit.WaitFor(t, "the service applied the club config", 15*time.Second, func() bool {
+	testkit.WaitFor(t, "the service connected and applied the club config", 30*time.Second, func() bool {
 		h := mon.Health("club-one")
 		return h.ConfigVersion == 1 && strings.Join(h.Clubs, ",") == "club-one"
 	})
@@ -588,17 +588,24 @@ func TestRestartedServiceIsServedAtOnce(t *testing.T) {
 		t.Fatalf("setup: %s", out.String())
 	}
 	cfg := filepath.Join(s.dir, "gateway.yaml")
-	broker := s.hub.Server().Broker()
+	getenv, err := core.EnvWithDotEnv(cfg, env{}.get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connected := func() bool { // as the hub sees the gateway
+		who, err := tunnel.FetchWhoami(context.Background(), s.hub.Transport(), s.hub.URL(), getenv(core.DefaultHubSecretEnv))
+		return err == nil && who.Connected
+	}
 	for i := range 2 {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan int, 1)
 		go func() { done <- serve(ctx, cfg, "", &contract.LogBuffer{}, env{}.get) }()
-		testkit.WaitFor(t, fmt.Sprintf("start %d connected", i+1), 10*time.Second, func() bool { return broker.Connected("club-one") })
+		testkit.WaitFor(t, fmt.Sprintf("start %d connected", i+1), 10*time.Second, connected)
 		cancel()
 		if rc := <-done; rc != 0 {
 			t.Fatalf("serve exit %d", rc)
 		}
-		testkit.WaitFor(t, "disconnected", 10*time.Second, func() bool { return !broker.Connected("club-one") })
+		testkit.WaitFor(t, "disconnected", 10*time.Second, func() bool { return !connected() })
 	}
 }
 
