@@ -52,6 +52,12 @@ const (
 	// the current version of the installation's club configuration. A
 	// gateway that runs another version pulls PathConfig.
 	HeaderConfigVersion = "X-Config-Version"
+	// HeaderNonce is a fresh random value of each poll, and HeaderHubTime
+	// the hub's answer to it: its clock, signed with the nonce and the
+	// HeaderConfigVersion value (SignTime), so an old answer cannot be
+	// passed off as new.
+	HeaderNonce   = "X-Gateway-Nonce"
+	HeaderHubTime = "X-Hub-Time"
 )
 
 // Build kinds reported by a gateway.

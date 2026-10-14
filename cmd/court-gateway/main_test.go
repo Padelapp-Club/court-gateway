@@ -110,7 +110,8 @@ func TestHubExampleConfigIsValid(t *testing.T) {
 }
 
 // Readiness is the CRM and the hub: not accepted, unreachable for longer
-// than the hub's offline threshold, or a club config refused.
+// than the hub's offline threshold, a club config refused, or a clock too
+// far off the hub's to be corrected.
 func TestReadinessIncludesTheHub(t *testing.T) {
 	ok := hubState{connected: true}
 	cases := []struct {
@@ -129,6 +130,8 @@ func TestReadinessIncludesTheHub(t *testing.T) {
 		{"config refused", true, hubState{connected: true, configRefused: true}, false, "CONFIG_REFUSED"},
 		{"config not pulled briefly", true, hubState{connected: true, configBehind: time.Minute}, true, ""},
 		{"config not pulled for long", true, hubState{connected: true, configBehind: configPendingAfter + time.Second}, false, "CONFIG_PENDING"},
+		{"clock a little off", true, hubState{connected: true, clockOffset: -10 * time.Minute}, true, ""},
+		{"clock far off", true, hubState{connected: true, clockOffset: -2 * time.Hour}, false, "CLOCK_SKEW"},
 	}
 	for _, c := range cases {
 		reason := ""

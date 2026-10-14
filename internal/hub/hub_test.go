@@ -433,3 +433,27 @@ func TestHubStopsPromptlyAndCleanly(t *testing.T) {
 		t.Fatalf("log:\n%s", logs)
 	}
 }
+
+// The gateway checks the hub's signatures against the hub's own time,
+// which the hub signs on every poll answer: a club computer whose clock
+// is ten minutes off is served, the hub signing with its own clock; one
+// more than an hour off is not corrected (the gateway reports CLOCK_SKEW)
+// and refuses what the hub signs.
+func TestGatewayFollowsTheHubsClock(t *testing.T) {
+	for _, c := range []struct {
+		ahead  time.Duration
+		status int
+	}{{10 * time.Minute, http.StatusNotFound}, {-10 * time.Minute, http.StatusNotFound}, {2 * time.Hour, http.StatusBadGateway}} {
+		t.Run(c.ahead.String(), func(t *testing.T) {
+			w := newWorld(t, hub.Options{Now: func() time.Time { return time.Now().Add(c.ahead) }}, "")
+			w.connect(t, w.hub.URL())
+			if off := w.gw.Client.ClockOffset(); (off - c.ahead).Abs() > 5*time.Second {
+				t.Fatalf("offset %s, the hub is %s ahead", off, c.ahead)
+			}
+			r := call(t, w.hub, http.MethodGet, "/v1/clubs/demo-club/bookings/x-nothing", contract.ReadKey, "")
+			if r.status != c.status {
+				t.Fatalf("a request signed by a hub %s ahead: %d %s", c.ahead, r.status, r.body)
+			}
+		})
+	}
+}

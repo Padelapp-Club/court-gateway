@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,8 +29,15 @@ import (
 // SignedFor is how long a signature is valid after the hub made it.
 const SignedFor = 60 * time.Second
 
-// clockSkew is how far the gateway's clock may be off the hub's.
+// clockSkew is how far a signature's window is stretched at both ends:
+// the hub's time as the gateway knows it is a little off the hub's own.
 const clockSkew = 30 * time.Second
+
+// MaxClockSkew bounds how far this computer's clock may be off the hub's
+// and still be corrected: the gateway checks signatures against the hub's
+// time (Verifier.Time) when they are at most this far apart, and against
+// its own clock otherwise, refusing them (readiness: CLOCK_SKEW).
+const MaxClockSkew = time.Hour
 
 // maxSeen bounds the request ids the gateway remembers against replay.
 const maxSeen = 1 << 16
@@ -138,19 +147,39 @@ func (rc *RemoteConfig) Sign(key ed25519.PrivateKey, installation, registration 
 	rc.Signature = ed25519.Sign(key, rc.Seal.message("config", rc.fields))
 }
 
+// timeMessage is what the hub signs of its clock on a poll answer: the
+// time, the poll's nonce and the config version it announces.
+func timeMessage(installation, registration, nonce, version string, ms int64) []byte {
+	s := Seal{Installation: installation, Registration: registration, IssuedAt: ms, ExpiresAt: ms}
+	return s.message("time", func(c *canon) { c.str(nonce); c.str(version) })
+}
+
+// SignTime is the HeaderHubTime value the hub sets on a poll answer:
+// its time now, bound to the poll's nonce and to the HeaderConfigVersion
+// value version, "<unix ms> <base64 signature>".
+func SignTime(key ed25519.PrivateKey, installation, registration, nonce, version string, now time.Time) string {
+	ms := now.UnixMilli()
+	return strconv.FormatInt(ms, 10) + " " + base64.StdEncoding.EncodeToString(ed25519.Sign(key, timeMessage(installation, registration, nonce, version, ms)))
+}
+
 // ErrBadSignature: a message is not signed by the pinned hub key for this
 // gateway, or no longer valid.
 var ErrBadSignature = errors.New("not signed by the hub for this gateway")
 
-// Verifier checks the hub's signatures on the gateway.
+// Verifier checks the hub's signatures on the gateway, against the hub's
+// time as last signed for it (Time), and the hub's announcements of its
+// config version.
 type Verifier struct {
 	key          ed25519.PublicKey
 	installation string
 	registration string
 	now          func() time.Time
+	started      time.Time // this process, on now
 
-	mu   sync.Mutex
-	seen map[string]time.Time // request id -> until when it is remembered
+	mu     sync.Mutex
+	offset time.Duration        // the hub's clock minus now, as last signed
+	config int64                // the highest config version applied or announced
+	seen   map[string]time.Time // request id -> until when (hub time) it is remembered
 }
 
 // NewVerifier verifies with the pinned hub key for one registration (its
@@ -162,11 +191,53 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 	if now == nil {
 		now = time.Now
 	}
-	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now, seen: map[string]time.Time{}}, nil
+	return &Verifier{key: key, installation: installation, registration: RegistrationOf(SecretSHA256(secret)), now: now, started: now(),
+		seen: map[string]time.Time{}}, nil
+}
+
+// Time takes the hub's signed time from a poll answer (header, the
+// HeaderHubTime value, signed with the poll's nonce and the announced
+// config version): from then on signatures are checked against the hub's
+// clock, so this computer's may be off, and a config older than version
+// is refused.
+func (v *Verifier) Time(nonce, header, version string) error {
+	msText, sigText, _ := strings.Cut(header, " ")
+	ms, err1 := strconv.ParseInt(msText, 10, 64)
+	sig, err2 := base64.StdEncoding.DecodeString(sigText)
+	if err1 != nil || err2 != nil || !ed25519.Verify(v.key, timeMessage(v.installation, v.registration, nonce, version, ms), sig) {
+		return fmt.Errorf("%w: the hub's time", ErrBadSignature)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.offset = time.UnixMilli(ms).Sub(v.now())
+	if n, err := strconv.ParseInt(version, 10, 64); err == nil {
+		v.config = max(v.config, n)
+	}
+	return nil
+}
+
+// Offset is how far the hub's clock is ahead of this computer's, as the
+// hub last signed it (0 before it has).
+func (v *Verifier) Offset() time.Duration {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.offset
+}
+
+// clock is the hub's time now and at this process's start, as far as it
+// is corrected (MaxClockSkew); v.mu must be held.
+func (v *Verifier) clock() (now, started time.Time) {
+	off := v.offset
+	if off.Abs() > MaxClockSkew {
+		off = 0
+	}
+	return v.now().Add(off), v.started.Add(off)
 }
 
 func (v *Verifier) check(s Seal, msg []byte) error {
-	now := v.now()
+	v.mu.Lock()
+	now, _ := v.clock()
+	v.mu.Unlock()
 	issued, expires := time.UnixMilli(s.IssuedAt), time.UnixMilli(s.ExpiresAt)
 	switch {
 	case !ed25519.Verify(v.key, msg, s.Signature):
@@ -181,15 +252,19 @@ func (v *Verifier) check(s Seal, msg []byte) error {
 	return nil
 }
 
-// Request accepts rq once: signed for this gateway, valid now, and not
-// seen before within its validity.
+// Request accepts rq once: signed for this gateway, valid now, issued
+// after this process started (what it saw before a restart is forgotten),
+// and not seen before within its validity.
 func (v *Verifier) Request(rq *Request) error {
 	if err := v.check(rq.Seal, rq.Seal.message("request", rq.fields)); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	now := v.now()
+	now, started := v.clock()
+	if time.UnixMilli(rq.IssuedAt).Before(started.Add(-clockSkew)) {
+		return fmt.Errorf("%w: issued before this gateway started", ErrBadSignature)
+	}
 	if _, dup := v.seen[rq.ID]; dup {
 		return fmt.Errorf("%w: replayed request", ErrBadSignature)
 	}
@@ -203,8 +278,18 @@ func (v *Verifier) Request(rq *Request) error {
 	return nil
 }
 
-// Config accepts a club configuration signed for this gateway and valid
-// now. Replaying it within its validity gives the same configuration.
+// Config accepts a club configuration signed for this gateway, valid
+// now, and not older than one already applied or announced (Time).
+// Replaying it within its validity gives the same configuration.
 func (v *Verifier) Config(rc *RemoteConfig) error {
-	return v.check(rc.Seal, rc.Seal.message("config", rc.fields))
+	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields)); err != nil {
+		return err
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if rc.Version < v.config {
+		return fmt.Errorf("%w: config version %d is older than %d, applied or announced", ErrBadSignature, rc.Version, v.config)
+	}
+	v.config = rc.Version
+	return nil
 }

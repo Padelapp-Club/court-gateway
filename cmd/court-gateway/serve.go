@@ -157,9 +157,17 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		sentConfig := int64(-1) // the applied config version the hub last heard of
 		lastSeen := time.Now()  // the hub, or the start
 		password := newPasswordWatch(cfgPath, procEnv, s.Driver.Account, log)
+		clockSkewed := false
 		for {
 			password.check()
-			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate()}
+			hs := hubState{connected: client.Connected(), authFailed: client.Unauthorized(), duplicate: client.Duplicate(), clockOffset: client.ClockOffset()}
+			if skewed := hs.clockOffset.Abs() > tunnel.MaxClockSkew; skewed != clockSkewed {
+				clockSkewed = skewed
+				if skewed {
+					log.Error("this computer's clock is far off the hub's: the gateway refuses what the hub sends until the clock is set right (turn on automatic time)",
+						"offset", hs.clockOffset.Round(time.Second).String())
+				}
+			}
 			if hs.connected {
 				lastSeen = time.Now()
 			}
@@ -369,6 +377,7 @@ type hubState struct {
 	silentFor     time.Duration
 	configRefused bool          // a club of the hub's config does not load
 	configBehind  time.Duration // how long the hub's config version has not been applied
+	clockOffset   time.Duration // the hub's clock minus this computer's, as the hub signed it
 }
 
 func (h hubState) String() string {
@@ -389,6 +398,8 @@ func readiness(crmReady bool, crmReason string, h hubState) (bool, string) {
 		return false, "HUB_AUTH_FAILED"
 	case h.duplicate:
 		return false, "DUPLICATE_GATEWAY"
+	case h.clockOffset.Abs() > tunnel.MaxClockSkew:
+		return false, "CLOCK_SKEW"
 	case !h.connected && h.silentFor > hubOfflineAfter:
 		return false, "HUB_UNREACHABLE"
 	case h.configBehind > configPendingAfter:

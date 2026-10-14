@@ -15,6 +15,7 @@ import (
 // secret "s".
 var (
 	testPub, testKey, _ = ed25519.GenerateKey(nil)
+	_, otherTestKey, _  = ed25519.GenerateKey(nil)
 	testRegistration    = RegistrationOf(SecretSHA256("s"))
 )
 
@@ -91,7 +92,12 @@ func TestVerifierRefusesWhatTheHubDidNotSignForThisGateway(t *testing.T) {
 		})
 	}
 	t.Run("signed and fresh, once", func(t *testing.T) {
-		v := verifier()
+		clk := now.Add(-time.Hour) // the gateway started an hour ago
+		v, err := NewVerifier(testPub, "inst", "s", func() time.Time { return clk })
+		if err != nil {
+			t.Fatal(err)
+		}
+		clk = now
 		for _, skew := range []time.Duration{0, -clockSkew + time.Second, SignedFor + clockSkew - time.Second} {
 			rq := window(now.Add(-skew), SignedFor)
 			rq.ID = "fresh-" + skew.String()
@@ -163,5 +169,106 @@ func TestExecuteChecksTheSignedScopes(t *testing.T) {
 	}
 	if c.Refused() != 0 {
 		t.Fatalf("signed requests counted as refused: %d", c.Refused())
+	}
+}
+
+// The gateway checks signatures against the hub's time, which the hub
+// signs on every poll answer with the poll's nonce: a computer clock that
+// is off (up to MaxClockSkew) does not refuse what the hub signs now, nor
+// accept what it signed long ago; a stamp for another nonce or another
+// announced version is refused. Beyond MaxClockSkew nothing is corrected.
+func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
+	hubNow := time.Now()
+	for _, off := range []time.Duration{-50 * time.Minute, 10 * time.Minute} {
+		local := hubNow.Add(-off)
+		v, err := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
+		if err != nil {
+			t.Fatal(err)
+		}
+		rq := sampleRequest()
+		rq.Sign(testKey, "inst", testRegistration, hubNow)
+		if err := v.Request(&rq); !errors.Is(err, ErrBadSignature) {
+			t.Fatalf("clock %s off, no hub time yet: accepted (%v)", off, err)
+		}
+		stamp := SignTime(testKey, "inst", testRegistration, "nonce-1", "7", hubNow)
+		for name, err := range map[string]error{
+			"another nonce":   v.Time("nonce-2", stamp, "7"),
+			"another version": v.Time("nonce-1", stamp, "8"),
+			"forged":          v.Time("nonce-1", SignTime(otherTestKey, "inst", testRegistration, "nonce-1", "7", hubNow), "7"),
+		} {
+			if !errors.Is(err, ErrBadSignature) {
+				t.Fatalf("%s: stamp accepted (%v)", name, err)
+			}
+		}
+		if err := v.Time("nonce-1", stamp, "7"); err != nil || (v.Offset()-off).Abs() > time.Millisecond {
+			t.Fatalf("stamp: %v, offset %s", err, v.Offset())
+		}
+		rq.ID = "after-stamp"
+		rq.Sign(testKey, "inst", testRegistration, hubNow)
+		if err := v.Request(&rq); err != nil {
+			t.Fatalf("clock %s off, with the hub's time: %v", off, err)
+		}
+		old := sampleRequest()
+		old.ID = "old"
+		old.Sign(testKey, "inst", testRegistration, hubNow.Add(-SignedFor-clockSkew-time.Second))
+		if err := v.Request(&old); !errors.Is(err, ErrBadSignature) {
+			t.Fatalf("clock %s off: an expired request accepted (%v)", off, err)
+		}
+	}
+	local := hubNow.Add(-2 * time.Hour)
+	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1"); err != nil || (v.Offset()-2*time.Hour).Abs() > time.Millisecond {
+		t.Fatalf("a large offset is still reported: %v %s", err, v.Offset())
+	}
+	rq := sampleRequest()
+	rq.Sign(testKey, "inst", testRegistration, hubNow)
+	if err := v.Request(&rq); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("beyond MaxClockSkew a request was accepted: %v", err)
+	}
+}
+
+// A request issued before the gateway started is refused even within its
+// window: the replay memory does not survive a restart.
+func TestVerifierRefusesRequestsFromBeforeItsStart(t *testing.T) {
+	now := time.Now()
+	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return now })
+	rq := sampleRequest()
+	rq.Sign(testKey, "inst", testRegistration, now.Add(-clockSkew-time.Second))
+	if err := v.Request(&rq); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("a request from before the start accepted: %v", err)
+	}
+	rq.ID = "fresh"
+	rq.Sign(testKey, "inst", testRegistration, now.Add(-clockSkew+time.Second))
+	if err := v.Request(&rq); err != nil {
+		t.Fatalf("a request within the skew of the start: %v", err)
+	}
+}
+
+// A config older than one applied, or than the version the hub announced
+// in its signed time, is refused: an old config cannot be replayed.
+func TestVerifierRefusesAnOlderConfig(t *testing.T) {
+	v, _ := NewVerifier(testPub, "inst", "s", nil)
+	config := func(version int64) *RemoteConfig {
+		rc := &RemoteConfig{Version: version, Clubs: []json.RawMessage{}}
+		rc.Sign(testKey, "inst", testRegistration, time.Now())
+		return rc
+	}
+	if err := v.Config(config(5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Config(config(4)); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("an older config than applied: %v", err)
+	}
+	if err := v.Config(config(5)); err != nil {
+		t.Fatalf("the same config again: %v", err)
+	}
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "7", time.Now()), "7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Config(config(6)); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("an older config than announced: %v", err)
+	}
+	if err := v.Config(config(7)); err != nil {
+		t.Fatal(err)
 	}
 }

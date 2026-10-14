@@ -196,6 +196,11 @@ func (c *Client) Refused() int64 { return c.refused.Load() }
 // because another one with the same secret is connected.
 func (c *Client) Duplicate() bool { return c.dup.Load() }
 
+// ClockOffset is how far the hub's clock is ahead of this computer's, as
+// the hub last signed it; beyond MaxClockSkew the gateway refuses what
+// the hub signs and reports CLOCK_SKEW.
+func (c *Client) ClockOffset() time.Duration { return c.verify.Offset() }
+
 // Run keeps Polls pollers running until ctx is done.
 func (c *Client) Run(ctx context.Context) {
 	var wg sync.WaitGroup
@@ -335,11 +340,20 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	var nonce [16]byte
+	_, _ = crand.Read(nonce[:])
+	req.Header.Set(HeaderNonce, hex.EncodeToString(nonce[:]))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, cleanError(err)
 	}
 	defer resp.Body.Close()
+	if h := resp.Header.Get(HeaderHubTime); h != "" {
+		if err := c.verify.Time(req.Header.Get(HeaderNonce), h, resp.Header.Get(HeaderConfigVersion)); err != nil {
+			c.refused.Add(1)
+			c.log.Error("the hub's time refused: not signed by the hub for this gateway", "error", err)
+		}
+	}
 	c.noteConfigVersion(resp.Header)
 	if h := resp.Header.Get(HeaderUpdateHint); h != "" && c.cfg.OnHint != nil {
 		if prev, _ := c.lastHint.Load().(string); prev != h {

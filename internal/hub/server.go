@@ -266,7 +266,11 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 	if s.cfg.LatestVersion != "" && m.Build == tunnel.BuildRelease && version.Newer(s.cfg.LatestVersion, m.Version) {
 		w.Header().Set(tunnel.HeaderUpdateHint, s.cfg.LatestVersion)
 	}
-	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10))
+	version := strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10)
+	w.Header().Set(tunnel.HeaderConfigVersion, version)
+	if nonce := r.Header.Get(tunnel.HeaderNonce); nonce != "" && len(nonce) <= 64 {
+		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version, s.now()))
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -325,7 +329,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayR
 			out.Clubs = append(out.Clubs, raw)
 		}
 	}
-	out.Sign(s.store.key, g.Installation, g.registration(), time.Now())
+	out.Sign(s.store.key, g.Installation, g.registration(), s.now())
 	core.WriteJSON(w, http.StatusOK, out)
 }
 
@@ -419,7 +423,7 @@ func (s *Server) handlePartner(w http.ResponseWriter, r *http.Request) {
 			rq.Header[h] = v
 		}
 	}
-	rq.Sign(s.store.key, inst, g.registration(), time.Now())
+	rq.Sign(s.store.key, inst, g.registration(), s.now())
 	resp, err := s.broker.Do(r.Context(), inst, g.gen, rq, 10*time.Second, s.cfg.RequestTimeout+5*time.Second)
 	switch {
 	case errors.Is(err, ErrOffline):
