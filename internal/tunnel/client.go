@@ -38,6 +38,10 @@ type ClientConfig struct {
 	// and this secret's registration.
 	HubKey       ed25519.PublicKey
 	Installation string
+	// Verifier, when set, is the one the client checks with (built from
+	// HubKey, Installation and Secret otherwise): its Now is the hub's
+	// time, for the clubs' booking decisions.
+	Verifier *Verifier
 	// Polls is the number of concurrent long-poll requests (default 4).
 	Polls int
 	// Handler serves requests that arrive through the tunnel.
@@ -144,9 +148,12 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.HubURL == "" || cfg.Secret == "" || cfg.Handler == nil {
 		return nil, errors.New("tunnel: hub URL, secret and handler are required")
 	}
-	v, err := NewVerifier(cfg.HubKey, cfg.Installation, cfg.Secret, nil)
-	if err != nil {
-		return nil, err
+	v := cfg.Verifier
+	if v == nil {
+		var err error
+		if v, err = NewVerifier(cfg.HubKey, cfg.Installation, cfg.Secret, nil); err != nil {
+			return nil, err
+		}
 	}
 	cfg.HubURL = strings.TrimRight(cfg.HubURL, "/")
 	if cfg.Polls <= 0 {
@@ -336,20 +343,11 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	var nonce [16]byte
-	_, _ = crand.Read(nonce[:])
-	req.Header.Set(HeaderNonce, hex.EncodeToString(nonce[:]))
-	resp, err := c.http.Do(req)
+	resp, err := c.doTimed(req)
 	if err != nil {
 		return nil, cleanError(err)
 	}
 	defer resp.Body.Close()
-	if h := resp.Header.Get(HeaderHubTime); h != "" {
-		if err := c.verify.Time(req.Header.Get(HeaderNonce), h, resp.Header.Get(HeaderConfigVersion)); err != nil {
-			c.refused.Add(1)
-			c.log.Error("the hub's time refused: not signed by the hub for this gateway", "error", err)
-		}
-	}
 	c.noteConfigVersion(resp.Header)
 	if h := resp.Header.Get(HeaderUpdateHint); h != "" && c.cfg.OnHint != nil {
 		if prev, _ := c.lastHint.Load().(string); prev != h {
@@ -387,6 +385,30 @@ func (c *Client) poll(ctx context.Context, connected func()) (*Request, error) {
 		return nil, errors.New("hub sent a request without id")
 	}
 	return &rq, nil
+}
+
+// doTimed sends req with a fresh nonce and takes the hub's signed time
+// from the answer (Verifier.Time).
+func (c *Client) doTimed(req *http.Request) (*http.Response, error) {
+	var nonce [16]byte
+	_, _ = crand.Read(nonce[:])
+	req.Header.Set(HeaderNonce, hex.EncodeToString(nonce[:]))
+	sent := c.verify.now()
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if h := resp.Header.Get(HeaderHubTime); h != "" {
+		err := c.verify.Time(req.Header.Get(HeaderNonce), h, resp.Header.Get(HeaderConfigVersion), sent)
+		switch {
+		case errors.Is(err, ErrBadSignature):
+			c.refused.Add(1)
+			c.log.Error("the hub's time refused: not signed by the hub for this gateway", "error", err)
+		case err != nil:
+			c.log.Debug("the hub's time not taken", "error", err)
+		}
+	}
+	return resp, nil
 }
 
 func (c *Client) noteConfigVersion(h http.Header) {
@@ -526,7 +548,13 @@ func (c *Client) Execute(ctx context.Context, rq Request) Response {
 		b, _ := json.Marshal(map[string]string{"code": code, "message": msg, "request_id": rq.RequestID})
 		return Response{ID: rq.ID, Status: status, Header: map[string]string{"Content-Type": "application/json; charset=utf-8"}, Body: b}
 	}
-	if err := c.verify.Request(&rq); err != nil {
+	err := c.verify.Request(&rq)
+	if errors.Is(err, ErrClockUnknown) {
+		r := fail(http.StatusServiceUnavailable, "CLOCK_UNKNOWN", "the club's gateway does not know the hub's time yet, retry")
+		r.Header["Retry-After"] = "5"
+		return r
+	}
+	if err != nil {
 		c.refused.Add(1)
 		c.log.Error("request refused: not signed by the hub for this gateway", "request_id", rq.RequestID, "error", err)
 		return fail(http.StatusBadGateway, "SIGNATURE_REJECTED", "the club's gateway did not accept the hub's signature")

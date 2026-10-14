@@ -45,18 +45,18 @@ func TestBackoffGrowsWithJitterAndCaps(t *testing.T) {
 
 func TestExecuteBoundsTheResponse(t *testing.T) {
 	big := strings.Repeat("x", MaxResponseBody+1)
-	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(big))
-	})})
+	}))
 	r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", RequestID: "rq-1"}))
 	if r.Status != http.StatusBadGateway || !strings.Contains(string(r.Body), "RESPONSE_TOO_LARGE") || len(r.Body) > 1000 {
 		t.Fatalf("%d %.100s", r.Status, r.Body)
 	}
 	// Authorization is never forwarded into the gateway
 	var sawAuth string
-	c, _ = NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c = testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
-	})})
+	}))
 	c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: "/v1/clubs", Header: map[string]string{"Authorization": "Bearer partner-key"}}))
 	if sawAuth != "" {
 		t.Fatal("a partner key reached the gateway")
@@ -67,9 +67,9 @@ func TestExecuteBoundsTheResponse(t *testing.T) {
 // handler: here the handler would serve any path, so only the allow-list
 // stands between the hub and everything else.
 func TestAllowListIndependentOfHandler(t *testing.T) {
-	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("served " + r.URL.Path))
-	})})
+	}))
 	for _, p := range []string{"/hub/status", "/debug/pprof/", "/", "", "/v1/../etc", "/v1/clubs/%2e%2e", "/healthz", "/health/ready"} {
 		if r := c.Execute(context.Background(), signed(Request{Method: http.MethodGet, Path: p})); r.Status != http.StatusNotFound {
 			t.Fatalf("%q reached the handler: %d %s", p, r.Status, r.Body)
@@ -105,10 +105,10 @@ func TestAllowListIndependentOfHandler(t *testing.T) {
 // with a long timeout keeps two minutes, not a default 30 seconds.
 func TestExecuteClampsTheTimeout(t *testing.T) {
 	var left time.Duration
-	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", HubKey: testPub, Installation: "inst", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dl, _ := r.Context().Deadline()
 		left = time.Until(dl)
-	})})
+	}))
 	for _, tc := range []struct {
 		ms       int
 		min, max time.Duration

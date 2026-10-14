@@ -245,8 +245,18 @@ func NewSigning(installation string) Signing {
 // Client is a tunnel client that trusts s.
 func (s Signing) Client(t *testing.T, handler http.Handler) *tunnel.Client {
 	t.Helper()
+	pub := s.Key.Public().(ed25519.PublicKey)
+	v, err := tunnel.NewVerifier(pub, s.Installation, s.Secret, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the hub's time, as the client's first poll answer brings it
+	reg := tunnel.RegistrationOf(tunnel.SecretSHA256(s.Secret))
+	if err := v.Time("sync", tunnel.SignTime(s.Key, s.Installation, reg, "sync", "0", time.Now()), "0", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: "https://hub.invalid", Secret: s.Secret, Handler: handler,
-		HubKey: s.Key.Public().(ed25519.PublicKey), Installation: s.Installation})
+		HubKey: pub, Installation: s.Installation, Verifier: v})
 	if err != nil {
 		t.Fatal(err)
 	}

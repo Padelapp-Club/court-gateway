@@ -32,6 +32,12 @@ const clockSkew = 30 * time.Second
 // its own clock otherwise, refusing them (readiness: CLOCK_SKEW).
 const MaxClockSkew = time.Hour
 
+// MaxTimeRoundTrip bounds how long a poll may take, from sending it to
+// its answer's headers, for the hub's time on that answer to be taken:
+// the hub sends the headers before it holds the poll, so a slower answer
+// (a proxy that buffers it) would leave the time that much behind.
+const MaxTimeRoundTrip = 5 * time.Second
+
 // maxSeen bounds the request ids the gateway remembers against replay.
 const maxSeen = 1 << 16
 
@@ -159,6 +165,15 @@ func SignTime(key ed25519.PrivateKey, installation, registration, nonce, version
 // gateway, or no longer valid.
 var ErrBadSignature = errors.New("not signed by the hub for this gateway")
 
+// ErrClockUnknown: the gateway does not know the hub's time yet, or this
+// computer's clock is more than MaxClockSkew off it; nothing that depends
+// on the time now is decided (a request is refused, not executed).
+var ErrClockUnknown = errors.New("the hub's time is not known")
+
+// ErrSlowTime: the hub's time arrived too late to be taken
+// (MaxTimeRoundTrip).
+var ErrSlowTime = errors.New("the hub's time arrived too late to be taken")
+
 // Verifier checks the hub's signatures on the gateway, against the hub's
 // time as last signed for it (Time), and the hub's announcements of its
 // config version.
@@ -170,6 +185,7 @@ type Verifier struct {
 	started      time.Time // this process, on now
 
 	mu     sync.Mutex
+	synced bool                 // the hub has signed its time for this process
 	offset time.Duration        // the hub's clock minus now, as last signed
 	config int64                // the highest config version applied or announced
 	seen   map[string]time.Time // request id -> until when (hub time) it is remembered
@@ -188,12 +204,13 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 		seen: map[string]time.Time{}}, nil
 }
 
-// Time takes the hub's signed time from a poll answer (header, the
-// HeaderHubTime value, signed with the poll's nonce and the announced
-// config version): from then on signatures are checked against the hub's
-// clock, so this computer's may be off, and a config older than version
-// is refused.
-func (v *Verifier) Time(nonce, header, version string) error {
+// Time takes the hub's signed time from the answer to a request sent at
+// sent (header, the HeaderHubTime value, signed with the request's nonce
+// and the announced config version): from then on signatures are checked
+// against the hub's clock, so this computer's may be off, and a config
+// older than version is refused. An answer slower than MaxTimeRoundTrip
+// is not taken (ErrSlowTime).
+func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
 	sig, err2 := base64.StdEncoding.DecodeString(sigText)
@@ -202,7 +219,14 @@ func (v *Verifier) Time(nonce, header, version string) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.offset = time.UnixMilli(ms).Sub(v.now())
+	received := v.now()
+	if rtt := received.Sub(sent); rtt > MaxTimeRoundTrip {
+		return fmt.Errorf("%w: %s after the request", ErrSlowTime, rtt.Round(time.Millisecond))
+	}
+	// the hub signed before this arrived, so the offset may come out low by
+	// the answer's travel time, never high: the start below is never later
+	// than the true one
+	v.synced, v.offset = true, time.UnixMilli(ms).Sub(received)
 	if n, err := strconv.ParseInt(version, 10, 64); err == nil {
 		v.config = max(v.config, n)
 	}
@@ -217,20 +241,34 @@ func (v *Verifier) Offset() time.Duration {
 	return v.offset
 }
 
+// Now is the hub's time now, as the hub last signed it, and whether it
+// is known (ErrClockUnknown); when it is not, Now is this computer's own.
+// It is the clock of every booking decision (driver.Clock).
+func (v *Verifier) Now() (time.Time, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	now, _ := v.clock()
+	return now, v.known()
+}
+
+// known: the hub signed its time, and it is at most MaxClockSkew off this
+// computer's; v.mu must be held.
+func (v *Verifier) known() bool { return v.synced && v.offset.Abs() <= MaxClockSkew }
+
 // clock is the hub's time now and at this process's start, as far as it
-// is corrected (MaxClockSkew); v.mu must be held.
+// is known; v.mu must be held.
 func (v *Verifier) clock() (now, started time.Time) {
-	off := v.offset
-	if off.Abs() > MaxClockSkew {
-		off = 0
+	var off time.Duration
+	if v.known() {
+		off = v.offset
 	}
 	return v.now().Add(off), v.started.Add(off)
 }
 
-func (v *Verifier) check(s Seal, msg []byte) error {
-	v.mu.Lock()
-	now, _ := v.clock()
-	v.mu.Unlock()
+// check verifies a seal: signed by the pinned key for this registration,
+// and valid now on the hub's clock, or on this computer's when that is
+// not known, unless needClock (ErrClockUnknown).
+func (v *Verifier) check(s Seal, msg []byte, needClock bool) error {
 	issued, expires := time.UnixMilli(s.IssuedAt), time.UnixMilli(s.ExpiresAt)
 	switch {
 	case !ed25519.Verify(v.key, msg, s.Signature):
@@ -239,6 +277,14 @@ func (v *Verifier) check(s Seal, msg []byte) error {
 		return fmt.Errorf("%w: signed for another installation or registration", ErrBadSignature)
 	case !expires.After(issued) || expires.Sub(issued) > SignedFor:
 		return fmt.Errorf("%w: invalid validity window", ErrBadSignature)
+	}
+	v.mu.Lock()
+	now, _ := v.clock()
+	known := v.known()
+	v.mu.Unlock()
+	switch {
+	case needClock && !known:
+		return ErrClockUnknown
 	case now.After(expires.Add(clockSkew)) || now.Before(issued.Add(-clockSkew)):
 		return fmt.Errorf("%w: expired or not yet valid (check this computer's clock)", ErrBadSignature)
 	}
@@ -246,16 +292,18 @@ func (v *Verifier) check(s Seal, msg []byte) error {
 }
 
 // Request accepts rq once: signed for this gateway, valid now, issued
-// after this process started (what it saw before a restart is forgotten),
-// and not seen before within its validity.
+// after this process started by the hub's clock (what it saw before a
+// restart is forgotten, and the hub signs a request as a poll of this
+// process takes it), and not seen before within its validity. Until the
+// hub's time is known it accepts nothing (ErrClockUnknown).
 func (v *Verifier) Request(rq *Request) error {
-	if err := v.check(rq.Seal, rq.Seal.message("request", rq.fields)); err != nil {
+	if err := v.check(rq.Seal, rq.Seal.message("request", rq.fields), true); err != nil {
 		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	now, started := v.clock()
-	if time.UnixMilli(rq.IssuedAt).Before(started.Add(-clockSkew)) {
+	if time.UnixMilli(rq.IssuedAt).Before(started) {
 		return fmt.Errorf("%w: issued before this gateway started", ErrBadSignature)
 	}
 	if _, dup := v.seen[rq.ID]; dup {
@@ -275,7 +323,7 @@ func (v *Verifier) Request(rq *Request) error {
 // now, and not older than one already applied or announced (Time).
 // Replaying it within its validity gives the same configuration.
 func (v *Verifier) Config(rc *RemoteConfig) error {
-	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields)); err != nil {
+	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err
 	}
 	v.mu.Lock()

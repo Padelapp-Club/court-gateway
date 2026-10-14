@@ -28,6 +28,27 @@ func signed(rq Request) Request {
 	return rq
 }
 
+// synced gives v the hub's time hubNow, as a quick poll answer does.
+func synced(t *testing.T, v *Verifier, hubNow time.Time) *Verifier {
+	t.Helper()
+	if err := v.Time("sync", SignTime(testKey, "inst", testRegistration, "sync", "0", hubNow), "0", v.now()); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// testClient is a client of the test registration that knows the hub's
+// time.
+func testClient(t *testing.T, h http.Handler) *Client {
+	t.Helper()
+	c, err := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", HubKey: testPub, Installation: "inst", Handler: h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	synced(t, c.verify, time.Now())
+	return c
+}
+
 func sampleRequest() Request {
 	return Request{ID: "call-1", RequestID: "rq-1", Method: http.MethodPost, Path: "/v1/clubs/a/bookings", Query: "x=1",
 		Header: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"court":"c1"}`),
@@ -44,7 +65,7 @@ func TestVerifierRefusesWhatTheHubDidNotSignForThisGateway(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return v
+		return synced(t, v, now)
 	}
 	_, otherKey, _ := ed25519.GenerateKey(nil)
 	good := func() Request {
@@ -98,6 +119,7 @@ func TestVerifierRefusesWhatTheHubDidNotSignForThisGateway(t *testing.T) {
 			t.Fatal(err)
 		}
 		clk = now
+		synced(t, v, now)
 		for _, skew := range []time.Duration{0, -clockSkew + time.Second, SignedFor + clockSkew - time.Second} {
 			rq := window(now.Add(-skew), SignedFor)
 			rq.ID = "fresh-" + skew.String()
@@ -150,8 +172,7 @@ func TestVerifierRefusesAnUnsignedConfig(t *testing.T) {
 // The gateway checks the partner's scopes the hub signed: a read-only
 // partner cannot write even through a signed request.
 func TestExecuteChecksTheSignedScopes(t *testing.T) {
-	c, _ := NewClient(ClientConfig{HubURL: "https://hub.invalid", Secret: "s", HubKey: testPub, Installation: "inst",
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })})
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) }))
 	for _, tc := range []struct {
 		method string
 		scopes []string
@@ -187,20 +208,26 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 		}
 		rq := sampleRequest()
 		rq.Sign(testKey, "inst", testRegistration, hubNow)
-		if err := v.Request(&rq); !errors.Is(err, ErrBadSignature) {
+		if err := v.Request(&rq); !errors.Is(err, ErrClockUnknown) {
 			t.Fatalf("clock %s off, no hub time yet: accepted (%v)", off, err)
+		}
+		if forged := sampleRequest(); !errors.Is(v.Request(&forged), ErrBadSignature) {
+			t.Fatal("an unsigned request is not refused for its signature while the hub's time is unknown")
 		}
 		stamp := SignTime(testKey, "inst", testRegistration, "nonce-1", "7", hubNow)
 		for name, err := range map[string]error{
-			"another nonce":   v.Time("nonce-2", stamp, "7"),
-			"another version": v.Time("nonce-1", stamp, "8"),
-			"forged":          v.Time("nonce-1", SignTime(otherTestKey, "inst", testRegistration, "nonce-1", "7", hubNow), "7"),
+			"another nonce":   v.Time("nonce-2", stamp, "7", local),
+			"another version": v.Time("nonce-1", stamp, "8", local),
+			"forged":          v.Time("nonce-1", SignTime(otherTestKey, "inst", testRegistration, "nonce-1", "7", hubNow), "7", local),
 		} {
 			if !errors.Is(err, ErrBadSignature) {
 				t.Fatalf("%s: stamp accepted (%v)", name, err)
 			}
 		}
-		if err := v.Time("nonce-1", stamp, "7"); err != nil || (v.Offset()-off).Abs() > time.Millisecond {
+		if _, known := v.Now(); known {
+			t.Fatal("a refused stamp made the hub's time known")
+		}
+		if err := v.Time("nonce-1", stamp, "7", local); err != nil || (v.Offset()-off).Abs() > time.Millisecond {
 			t.Fatalf("stamp: %v, offset %s", err, v.Offset())
 		}
 		rq.ID = "after-stamp"
@@ -217,30 +244,58 @@ func TestVerifierChecksAgainstTheHubsTime(t *testing.T) {
 	}
 	local := hubNow.Add(-2 * time.Hour)
 	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1"); err != nil || (v.Offset()-2*time.Hour).Abs() > time.Millisecond {
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local); err != nil || (v.Offset()-2*time.Hour).Abs() > time.Millisecond {
 		t.Fatalf("a large offset is still reported: %v %s", err, v.Offset())
 	}
 	rq := sampleRequest()
 	rq.Sign(testKey, "inst", testRegistration, hubNow)
-	if err := v.Request(&rq); !errors.Is(err, ErrBadSignature) {
+	if err := v.Request(&rq); !errors.Is(err, ErrClockUnknown) {
 		t.Fatalf("beyond MaxClockSkew a request was accepted: %v", err)
+	}
+	if _, known := v.Now(); known {
+		t.Fatal("beyond MaxClockSkew the hub's time counts as known")
 	}
 }
 
-// A request issued before the gateway started is refused even within its
-// window: the replay memory does not survive a restart.
+// A request issued before the gateway started, by the hub's clock, is
+// refused even within its window, with no tolerance: the replay memory
+// does not survive a restart, and the hub signs a request only when a
+// poll of the running process takes it.
 func TestVerifierRefusesRequestsFromBeforeItsStart(t *testing.T) {
-	now := time.Now()
-	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return now })
+	hubNow := time.Now()
+	local := hubNow.Add(-55 * time.Minute) // the hub's clock is ahead
+	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
+	synced(t, v, hubNow)
 	rq := sampleRequest()
-	rq.Sign(testKey, "inst", testRegistration, now.Add(-clockSkew-time.Second))
+	rq.Sign(testKey, "inst", testRegistration, hubNow.Add(-time.Millisecond))
 	if err := v.Request(&rq); !errors.Is(err, ErrBadSignature) {
-		t.Fatalf("a request from before the start accepted: %v", err)
+		t.Fatalf("a request from just before the start accepted: %v", err)
 	}
 	rq.ID = "fresh"
-	rq.Sign(testKey, "inst", testRegistration, now.Add(-clockSkew+time.Second))
+	rq.Sign(testKey, "inst", testRegistration, hubNow)
 	if err := v.Request(&rq); err != nil {
-		t.Fatalf("a request within the skew of the start: %v", err)
+		t.Fatalf("a request issued at the start: %v", err)
+	}
+}
+
+// The hub's time is taken only from an answer that came back within
+// MaxTimeRoundTrip: a slower one would leave it behind by as much.
+func TestVerifierTakesTheHubsTimeOnlyFromAQuickAnswer(t *testing.T) {
+	hubNow := time.Now()
+	local := hubNow
+	v, _ := NewVerifier(testPub, "inst", "s", func() time.Time { return local })
+	sent := local.Add(-MaxTimeRoundTrip - time.Millisecond)
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", sent); !errors.Is(err, ErrSlowTime) {
+		t.Fatalf("a slow answer: %v", err)
+	}
+	if _, known := v.Now(); known {
+		t.Fatal("the time of a slow answer was taken")
+	}
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "1", hubNow), "1", local.Add(-MaxTimeRoundTrip)); err != nil {
+		t.Fatalf("an answer within the bound: %v", err)
+	}
+	if now, known := v.Now(); !known || !now.Equal(hubNow.Truncate(time.Millisecond)) {
+		t.Fatalf("hub time %s (known %v), want %s", now, known, hubNow)
 	}
 }
 
@@ -262,7 +317,7 @@ func TestVerifierRefusesAnOlderConfig(t *testing.T) {
 	if err := v.Config(config(5)); err != nil {
 		t.Fatalf("the same config again: %v", err)
 	}
-	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "7", time.Now()), "7"); err != nil {
+	if err := v.Time("n", SignTime(testKey, "inst", testRegistration, "n", "7", time.Now()), "7", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.Config(config(6)); !errors.Is(err, ErrBadSignature) {

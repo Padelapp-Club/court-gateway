@@ -438,12 +438,12 @@ func TestHubStopsPromptlyAndCleanly(t *testing.T) {
 // which the hub signs on every poll answer: a club computer whose clock
 // is ten minutes off is served, the hub signing with its own clock; one
 // more than an hour off is not corrected (the gateway reports CLOCK_SKEW)
-// and refuses what the hub signs.
+// and runs nothing the hub sends (503 CLOCK_UNKNOWN).
 func TestGatewayFollowsTheHubsClock(t *testing.T) {
 	for _, c := range []struct {
 		ahead  time.Duration
 		status int
-	}{{10 * time.Minute, http.StatusNotFound}, {-10 * time.Minute, http.StatusNotFound}, {2 * time.Hour, http.StatusBadGateway}} {
+	}{{10 * time.Minute, http.StatusNotFound}, {-10 * time.Minute, http.StatusNotFound}, {2 * time.Hour, http.StatusServiceUnavailable}} {
 		t.Run(c.ahead.String(), func(t *testing.T) {
 			w := newWorld(t, hub.Options{Now: func() time.Time { return time.Now().Add(c.ahead) }}, "")
 			w.connect(t, w.hub.URL())

@@ -48,8 +48,7 @@ func redirectTo(target string) http.HandlerFunc {
 func TestHubRedirectsAreNotFollowed(t *testing.T) {
 	plain, plainHits := plainHub(t)
 	pub, key, _ := ed25519.GenerateKey(nil)
-	genuine := tunnel.Request{ID: "real", Method: http.MethodGet, Path: "/v1/clubs", Partner: "reader", Scopes: []string{"read"}}
-	genuine.Sign(key, "inst", tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-gateway-secret")), time.Now())
+	registration := tunnel.RegistrationOf(tunnel.SecretSHA256("fixture-gateway-secret"))
 	var polls atomic.Int32
 	replied := make(chan struct{})
 	var once sync.Once
@@ -57,6 +56,9 @@ func TestHubRedirectsAreNotFollowed(t *testing.T) {
 		switch {
 		case r.URL.Path == tunnel.PathPoll && polls.Add(1) == 1:
 			// one genuine request, so that its reply goes out too
+			genuine := tunnel.Request{ID: "real", Method: http.MethodGet, Path: "/v1/clubs", Partner: "reader", Scopes: []string{"read"}}
+			genuine.Sign(key, "inst", registration, time.Now())
+			w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(key, "inst", registration, r.Header.Get(tunnel.HeaderNonce), "", time.Now()))
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(genuine)
 			return
