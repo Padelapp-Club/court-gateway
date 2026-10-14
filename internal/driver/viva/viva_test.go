@@ -22,13 +22,7 @@ import (
 
 func call(t *testing.T, f *fixture, method, path, key string, body string) (int, map[string]any, string) {
 	t.Helper()
-	var rd *strings.Reader
-	if body != "" {
-		rd = strings.NewReader(body)
-	} else {
-		rd = strings.NewReader("")
-	}
-	req := httptest.NewRequest(method, path, rd)
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}

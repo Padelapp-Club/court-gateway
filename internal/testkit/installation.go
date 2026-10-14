@@ -97,13 +97,10 @@ func (h *Hub) MustOperator(t *testing.T, want int, method, path string, body any
 // Installation is a gateway that serves the clubs configured on the hub
 // for its installation, as `serve` runs it.
 type Installation struct {
-	ID      string
-	Base    *core.Settings
 	Clubs   *core.Clubs
 	Syncer  *remote.Syncer
 	Gateway *Gateway
 	Logs    *contract.LogBuffer
-	hub     *Hub
 }
 
 // InstallationOptions configure StartInstallation.
@@ -111,13 +108,12 @@ type InstallationOptions struct {
 	// CRMYAML is the crm section of gateway.yaml (no club).
 	CRMYAML string
 	// Env is the gateway's environment (CRM_PASSWORD...).
-	Env       map[string]string
-	CRMType   string
-	Factory   driver.Factory
-	Account   driver.AccountFactory
-	Hook      func(*driver.Config)
-	Clubs     []core.ClubSpec
-	NoConnect bool
+	Env     map[string]string
+	CRMType string
+	Factory driver.Factory
+	Account driver.AccountFactory
+	Hook    func(*driver.Config)
+	Clubs   []core.ClubSpec
 }
 
 // StartInstallation creates installation id on h through the operator API,
@@ -169,10 +165,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	syncer := remote.New(remote.Options{Base: base, Factories: map[string]driver.Factory{o.CRMType: o.Factory}, Clubs: clubs,
 		Logger: log, DriverHook: o.Hook, Retry: 100 * time.Millisecond})
-	in := &Installation{ID: id, Base: base, Clubs: clubs, Syncer: syncer, Logs: logs, hub: h}
-	if o.NoConnect {
-		return in
-	}
+	in := &Installation{Clubs: clubs, Syncer: syncer, Logs: logs}
 	cfg := h.ClientConfig(id, rr.Secret, clubs.TunnelHandler(), log)
 	cfg.OnConfigVersion = syncer.Notify
 	in.Gateway = StartGateway(t, cfg)

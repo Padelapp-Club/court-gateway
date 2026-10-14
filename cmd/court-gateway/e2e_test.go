@@ -77,11 +77,7 @@ func newStackWith(t *testing.T, opts hub.Options, hubYAML ...string) *stack {
 	}
 	crm := httptest.NewServer(stub)
 	t.Cleanup(crm.Close)
-	h := testkit.StartHub(t, "poll_wait: 1s\noperator_key_env: HUB_OPERATOR_KEY\n"+strings.Join(hubYAML, "")+testkit.HubPartnersYAML, func() map[string]string {
-		e := contract.KeyEnv()
-		e["HUB_OPERATOR_KEY"] = "test-operator-key-0123456789abcdef"
-		return e
-	}(), opts)
+	h := testkit.StartHub(t, "poll_wait: 1s\n"+testkit.OperatorYAML+strings.Join(hubYAML, "")+testkit.HubPartnersYAML, testkit.HubEnv(), opts)
 	return &stack{hub: h, stub: stub, crm: crm, dir: t.TempDir()}
 }
 
