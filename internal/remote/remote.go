@@ -393,16 +393,12 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 }
 
 // without is the previous config old less the courts that next, the
-// club's newer config not served, removed; old itself when none are.
+// club's newer config not served, removed (old itself when none are).
 func without(old, next *core.Server) *core.Server {
-	if next == nil {
-		return old
-	}
 	st := *old.Settings()
-	st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool {
-		_, kept := next.Settings().CourtByID(c.ID)
-		return !kept
-	})
+	if next != nil {
+		st.Courts = slices.DeleteFunc(slices.Clone(st.Courts), func(c core.Court) bool { _, ok := next.Settings().CourtByID(c.ID); return !ok })
+	}
 	if len(st.Courts) == len(old.Settings().Courts) {
 		return old
 	}

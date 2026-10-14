@@ -64,15 +64,14 @@ func cmdServe(args []string, stderr io.Writer, getenv func(string) string, defau
 }
 
 func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procEnv func(string) string) int {
+	fail := func(err error) int { fmt.Fprintf(stderr, "court-gateway: %v\n", err); return 2 }
 	getenv, err := core.EnvWithDotEnv(cfgPath, procEnv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	s, err := core.LoadFile(cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	var out io.Writer = stderr
 	closeLog := func() {}
@@ -104,14 +103,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	// the clubs take "now" from
 	verifier, err := tunnel.NewVerifier(s.Hub.Key, s.Hub.Installation, s.Hub.Secret, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	s.Driver.Clock = verifier.Now
 	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -127,8 +124,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	hint := make(chan struct{}, 1)
 	roots, err := tunnel.LoadRoots(s.Hub.CAFile)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	client, err := tunnel.NewClient(tunnel.ClientConfig{
 		HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation, Verifier: verifier,
@@ -143,8 +139,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway: %v\n", err)
-		return 2
+		return fail(err)
 	}
 	syncer.SetFetch(client.FetchConfig)
 	go syncer.Run(ctx)
@@ -630,20 +625,18 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	fail := func(err error) int { fmt.Fprintln(stderr, err); return 1 }
 	getenv, err := core.EnvWithDotEnv(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	s, err := core.LoadFile(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	clubs, _, err := buildInstallation(s, nil)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -657,14 +650,12 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	}
 	roots, err := tunnel.LoadRoots(s.Hub.CAFile)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	c, err := tunnel.NewClient(tunnel.ClientConfig{HubURL: s.Hub.URL, Secret: s.Hub.Secret, HubKey: s.Hub.Key, Installation: s.Hub.Installation,
 		Handler: http.NotFoundHandler(), Transport: tunnel.NewTransport(roots, s.Hub.Proxy)})
 	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+		return fail(err)
 	}
 	if _, err := c.Whoami(ctx); err != nil {
 		fmt.Fprintln(stderr, "hub: unreachable or secret rejected")

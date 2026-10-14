@@ -243,9 +243,8 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	}
 }
 
-// notACourt is a record in a room that is no configured court: a court
-// removed from this club's config, or another studio's (club's) record,
-// which is no booking of this club at all.
+// notACourt: a record in no configured court's room is on a court removed
+// from this club's config, or another studio's: no booking of this club.
 func (d *Driver) notACourt(s slot) error {
 	if s.Studio != nil && strings.EqualFold(s.Studio.ID, d.studio) {
 		return driver.ErrCourtNotConfigured

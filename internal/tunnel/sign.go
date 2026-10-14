@@ -196,9 +196,8 @@ var ErrBadSignature = errors.New("not signed by the hub for this gateway")
 // more than MaxClockSkew off it: a request is refused, not executed.
 var ErrClockUnknown = errors.New("the hub's time is not known")
 
-// ErrStaleConfig: a config of another hub run (epoch) than announced, or
-// older than announced or applied since: a pull that crossed a newer
-// version or a hub restart; it is pulled again.
+// ErrStaleConfig: a config of another epoch (hub run) than announced, or
+// older than announced or applied since: it is pulled again.
 var ErrStaleConfig = errors.New("the config is older than the one announced or applied")
 
 // ErrSlowTime: the hub's time arrived too late to be taken (MaxTimeRoundTrip).
@@ -237,11 +236,9 @@ func NewVerifier(key ed25519.PublicKey, installation, secret string, now func() 
 
 // Time takes the hub's signed time (header, signed with the request's
 // nonce and version, "<number> <epoch>") from the answer to a request sent
-// at sent: signatures are then checked against the hub's clock, unless the
-// answer was slower than MaxTimeRoundTrip (ErrSlowTime). The version is
-// taken whatever the round trip: within an epoch it only goes up; a new
-// epoch (a restarted or restored hub) replaces it, also with a lower
-// number, unless its request was sent before one the current epoch answered.
+// at sent, unless slower than MaxTimeRoundTrip (ErrSlowTime). The version
+// is taken anyway: within an epoch it only goes up; a new epoch (a hub
+// restart or restore) replaces it, unless announced to an earlier request.
 func (v *Verifier) Time(nonce, header, version string, sent time.Time) error {
 	msText, sigText, _ := strings.Cut(header, " ")
 	ms, err1 := strconv.ParseInt(msText, 10, 64)
@@ -321,9 +318,8 @@ func (v *Verifier) Request(rq *Request, nonce string) error {
 }
 
 // Config accepts a club configuration signed for this gateway, valid now,
-// of the epoch announced and not older than announced (Time) or applied
-// since (ErrStaleConfig); a replay within its validity gives the same
-// configuration.
+// of the epoch announced (Time) and not older than announced or applied
+// since (ErrStaleConfig); a replay within its validity gives the same one.
 func (v *Verifier) Config(rc *RemoteConfig) error {
 	if err := v.check(rc.Seal, rc.Seal.message("config", rc.fields), false); err != nil {
 		return err

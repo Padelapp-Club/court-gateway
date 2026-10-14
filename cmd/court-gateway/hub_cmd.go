@@ -42,19 +42,16 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	log := core.NewLogger(stderr, slog.LevelInfo, s.Secrets)
 	store, err := hub.OpenStore(s.StateDir, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	srv, err := hub.NewServer(s, store, hub.Options{Logger: log, Version: version})
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -63,6 +60,11 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 		return 1
 	}
 	return 0
+}
+
+func hubFail(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
+	return 2
 }
 
 func loadHub(cfgPath string, getenv func(string) string) (*hub.Settings, error) {
@@ -85,8 +87,7 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	jc, err := hub.CreateJoinCode(s.StateDir, *inst, *name, *ttl, time.Now())
 	switch {
@@ -100,13 +101,11 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 		fmt.Fprintf(stderr, "court-gateway hub: --ttl: больше нуля и не дольше %s\n", hub.MaxJoinCodeTTL)
 		return 2
 	case err != nil:
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	key, err := hub.PublicKey(s.StateDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	fp := core.HubKeyFingerprint(key)
 	fmt.Fprintf(stdout, "Код подключения установки %s: %s\n", jc.Installation, jc.Code)
@@ -136,8 +135,7 @@ func cmdHubKey(args []string, stdout, stderr io.Writer, getenv func(string) stri
 			return 0
 		}
 	}
-	fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-	return 2
+	return hubFail(stderr, err)
 }
 
 func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
@@ -150,8 +148,7 @@ func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	}
 	s, err := loadHub(*cfgPath, getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "court-gateway hub: %v\n", err)
-		return 2
+		return hubFail(stderr, err)
 	}
 	if err := hub.RevokeGateway(s.StateDir, *inst); err != nil {
 		if errors.Is(err, hub.ErrNotRegistered) {
