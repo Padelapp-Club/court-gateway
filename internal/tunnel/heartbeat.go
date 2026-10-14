@@ -16,9 +16,11 @@ type Heartbeat struct {
 	// Build is BuildRelease or BuildSelf.
 	Build string `json:"build"`
 	Ready bool   `json:"ready"`
-	// Reason is a short upper-case code when Ready is false.
-	Reason    string    `json:"reason,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	// Reason is a short upper-case code when Ready is false; ReasonClubs
+	// are the clubs it is about (none for the account or the hub).
+	Reason      string    `json:"reason,omitempty"`
+	ReasonClubs []string  `json:"reason_clubs,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
 	// RefusedRequests counts, since the gateway started, the requests and
 	// configs it refused because the hub had not signed them for it.
 	RefusedRequests int64 `json:"refused_requests,omitempty"`
@@ -50,8 +52,10 @@ const MaxHeartbeatBody = 64 << 10
 type SelfCheck struct {
 	// Ready is the driver's readiness check.
 	Ready func(context.Context) error
-	// Reason maps a readiness error to a short code with no secrets.
+	// Reason maps a readiness error to a short code with no secrets,
+	// Clubs to the clubs it is about.
 	Reason func(error) string
+	Clubs  func(error) []string
 	// Interval between checks (default 60s); each is bounded by
 	// selfCheckTimeout.
 	Interval time.Duration
@@ -85,6 +89,9 @@ func (s *SelfCheck) Step(ctx context.Context) (Heartbeat, bool) {
 		hb.Reason = "NOT_READY"
 		if s.Reason != nil {
 			hb.Reason = s.Reason(err)
+		}
+		if s.Clubs != nil {
+			hb.ReasonClubs = s.Clubs(err)
 		}
 	}
 	return hb, true

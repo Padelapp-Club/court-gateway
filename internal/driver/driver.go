@@ -42,6 +42,17 @@ type MisconfigError struct {
 
 func (e *MisconfigError) Error() string { return strings.Join(e.Problems, "; ") }
 
+// ConfigAlert says, in Russian, what in a club's config disagrees with the
+// CRM without stopping the club being served (the driver works around
+// it): the club stays served, and readiness reports Code until the config
+// is fixed, so the operator is alerted.
+type ConfigAlert struct {
+	Code     string // a readiness reason, e.g. TIMEZONE_MISMATCH
+	Problems []string
+}
+
+func (e *ConfigAlert) Error() string { return e.Code + ": " + strings.Join(e.Problems, "; ") }
+
 // UpstreamKind classifies an upstream failure.
 type UpstreamKind int
 
@@ -210,7 +221,8 @@ type Resourcer interface {
 
 // ConfigChecker is implemented by drivers that can check a club's config
 // against the CRM: CheckConfig returns a *MisconfigError when it does not
-// match, any other error when the check could not be made.
+// match, a *ConfigAlert when it disagrees but can be served, any other
+// error when the check could not be made.
 type ConfigChecker interface {
 	CheckConfig(ctx context.Context) error
 }
@@ -220,4 +232,30 @@ type ConfigChecker interface {
 // as Studio.ID names it.
 type AccountClub interface {
 	Studio() string
+}
+
+// ZoneHorizon is how far ahead two zones must agree to count as the same
+// for a club: the booking horizon, past at least one clock change.
+const ZoneHorizon = 62 * 24 * time.Hour
+
+// ZonesDiffer returns the first instant in [from, from+horizon] at which a
+// and b are not as far from UTC, and whether there is one.
+func ZonesDiffer(a, b *time.Location, from time.Time, horizon time.Duration) (time.Time, bool) {
+	end := from.Add(horizon)
+	for t := from; !t.After(end); {
+		_, oa := t.In(a).Zone()
+		_, ob := t.In(b).Zone()
+		if oa != ob {
+			return t, true
+		}
+		// the next instant either zone changes its offset
+		next := end.Add(time.Nanosecond)
+		for _, l := range []*time.Location{a, b} {
+			if _, ze := t.In(l).ZoneBounds(); !ze.IsZero() && ze.Before(next) {
+				next = ze
+			}
+		}
+		t = next
+	}
+	return time.Time{}, false
 }

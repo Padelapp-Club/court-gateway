@@ -295,12 +295,12 @@ func ValidateClubSpec(c ClubSpec, crmKeys []string) error {
 // DraftClub turns discovered CRM material into a club spec draft. It is a
 // draft: the id is left to the operator, the grid may be a default, and
 // every guess comes with a notice. When the CRM tells the time zone it is
-// the club's: an asked zone with another offset from UTC is replaced, with
-// a notice (the gateway would refuse such a club).
+// the club's: an asked zone that is not as far from UTC on some day of the
+// booking horizon is replaced, with a notice (the gateway would alert).
 func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []driver.Notice) {
 	notes := append([]driver.Notice(nil), d.Notices...)
 	switch {
-	case d.Timezone != "" && timezone != "" && !sameOffsetNow(timezone, d.Timezone):
+	case d.Timezone != "" && timezone != "" && !sameOffset(timezone, d.Timezone):
 		notes = append(notes, driver.Notice{Code: "TIMEZONE_FROM_CRM", Message: fmt.Sprintf("часовой пояс %s не подходит: CRM считает дни студии по %s — он и подставлен", timezone, d.Timezone)})
 		timezone = d.Timezone
 	case timezone != "":
@@ -349,17 +349,16 @@ func DraftClub(d driver.Discovery, timezone string, slot int) (ClubSpec, []drive
 	return spec, notes
 }
 
-// sameOffsetNow reports whether two zones are as far from UTC right now.
-func sameOffsetNow(a, b string) bool {
+// sameOffset reports whether two zones are as far from UTC all through
+// the booking horizon.
+func sameOffset(a, b string) bool {
 	la, err1 := time.LoadLocation(a)
 	lb, err2 := time.LoadLocation(b)
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	now := time.Now()
-	_, oa := now.In(la).Zone()
-	_, ob := now.In(lb).Zone()
-	return oa == ob
+	_, differ := driver.ZonesDiffer(la, lb, time.Now(), driver.ZoneHorizon)
+	return !differ
 }
 
 // roundHours widens the hours to the slot grid; true if anything changed.

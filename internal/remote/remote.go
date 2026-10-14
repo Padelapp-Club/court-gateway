@@ -286,8 +286,9 @@ func (s *Syncer) verify(ctx context.Context, timeout time.Duration) []string {
 			cancel()
 		}
 		var me *driver.MisconfigError
+		var ca *driver.ConfigAlert
 		switch {
-		case err == nil:
+		case err == nil, errors.As(err, &ca): // an alert is reported by readiness, not refused
 			confirmed[id] = waiting[id]
 		case errors.As(err, &me):
 			var ps []string

@@ -23,7 +23,7 @@ func TestWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Driver{loc: msk, overnight: 4 * time.Hour, lookback: 7}
+	d := &Driver{overnight: 4 * time.Hour, lookback: 7}
 	cases := []struct {
 		name, kind, now, from, to string
 		wantFrom, wantTo          string
@@ -42,7 +42,7 @@ func TestWindow(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f, to, complete := d.window(c.kind, ts(c.from), ts(c.to), ts(c.now))
+			f, to, complete := d.window(c.kind, msk, ts(c.from), ts(c.to), ts(c.now))
 			if f.Format("2006-01-02") != c.wantFrom || to.Format("2006-01-02") != c.wantTo || complete != c.complete {
 				t.Fatalf("got %s..%s complete=%v, want %s..%s complete=%v",
 					f.Format("2006-01-02"), to.Format("2006-01-02"), complete, c.wantFrom, c.wantTo, c.complete)

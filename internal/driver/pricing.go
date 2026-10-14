@@ -1,5 +1,7 @@
 package driver
 
+import "time"
+
 // Weekdays is a set of ISO weekdays: index 0 = Monday ... 6 = Sunday.
 type Weekdays [7]bool
 
@@ -35,4 +37,7 @@ type PriceAdjustment struct {
 type PriceTable struct {
 	Base        []PriceRule
 	Adjustments []PriceAdjustment
+	// Zone is the zone whose days and clock the rules are written in; nil
+	// means the club's own zone.
+	Zone *time.Location
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"sort"
@@ -71,22 +72,24 @@ func segments(t driver.PriceTable, day, from, to int) []pricePeriod {
 // to whole rubles (half up). Each piece lies within one local day and one
 // offset, so its local clock minutes are its elapsed minutes: a repeated
 // hour (clocks go back) is charged twice and a skipped one (clocks go
-// forward) not at all. start and end must be on the slot grid (the API's
-// rule for bookings); the price itself does not depend on the grid.
+// forward) not at all. start and end must be on the slot grid of the
+// club's zone loc (the API's rule for bookings); the price itself does not
+// depend on the grid. The rules are read in their own zone (t.Zone).
 func quote(ctx context.Context, t driver.PriceTable, loc *time.Location, slot int, start, end time.Time) (int64, error) {
 	if !aligned(start, loc, slot) || !aligned(end, loc, slot) || !end.After(start) {
 		return 0, errNotAligned
 	}
+	rz := cmp.Or(t.Zone, loc)
 	var kopeckMinutes int64
 	for c := start; c.Before(end); {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		next := nextBoundary(c, loc)
+		next := nextBoundary(c, rz)
 		if end.Before(next) {
 			next = end
 		}
-		lc := c.In(loc)
+		lc := c.In(rz)
 		from := lc.Hour()*60 + lc.Minute()
 		for _, p := range segments(t, isoWeekday(lc), from, from+int(next.Sub(c)/time.Minute)) {
 			if !p.ok {
@@ -134,12 +137,48 @@ type pricePeriod struct {
 	ok       bool // a base rule covers the stretch
 }
 
-// dayPeriods lists the effective hourly prices of a local date, merging
+// dayPeriods lists the effective hourly prices of an ISO weekday, merging
 // adjacent stretches with the same price. Stretches without a price are
 // omitted.
 func dayPeriods(t driver.PriceTable, day int) []pricePeriod {
+	return merge(segments(t, day, 0, 1440))
+}
+
+// datePeriods lists the prices of the club's local date (midnight in
+// loc) in the club's clock. Rules written in a zone that is as far from
+// UTC all that day are the weekday's (dayPeriods); otherwise the day is
+// walked in pieces of one offset in both zones, each priced in the rules'
+// zone and shifted to the club's clock.
+func datePeriods(t driver.PriceTable, loc *time.Location, date time.Time) []pricePeriod {
+	end := time.Date(date.Year(), date.Month(), date.Day()+1, 0, 0, 0, 0, loc)
+	if _, differ := driver.ZonesDiffer(loc, cmp.Or(t.Zone, loc), date, end.Sub(date)-time.Nanosecond); !differ {
+		return dayPeriods(t, isoWeekday(date))
+	}
+	var all []pricePeriod
+	for c := date; c.Before(end); {
+		next := end
+		for _, b := range []time.Time{nextBoundary(c, t.Zone), nextBoundary(c, loc)} {
+			if b.Before(next) {
+				next = b
+			}
+		}
+		rc, cc := c.In(t.Zone), c.In(loc)
+		from := rc.Hour()*60 + rc.Minute()
+		shift := cc.Hour()*60 + cc.Minute() - from
+		for _, p := range segments(t, isoWeekday(rc), from, from+int(next.Sub(c)/time.Minute)) {
+			p.From, p.To = p.From+shift, p.To+shift
+			all = append(all, p)
+		}
+		c = next
+	}
+	return merge(all)
+}
+
+// merge drops the stretches without a price and joins adjacent ones with
+// the same price.
+func merge(ps []pricePeriod) []pricePeriod {
 	var out []pricePeriod
-	for _, p := range segments(t, day, 0, 1440) {
+	for _, p := range ps {
 		if !p.ok {
 			continue
 		}

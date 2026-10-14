@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,7 +46,7 @@ func clubsOf(t *testing.T, drivers ...driver.Driver) *Clubs {
 // Readiness checks the clubs in parallel, each club within its own time
 // limit (ReadyTimeout): twenty-four clubs that each take a second are
 // ready, although four at a time they take six; a club that is slower
-// than its limit is not. The reported error is the first club's.
+// than its limit is not. The reported error is the first club's, naming it.
 func TestClubsReadyInParallel(t *testing.T) {
 	t.Run("each within its limit", func(t *testing.T) {
 		t.Parallel()
@@ -64,7 +65,7 @@ func TestClubsReadyInParallel(t *testing.T) {
 		}
 	})
 	first, second := errors.New("first"), errors.New("second")
-	if err := clubsOf(t, slowDriver{err: first, delay: 20 * time.Millisecond}, slowDriver{err: second}).Ready(context.Background()); err != first {
+	if err := clubsOf(t, slowDriver{err: first, delay: 20 * time.Millisecond}, slowDriver{err: second}).Ready(context.Background()); !errors.Is(err, first) || fmt.Sprint(ReadyClubs(err)) != "[a]" {
 		t.Fatalf("err = %v, want the first club's", err)
 	}
 }

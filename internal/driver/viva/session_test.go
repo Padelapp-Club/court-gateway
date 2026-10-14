@@ -153,9 +153,11 @@ func TestWrongPasswordIsNotRetriedForTenMinutes(t *testing.T) {
 	}
 }
 
-// A club's studio, rooms and time zone are checked against the account
-// when the hub's config is applied: a club that does not match is refused
-// with its reason, the others are served. The readiness check asks again.
+// A club's studio and rooms are checked against the account when the
+// hub's config is applied: a club that does not match is refused with its
+// reason, the others are served. A club whose time zone is not the
+// studio's is served (the driver reads the studio's days) and readiness
+// reports TIMEZONE_MISMATCH for it. The readiness check asks again.
 func TestClubConfigMustMatchTheStudio(t *testing.T) {
 	stub := vivastub.New(stubUser, stubPass, studio)
 	stub.AddRoom(room1, "Room one")
@@ -180,15 +182,18 @@ func TestClubConfigMustMatchTheStudio(t *testing.T) {
 		t.Fatal("mismatching clubs were applied")
 	}
 	errs := in.syncer.State().ClubErrors
-	for club, want := range map[string]string{"no-studio": "crm.studio", "foreign-room": "courts[1].viva_room", "other-zone": "timezone"} {
+	for club, want := range map[string]string{"no-studio": "crm.studio", "foreign-room": "courts[1].viva_room"} {
 		if !strings.Contains(errs[club], want) {
 			t.Errorf("%s: %q, want %q", club, errs[club], want)
 		}
 	}
-	if ids := strings.Join(in.clubs.IDs(), ","); ids != "test-club" {
+	if errs["other-zone"] != "" {
+		t.Errorf("other-zone refused: %q", errs["other-zone"])
+	}
+	if ids := strings.Join(in.clubs.IDs(), ","); ids != "other-zone,test-club" {
 		t.Fatalf("served: %s", ids)
 	}
-	if err := in.clubs.Ready(context.Background()); err != nil {
+	if err := in.clubs.Ready(context.Background()); core.ReadyReason(err) != "TIMEZONE_MISMATCH" || fmt.Sprint(core.ReadyClubs(err)) != "[other-zone]" {
 		t.Fatalf("ready: %v", err)
 	}
 	// the room goes away in the CRM: the next readiness check sees it
@@ -198,9 +203,6 @@ func TestClubConfigMustMatchTheStudio(t *testing.T) {
 	}
 }
 
-// Around midnight the gateway's clock may be a little behind the CRM's: at
-// 23:59:50 here it is already tomorrow in the CRM, which then leaves out
-// today's exercises — but tomorrow's are still there.
 func TestGatewayClockBehindTheCRMAtMidnight(t *testing.T) {
 	msk := time.FixedZone("UTC+3", 3*3600)
 	gw := time.Date(2030, 3, 4, 23, 59, 50, 0, msk)

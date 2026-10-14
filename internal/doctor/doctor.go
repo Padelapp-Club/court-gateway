@@ -275,7 +275,7 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 		return append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "конфигурация клубов с хаба не получена"}), nil
 	}
 	servers, refused, _ := remote.Build(s, o.Factories, o.DriverHook, rc)
-	var problems, unchecked []string
+	var problems, unchecked, alerts []string
 	for _, r := range refused {
 		problems = append(problems, r.Problems...)
 	}
@@ -292,12 +292,17 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 		if cc, ok := cd.drv.(driver.ConfigChecker); ok {
 			err := withTimeout(ectx, o.Timeout, cc.CheckConfig)
 			var me *driver.MisconfigError
+			var ca *driver.ConfigAlert
 			switch {
 			case errors.As(err, &me):
 				for _, p := range me.Problems {
 					problems = append(problems, "клуб «"+cd.id+"»: "+p)
 				}
 				continue
+			case errors.As(err, &ca):
+				for _, p := range ca.Problems {
+					alerts = append(alerts, "клуб «"+cd.id+"»: "+p)
+				}
 			case err != nil:
 				unchecked = append(unchecked, cd.id+" ("+core.ReadyReason(err)+")")
 			}
@@ -323,6 +328,9 @@ func hubChecks(ctx context.Context, o Options, s *core.Settings, r *Report) ([]C
 			Hint: "служба применяет новую конфигурацию в течение минуты; если не применила — сообщите оператору"})
 	case who.Connected && len(unserved) > 0:
 		out = append(out, Check{Code: CodeHubConfig, Status: Fail, Message: "служба не обслуживает клубы: " + strings.Join(unserved, ", "), Hint: hint})
+	case len(alerts) > 0:
+		out = append(out, Check{Code: CodeHubConfig, Status: Warn, Message: "клубы обслуживаются, но их конфигурация расходится с CRM: " + strings.Join(alerts, "; "),
+			Hint: "сообщите оператору хаба: это исправляется в конфигурации клуба на хабе"})
 	case len(unchecked) > 0:
 		out = append(out, Check{Code: CodeHubConfig, Status: Warn, Message: "конфигурацию клубов не удалось сверить с CRM: " + strings.Join(unchecked, ", "),
 			Hint: "повторите doctor через минуту; служба сверяет клубы сама"})

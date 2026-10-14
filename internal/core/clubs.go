@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -97,8 +98,10 @@ const readyParallel = 4
 
 // Ready checks every club's CRM access, a few clubs at a time, each within
 // its own ReadyTimeout (and ctx); with no club it checks the account. The
-// error is the first club's, in id order. A club found not to match its
-// CRM (driver.MisconfigError) is blocked until a later check passes.
+// error is a *ReadyError: the first failing club's, in id order, or, when
+// the clubs have only config alerts (driver.ConfigAlert), the first alert
+// with every club that has one. A club found not to match its CRM
+// (driver.MisconfigError) is blocked until a later check passes.
 func (c *Clubs) Ready(ctx context.Context) error {
 	ctx = driver.WithEvaluation(ctx)
 	t := c.cur.Load()
@@ -126,10 +129,22 @@ func (c *Clubs) Ready(ctx context.Context) error {
 		}()
 	}
 	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return err
+	var alerts *ReadyError
+	for i, err := range errs {
+		var ca *driver.ConfigAlert
+		switch {
+		case err == nil:
+		case errors.As(err, &ca):
+			if alerts == nil {
+				alerts = &ReadyError{Err: err}
+			}
+			alerts.Clubs = append(alerts.Clubs, t.ids[i])
+		default:
+			return &ReadyError{Clubs: []string{t.ids[i]}, Err: err}
 		}
+	}
+	if alerts != nil {
+		return alerts
 	}
 	return nil
 }

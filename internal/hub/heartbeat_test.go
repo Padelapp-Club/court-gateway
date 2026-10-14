@@ -553,6 +553,34 @@ func TestStatusAPI(t *testing.T) {
 	}
 }
 
+// A not-ready reason about clubs (TIMEZONE_MISMATCH) names them in the
+// status files and in /hub/status, so the alert says which club to fix;
+// only valid ids pass.
+func TestNotReadyReasonNamesTheClubs(t *testing.T) {
+	w := newBeatWorld(t, "", nil, hub.Options{})
+	mon := w.hub.Server().Monitor()
+	for range 3 {
+		w.clock.Advance(time.Minute)
+		hb := tunnel.Heartbeat{Version: "1.0.0", Build: tunnel.BuildRelease, Reason: "TIMEZONE_MISMATCH",
+			ReasonClubs: []string{"club-north", "Not An Id!"}, CheckedAt: w.clock.Now()}
+		if err := w.gw.Client.SendHeartbeat(context.Background(), hb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mon.Tick()
+	checks, _ := validateStatusFiles(t, w.status)
+	if d, _ := checks["installation_demo_club_ready"]["detail"].(string); !strings.Contains(d, "TIMEZONE_MISMATCH (clubs: club-north)") || strings.Contains(d, "Not An Id") {
+		t.Fatalf("ready detail: %q", d)
+	}
+	r := call(t, w.hub, http.MethodGet, "/hub/status", testkit.OperatorKey, "")
+	var st struct {
+		Gateways []hub.GatewayStatus `json:"gateways"`
+	}
+	if err := json.Unmarshal(r.body, &st); err != nil || len(st.Gateways) != 1 || strings.Join(st.Gateways[0].ReadyReasonClubs, ",") != "club-north" {
+		t.Fatalf("status: %s", r.body)
+	}
+}
+
 func TestHubSendsNoAlertsOfItsOwn(t *testing.T) {
 	env := func(k string) string { return testkit.HubEnv()[k] }
 	// the hub only writes status files; any alert section is an unknown key

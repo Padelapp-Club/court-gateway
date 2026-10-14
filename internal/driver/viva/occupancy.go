@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -35,10 +36,10 @@ func parseTime(s string) (time.Time, bool) {
 // formatTime writes UTC with milliseconds, like JavaScript toISOString().
 func formatTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// day is local midnight of t in the studio's zone.
-func (d *Driver) day(t time.Time) time.Time {
-	t = t.In(d.loc)
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, d.loc)
+// day is local midnight of t in the studio's zone loc.
+func day(t time.Time, loc *time.Location) time.Time {
+	t = t.In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 }
 
 // clockSkew is how far the CRM's clock may run ahead of the gateway's:
@@ -51,7 +52,8 @@ const clockSkew = 5 * time.Minute
 const listDays = 7
 
 // window computes the dates to list for [from, to) and whether the answer
-// can be complete. Observed on a live account: the list endpoints select
+// can be complete; loc is the studio's zone (Driver.zone), whatever the
+// club's. Observed on a live account: the list endpoints select
 // records by the START date in the studio's local day (dateFrom..dateTo,
 // both included); the exercise list leaves out every exercise of a day
 // that is already past for the CRM (it keeps today and later), the break
@@ -68,13 +70,13 @@ const listDays = 7
 //     multi-day break (a renovation) that started earlier is seen. A break
 //     that started even earlier is not: the look-back bounds what is
 //     assumed (the partner API documents the limit).
-func (d *Driver) window(kind string, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
-	dateTo = d.day(to) // a record that starts after to's day cannot overlap
+func (d *Driver) window(kind string, loc *time.Location, from, to, now time.Time) (dateFrom, dateTo time.Time, complete bool) {
+	dateTo = day(to, loc) // a record that starts after to's day cannot overlap
 	if kind == "breaks" {
-		return d.day(from).AddDate(0, 0, -d.lookback), dateTo, true
+		return day(from, loc).AddDate(0, 0, -d.lookback), dateTo, true
 	}
-	today := d.day(now.Add(clockSkew))
-	return d.day(from).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
+	today := day(now.Add(clockSkew), loc)
+	return day(from, loc).AddDate(0, 0, -1), dateTo, !from.Before(today.Add(d.overnight))
 }
 
 // list reads one kind for the whole studio. Rooms are filtered here
@@ -114,9 +116,13 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		rooms[c.room] = cid
 	}
+	loc, err := d.zoneNow(ctx)
+	if err != nil {
+		return driver.Occupancy{}, err
+	}
 	occ := driver.Occupancy{Complete: true}
 	for _, kind := range []string{"exercises", "breaks"} {
-		dateFrom, dateTo, complete := d.window(kind, q.From, q.To, d.now())
+		dateFrom, dateTo, complete := d.window(kind, loc, q.From, q.To, d.now())
 		occ.Complete = occ.Complete && complete
 		step := listDays
 		if kind == "breaks" {
@@ -197,12 +203,19 @@ func minTime(a, b time.Time) time.Time {
 // Ready checks the club's config against the account (CheckConfig, which
 // logs in) and reads today's exercises and breaks of the first court,
 // validating every item as occupancy does: an answer occupancy would
-// refuse is not ready.
+// refuse is not ready. A config alert is returned only when the reads
+// pass.
 func (d *Driver) Ready(ctx context.Context) error {
-	if err := d.CheckConfig(ctx); err != nil {
+	st, err := d.studioOf(ctx)
+	if err != nil {
 		return err
 	}
-	today := d.day(d.now())
+	alert := d.check(st)
+	var ca *driver.ConfigAlert
+	if alert != nil && !errors.As(alert, &ca) {
+		return alert
+	}
+	today := day(d.now(), d.zone(st))
 	rooms := map[string]string{d.courts[0].room: ""}
 	for _, kind := range []string{"exercises", "breaks"} {
 		items, err := d.list(ctx, kind, today, today)
@@ -215,5 +228,5 @@ func (d *Driver) Ready(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return alert
 }

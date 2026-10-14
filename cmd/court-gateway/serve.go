@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/remote"
@@ -147,7 +148,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, geten
 		defer t.Stop()
 		// each club has its own time limit (core.ReadyTimeout); this only
 		// bounds the whole round
-		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Interval: statusInterval,
+		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Clubs: core.ReadyClubs, Interval: statusInterval,
 			Version: version, Build: build()}
 		var st core.HealthStatus
 		var crm tunnel.Heartbeat // the last self-check
@@ -508,7 +509,8 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := clubs.Ready(ctx); err != nil {
+	var alert *driver.ConfigAlert
+	if err := clubs.Ready(ctx); err != nil && !errors.As(err, &alert) { // an alert does not stop the update
 		fmt.Fprintln(stderr, "CRM: "+core.ReadyReason(err))
 		return update.SelfCheckTransientExit
 	}

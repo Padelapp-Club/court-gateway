@@ -240,7 +240,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := pricesDTO{Court: court, Date: date.Format("2006-01-02"), Currency: s.caps.Currency, Periods: []periodDTO{}}
-	for _, p := range dayPeriods(table, isoWeekday(date)) {
+	for _, p := range datePeriods(table, s.cfg.Location, date) {
 		out.Periods = append(out.Periods, periodDTO{Start: formatClock(p.From), End: formatClock(p.To), PricePerHour: rubles(p.PerHour)})
 	}
 	WriteJSON(w, http.StatusOK, out)

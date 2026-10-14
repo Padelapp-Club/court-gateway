@@ -53,6 +53,10 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 	if !ok || c.priceList == "" {
 		return driver.PriceTable{}, fmt.Errorf("price list of court %q: %w", courtID, driver.ErrNotFound)
 	}
+	loc, err := d.zoneNow(ctx) // the rules' times are the studio's
+	if err != nil {
+		return driver.PriceTable{}, err
+	}
 	status, data, err := d.c.do(ctx, http.MethodGet, "/pricing/"+c.priceList, nil, nil)
 	if err != nil {
 		return driver.PriceTable{}, err
@@ -64,7 +68,9 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 	default:
 		return driver.PriceTable{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /pricing/{id} answered HTTP %d", status))
 	}
-	return parsePricing(data)
+	t, err := parsePricing(data)
+	t.Zone = loc
+	return t, err
 }
 
 func parsePricing(data []byte) (driver.PriceTable, error) {

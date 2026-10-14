@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,11 +36,13 @@ type Server struct {
 }
 
 // noteCheck records a readiness result: a mismatch blocks the club, a
-// pass unblocks it, a check that could not be made changes nothing.
+// pass (or a mere alert) unblocks it, a check that could not be made
+// changes nothing.
 func (s *Server) noteCheck(err error) {
 	var me *driver.MisconfigError
+	var ca *driver.ConfigAlert
 	switch {
-	case err == nil:
+	case err == nil, errors.As(err, &ca):
 		s.mismatch.Store(false)
 	case errors.As(err, &me):
 		s.mismatch.Store(true)
@@ -278,11 +281,38 @@ func classify(err error) (int, string, string) {
 	}
 }
 
+// ReadyError is a readiness failure of the clubs named: the first club
+// (in id order) whose check failed, or, when the only findings are
+// config alerts, every club with one.
+type ReadyError struct {
+	Clubs []string
+	Err   error
+}
+
+func (e *ReadyError) Error() string {
+	return "клуб " + strings.Join(e.Clubs, ", ") + ": " + e.Err.Error()
+}
+
+func (e *ReadyError) Unwrap() error { return e.Err }
+
+// ReadyClubs returns the clubs a readiness failure is about (none for the
+// account's own login check).
+func ReadyClubs(err error) []string {
+	var re *ReadyError
+	if errors.As(err, &re) {
+		return re.Clubs
+	}
+	return nil
+}
+
 // ReadyReason maps a readiness failure to a short code with no secrets.
 func ReadyReason(err error) string {
 	var ue *driver.UpstreamError
 	var me *driver.MisconfigError
+	var ca *driver.ConfigAlert
 	switch {
+	case errors.As(err, &ca):
+		return ca.Code
 	case errors.As(err, &me):
 		return "CONFIG_MISMATCH"
 	case errors.Is(err, context.DeadlineExceeded):

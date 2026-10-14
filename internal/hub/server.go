@@ -476,8 +476,11 @@ type GatewayStatus struct {
 	Outdated      bool   `json:"outdated"`
 	Ready         *bool  `json:"ready"`
 	ReadyReason   string `json:"ready_reason,omitempty"`
-	LastCheck     string `json:"last_check,omitempty"`
-	RegisteredAt  string `json:"registered_at"`
+	// ReadyReasonClubs are the clubs ReadyReason is about, when it is
+	// about clubs (e.g. TIMEZONE_MISMATCH).
+	ReadyReasonClubs []string `json:"ready_reason_clubs,omitempty"`
+	LastCheck        string   `json:"last_check,omitempty"`
+	RegisteredAt     string   `json:"registered_at"`
 	// The club config the gateway runs (from its heartbeats).
 	AppliedConfigVersion int64             `json:"applied_config_version"`
 	ConfigError          string            `json:"config_error,omitempty"`
@@ -521,7 +524,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		Installation: g.Installation, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
 		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
-		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason,
+		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason, ReadyReasonClubs: h.ReasonClubs,
 		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.Clubs,
 		Duplicate: h.Duplicate, DuplicateSeenAt: ts(h.DuplicateAt), RefusedRequests: h.RefusedRequests,
 	}

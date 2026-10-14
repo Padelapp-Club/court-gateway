@@ -152,9 +152,9 @@ func readyDetail(v installationView, readyFailures int) string {
 	case v.state == StateOffline:
 		return "unknown while offline; last report: " + readyWord(v.installationHealth)
 	case v.state == StateNotReady:
-		return fmt.Sprintf("not ready: %s, %d heartbeats in a row (limit %d)", v.reason, v.notReady, readyFailures)
+		return fmt.Sprintf("not ready: %s, %d heartbeats in a row (limit %d)", reasonText(v.installationHealth), v.notReady, readyFailures)
 	case !v.ready:
-		return fmt.Sprintf("ready; last report not ready: %s, %d of %d heartbeats in a row before it counts", v.reason, v.notReady, readyFailures)
+		return fmt.Sprintf("ready; last report not ready: %s, %d of %d heartbeats in a row before it counts", reasonText(v.installationHealth), v.notReady, readyFailures)
 	default:
 		return "ready: CRM login and occupancy check passed"
 	}
@@ -171,7 +171,15 @@ func readyWord(h installationHealth) string {
 	if h.ready {
 		return "ready"
 	}
-	return "not ready " + h.reason
+	return "not ready " + reasonText(h)
+}
+
+// reasonText is the reason code with the clubs it is about, if any.
+func reasonText(h installationHealth) string {
+	if len(h.clubs) == 0 {
+		return h.reason
+	}
+	return h.reason + " (clubs: " + strings.Join(h.clubs, ", ") + ")"
 }
 
 type statusOptions struct {
