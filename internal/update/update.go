@@ -302,7 +302,7 @@ func (u *Updater) download(ctx context.Context, a Asset) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
-	dir := u.Versions.StagingDir()
+	dir := u.Versions.dir() // downloads go next to the versions: the last step is a rename
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

@@ -130,11 +130,6 @@ func (s *Server) handleCourts(w http.ResponseWriter, _ *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string][]courtDTO{"courts": out})
 }
 
-func parseTimeParam(v string) (time.Time, bool) {
-	t, err := time.Parse(time.RFC3339, v)
-	return t, err == nil
-}
-
 func (s *Server) courtParam(w http.ResponseWriter, r *http.Request, required bool) (string, bool) {
 	c := r.URL.Query().Get("court")
 	if c == "" {
@@ -153,9 +148,9 @@ func (s *Server) courtParam(w http.ResponseWriter, r *http.Request, required boo
 
 func (s *Server) handleOccupancy(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	from, ok1 := parseTimeParam(q.Get("from"))
-	to, ok2 := parseTimeParam(q.Get("to"))
-	if !ok1 || !ok2 {
+	from, err1 := time.Parse(time.RFC3339, q.Get("from"))
+	to, err2 := time.Parse(time.RFC3339, q.Get("to"))
+	if err1 != nil || err2 != nil {
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "from and to are required RFC3339 timestamps")
 		return
 	}
@@ -252,9 +247,9 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	start, ok1 := parseTimeParam(q.Get("start"))
-	end, ok2 := parseTimeParam(q.Get("end"))
-	if !ok1 || !ok2 || !end.After(start) || end.Sub(start) > maxBookingLength {
+	start, err1 := time.Parse(time.RFC3339, q.Get("start"))
+	end, err2 := time.Parse(time.RFC3339, q.Get("end"))
+	if err1 != nil || err2 != nil || !end.After(start) || end.Sub(start) > maxBookingLength {
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end are required RFC3339 timestamps, end after start, at most 24 hours")
 		return
 	}
@@ -308,9 +303,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such court")
 		return
 	}
-	start, ok1 := parseTimeParam(req.Start)
-	end, ok2 := parseTimeParam(req.End)
-	if !ok1 || !ok2 || !end.After(start) || end.Sub(start) > maxBookingLength {
+	start, err1 := time.Parse(time.RFC3339, req.Start)
+	end, err2 := time.Parse(time.RFC3339, req.End)
+	if err1 != nil || err2 != nil || !end.After(start) || end.Sub(start) > maxBookingLength {
 		WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "start and end are required RFC3339 timestamps, end after start, at most 24 hours")
 		return
 	}

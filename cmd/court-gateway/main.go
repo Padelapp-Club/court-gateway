@@ -1,14 +1,6 @@
 // Command court-gateway serves a CRM-agnostic partner API for one club and,
 // in hub mode, the public hub that partners call and gateways connect to.
-//
-//	court-gateway setup            build gateway.yaml and .env (interactive or --non-interactive --json)
-//	court-gateway set-password     replace the CRM password in .env (no join code needed)
-//	court-gateway serve            run the gateway (connects out to the hub)
-//	court-gateway doctor [--json]  check everything, with stable check codes
-//	court-gateway install-service  register with systemd / launchd / Windows SCM
-//	court-gateway healthcheck      container health probe (exit 0 = ready)
-//	court-gateway hub ...          run the hub, manage join codes
-//	court-gateway version
+// The commands are listed in usage.
 package main
 
 import (

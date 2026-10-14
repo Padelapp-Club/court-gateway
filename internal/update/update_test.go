@@ -164,7 +164,7 @@ func TestValidSignatureInstalls(t *testing.T) {
 			t.Fatalf("new binary not executable: %v", info.Mode())
 		}
 	}
-	noStrays(t, g.v.StagingDir())
+	noStrays(t, g.v.dir())
 }
 
 func TestBadSignatureRejected(t *testing.T) {
@@ -202,7 +202,7 @@ func TestBadChecksumRejected(t *testing.T) {
 	if g.v.Launch("1.0.0", time.Now()) != "" {
 		t.Fatal("a version was installed despite a checksum mismatch")
 	}
-	noStrays(t, g.v.StagingDir())
+	noStrays(t, g.v.dir())
 }
 
 func TestNotNewerIsNoop(t *testing.T) {
@@ -272,7 +272,7 @@ func TestChildCheckRejectsBrokenBinary(t *testing.T) {
 			if _, bad := readBad(g.state)["1.1.0"]; bad != c.bad {
 				t.Fatalf("marked bad = %v, want %v", bad, c.bad)
 			}
-			noStrays(t, g.v.StagingDir())
+			noStrays(t, g.v.dir())
 		})
 	}
 }
@@ -497,10 +497,10 @@ func TestRunningVersion(t *testing.T) {
 		t.Fatalf("nothing installed: %s", got)
 	}
 	v := &Versions{Dir: state}
-	if err := os.MkdirAll(v.StagingDir(), 0o700); err != nil {
+	if err := os.MkdirAll(v.dir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	dl := filepath.Join(v.StagingDir(), ".court-gateway-download-1")
+	dl := filepath.Join(v.dir(), ".court-gateway-download-1")
 	if err := os.WriteFile(dl, []byte("NEW BINARY 1.1.0"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -46,10 +46,6 @@ func (v *Versions) dir() string { return filepath.Join(v.Dir, "versions") }
 
 func (v *Versions) file(name string) string { return filepath.Join(v.dir(), name) }
 
-// StagingDir is where downloads go: the same directory as the versions,
-// so the final step is an atomic rename.
-func (v *Versions) StagingDir() string { return v.dir() }
-
 // Writable reports whether updates can be kept (the state directory is
 // writable).
 func (v *Versions) Writable() bool {
