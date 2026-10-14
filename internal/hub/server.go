@@ -238,14 +238,14 @@ func instance(r *http.Request) string {
 	return cmp.Or(v, "-")
 }
 
-// admitted refuses a second running copy of a gateway (Monitor.Admit).
-func (s *Server) admitted(w http.ResponseWriter, r *http.Request, g GatewayRecord) bool {
-	if s.monitor.Admit(g.Installation, g.gen, instance(r)) {
-		return true
+// admitted refuses a second running copy of a gateway (Monitor.Admit);
+// release is nil when it does.
+func (s *Server) admitted(w http.ResponseWriter, r *http.Request, g GatewayRecord) (release func()) {
+	if release = s.monitor.Admit(g.Installation, g.gen, instance(r)); release == nil {
+		w.Header().Set("Retry-After", "60")
+		core.WriteError(w, r, http.StatusConflict, "DUPLICATE_GATEWAY", "another copy of this gateway, with the same secret, is connected; only one may run")
 	}
-	w.Header().Set("Retry-After", "60")
-	core.WriteError(w, r, http.StatusConflict, "DUPLICATE_GATEWAY", "another copy of this gateway, with the same secret, is connected; only one may run")
-	return false
+	return release
 }
 
 func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
@@ -257,9 +257,11 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request, g Gateway
 // knows it is connected without waiting; the body follows when a request
 // arrives (a JSON tunnel.Request) or the wait ends (an empty body).
 func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
-	if !s.admitted(w, r, g) {
+	release := s.admitted(w, r, g)
+	if release == nil {
 		return
 	}
+	defer release()
 	m := meta(r)
 	if s.cfg.LatestVersion != "" && m.Build == tunnel.BuildRelease && version.Newer(s.cfg.LatestVersion, m.Version) {
 		w.Header().Set(tunnel.HeaderUpdateHint, s.cfg.LatestVersion)
@@ -319,9 +321,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed heartbeat")
 		return
 	}
-	if !s.admitted(w, r, g) {
+	release := s.admitted(w, r, g)
+	if release == nil {
 		return
 	}
+	release()
 	s.monitor.Heartbeat(g.Installation, hb)
 	w.Header().Set(tunnel.HeaderConfigVersion, strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10))
 	w.WriteHeader(http.StatusNoContent)

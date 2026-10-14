@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/auth"
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
@@ -108,9 +111,11 @@ func TestBusyGatewayIsNotTakenOver(t *testing.T) {
 			clk := newFakeClock()
 			b := hub.NewBroker(time.Minute, clk.Now)
 			m := hub.NewMonitor(nil, b, hub.MonitorConfig{OfflineAfter: 3 * time.Minute, Now: clk.Now})
-			if !m.Admit("installation", 1, "first") {
+			release := m.Admit("installation", 1, "first")
+			if release == nil {
 				t.Fatal("first refused")
 			}
+			release()
 			picked := make(chan *tunnel.Request, 1)
 			go func() { picked <- b.Poll(ctx, "installation", 1, hub.ConnMeta{Instance: "first", Polls: 1}) }()
 			testkit.WaitFor(t, "first polls", 5*time.Second, func() bool { return b.Serving("installation", "first") })
@@ -123,7 +128,7 @@ func TestBusyGatewayIsNotTakenOver(t *testing.T) {
 				t.Fatal("the call was not picked up")
 			}
 			time.Sleep(3200 * time.Millisecond) // past the moment between two polls
-			if m.Admit("installation", 1, "second") {
+			if m.Admit("installation", 1, "second") != nil {
 				t.Fatal("a second copy was admitted while the first runs a call")
 			}
 			switch end {
@@ -136,14 +141,85 @@ func TestBusyGatewayIsNotTakenOver(t *testing.T) {
 				}
 			case "deadline":
 				clk.Advance(19 * time.Second)
-				if m.Admit("installation", 1, "second") {
+				if m.Admit("installation", 1, "second") != nil {
 					t.Fatal("admitted before the call's time was up")
 				}
 				clk.Advance(time.Second)
 			}
-			if !m.Admit("installation", 1, "second") {
+			if m.Admit("installation", 1, "second") == nil {
 				t.Fatalf("the second copy was not admitted after the %s", end)
 			}
 		})
+	}
+}
+
+// pausedFlush holds a poll answer at its first flush (the headers), after
+// admission and before the poll reaches the broker.
+type pausedFlush struct {
+	*httptest.ResponseRecorder
+	entered, release chan struct{}
+}
+
+func (w *pausedFlush) Flush() { close(w.entered); <-w.release; w.ResponseRecorder.Flush() }
+
+// Two copies polling at the same moment: the one admitted first holds its
+// place from admission, before its poll reaches the broker, so the other
+// is refused (409 DUPLICATE_GATEWAY) and exactly one gets work.
+func TestTwoCopiesPollingAtOnceOneGetsWork(t *testing.T) {
+	store, err := hub.OpenStore(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateInstallation("inst", "Fixture"); err != nil {
+		t.Fatal(err)
+	}
+	jc, err := store.CreateJoinCode("inst", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := store.Redeem(jc.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.PutClub("inst", core.ClubSpec{ID: "club-one", Name: "Club"}); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := hub.NewServer(&hub.Settings{PollWait: time.Minute, RequestTimeout: 30 * time.Second, Interval: time.Minute, OfflineAfter: 3 * time.Minute, ReadyFailures: 3,
+		Partners:     []auth.Partner{{Name: "reader", Key: "fixture-partner-key", Scopes: []auth.Scope{auth.ScopeRead}}},
+		PartnerClubs: map[string][]string{"reader": {"club-one"}}}, store, hub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poll := func(instance string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, tunnel.PathPoll, nil).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		req.Header.Set(tunnel.HeaderInstance, instance)
+		return req
+	}
+	first := &pausedFlush{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), release: make(chan struct{})}
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); srv.Handler().ServeHTTP(first, poll("first")) }()
+	<-first.entered // admitted, not yet polling in the broker
+	second := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(second, poll("second"))
+	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), "DUPLICATE_GATEWAY") {
+		t.Fatalf("the second copy, polling while the first was admitted: %d %s", second.Code, second.Body)
+	}
+	close(first.release)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/v1/clubs/club-one/courts", nil).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer fixture-partner-key")
+		srv.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first copy got no work")
+	}
+	var call tunnel.Request
+	if err := json.Unmarshal(first.Body.Bytes(), &call); err != nil || call.Path != "/v1/clubs/club-one/courts" {
+		t.Fatalf("the first copy's poll: %d %s (%v)", first.Code, first.Body, err)
 	}
 }

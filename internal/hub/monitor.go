@@ -222,8 +222,11 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat) {
 // process that crashed or lost power has its polls closed or ended, and
 // its calls end with the time the gateway gives them. An instance that
 // released itself (it stopped) is not bound again. No instance id
-// survives a restart.
-func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
+// survives a restart. The check and the bind are one step with the hold
+// (Broker.hold): the admitted request counts as an open poll until its
+// release, so no other copy is admitted before it reaches the broker.
+// release is nil when instance is refused.
+func (m *Monitor) Admit(installation string, gen uint64, instance string) (release func()) {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -234,7 +237,7 @@ func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 	switch {
 	case instance == h.instance:
 	case instance == h.released:
-		return false
+		return nil
 	case h.instance == "" || m.broker == nil || !m.broker.Serving(installation, h.instance):
 		if h.instance != "" {
 			m.log.Warn("another copy of a gateway took over from one that stopped polling", "installation", installation)
@@ -245,9 +248,12 @@ func (m *Monitor) Admit(installation string, gen uint64, instance string) bool {
 			m.log.Warn("second copy of a gateway refused: two copies run with one secret", "installation", installation)
 		}
 		h.refusedAt = now
-		return false
+		return nil
 	}
-	return true
+	if m.broker == nil {
+		return func() {}
+	}
+	return m.broker.hold(installation, gen, instance)
 }
 
 // Release unbinds instance, which says it has stopped, so the copy

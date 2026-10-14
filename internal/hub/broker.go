@@ -150,6 +150,35 @@ func (b *Broker) Retire(inst string, gen uint64) {
 	}
 }
 
+// hold counts a request of instance as an open poll from its admission
+// (Monitor.Admit) until release, so Serving is true before it reaches
+// Poll.
+func (b *Broker) hold(inst string, gen uint64, instance string) (release func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.pollConn(inst, gen)
+	if c == nil {
+		return func() {}
+	}
+	ip := c.polls(instance)
+	ip.open++
+	return func() {
+		b.mu.Lock()
+		ip.open--
+		b.mu.Unlock()
+	}
+}
+
+// polls returns the polls of instance; b.mu must be held.
+func (c *gwConn) polls(instance string) *instancePolls {
+	ip := c.instances[instance]
+	if ip == nil {
+		ip = &instancePolls{calls: map[string]time.Time{}}
+		c.instances[instance] = ip
+	}
+	return ip
+}
+
 // Poll waits up to pollWait for a request for generation gen of inst. It
 // returns nil when none came, the gateway went away or gen was retired.
 func (b *Broker) Poll(ctx context.Context, inst string, gen uint64, meta ConnMeta) *tunnel.Request {
@@ -166,11 +195,7 @@ func (b *Broker) Poll(ctx context.Context, inst string, gen uint64, meta ConnMet
 	maps.DeleteFunc(c.instances, func(_ string, p *instancePolls) bool {
 		return p.open == 0 && time.Since(p.lastEnd) > b.grace && !p.running(now)
 	})
-	ip := c.instances[meta.Instance]
-	if ip == nil {
-		ip = &instancePolls{calls: map[string]time.Time{}}
-		c.instances[meta.Instance] = ip
-	}
+	ip := c.polls(meta.Instance)
 	ip.open++
 	b.mu.Unlock()
 	defer func() {
