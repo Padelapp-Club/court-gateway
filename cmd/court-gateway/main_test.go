@@ -89,6 +89,25 @@ func TestHealthcheck(t *testing.T) {
 	}
 }
 
+// A state directory set only in the .env is the one serve uses: the
+// healthcheck reads the status there, not a fresh one in the default.
+func TestHealthcheckReadsTheStateDirOfTheDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	cfg, state := filepath.Join(dir, "gateway.yaml"), filepath.Join(dir, "custom-state")
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(core.StateDirEnv+"="+state+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{filepath.Join(dir, "state"), state} {
+		if err := core.WriteHealthStatus(d, core.HealthStatus{Ready: d != state, Reason: "CRM_UNREACHABLE", Time: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"healthcheck", "-config", cfg}, &out, &errb, noEnv); code != 1 || !strings.Contains(out.String(), "ready=false") {
+		t.Fatalf("the status of the default directory was read: %d %s", code, out.String())
+	}
+}
+
 // The example shipped in the repository must stay a valid config.
 func TestExampleConfigIsValid(t *testing.T) {
 	env := map[string]string{"CRM_PASSWORD": "example-password", "GATEWAY_HUB_SECRET": "cgs_example"}

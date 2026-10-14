@@ -232,9 +232,12 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 }
 
 // StateDir is the state directory of the config at cfgPath, read without
-// secrets: $GATEWAY_STATE_DIR, else state_dir, else "state" next to it.
+// secrets: $GATEWAY_STATE_DIR (also from the .env, as serve reads it), else
+// state_dir, else "state" next to it. An unreadable .env stops serve too.
 func StateDir(cfgPath string, getenv func(string) string) string {
-	if getenv == nil {
+	if e, err := EnvWithDotEnv(cfgPath, getenv); err == nil {
+		getenv = e
+	} else if getenv == nil {
 		getenv = os.Getenv
 	}
 	if d := strings.TrimSpace(getenv(StateDirEnv)); d != "" {
