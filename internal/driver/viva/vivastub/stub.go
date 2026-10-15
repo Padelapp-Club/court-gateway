@@ -301,7 +301,7 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 2 && (parts[0] == "exercises" || parts[0] == "breaks") && r.Method == http.MethodDelete:
 		s.handleDelete(w, parts[0], parts[1])
 	case len(parts) == 1 && parts[0] == "studios" && r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, s.studios())
+		writeJSON(w, http.StatusOK, pageOf(s.studios(), r))
 	case len(parts) == 1 && parts[0] == "pricing" && r.Method == http.MethodGet:
 		s.handlePricingList(w, r)
 	case len(parts) == 2 && parts[0] == "pricing" && r.Method == http.MethodGet:
@@ -577,6 +577,21 @@ func (s *Stub) handlePricingList(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"content": content, "totalElements": len(ids), "totalPages": pages,
 		"number": page, "size": size, "last": page+1 >= pages})
+}
+
+// pageOf answers a list the way Viva pages it (GET /studios): page and
+// size from the query, size 20 by default.
+func pageOf(all []map[string]any, r *http.Request) map[string]any {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if size <= 0 {
+		size = 20
+	}
+	page = max(page, 0)
+	pages := (len(all) + size - 1) / size
+	content := all[min(page*size, len(all)):min((page+1)*size, len(all))]
+	return map[string]any{"content": content, "totalElements": len(all), "totalPages": pages,
+		"number": page, "size": size, "first": page == 0, "last": page+1 >= pages, "empty": len(content) == 0}
 }
 
 func (s *Stub) handlePricing(w http.ResponseWriter, id string) {
