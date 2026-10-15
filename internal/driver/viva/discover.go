@@ -45,19 +45,43 @@ type vivaStudio struct {
 
 var vivaDays = [7]string{"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"}
 
-// listStudios reads GET /studios. Only id, name, offset, workTime and the
-// rooms' id and name are decoded; rates, directions and the rest are not.
+// studioPageSize and maxStudioPages bound how many studios GET /studios
+// lists; an account has a few.
+var (
+	studioPageSize = 100
+	maxStudioPages = 10
+)
+
+// listStudios reads GET /studios, a page of studios like GET /pricing.
+// Only id, name, offset, workTime and the rooms' id and name are decoded;
+// rates, directions and the rest are not.
 func listStudios(ctx context.Context, c *client) ([]vivaStudio, error) {
-	status, data, err := c.do(ctx, http.MethodGet, "/studios", nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	if status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /studios answered HTTP %d", status))
-	}
 	var list []vivaStudio
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /studios: response is not a JSON array of studios")
+	for n := 0; n < maxStudioPages; n++ {
+		q := url.Values{"page": {strconv.Itoa(n)}, "size": {strconv.Itoa(studioPageSize)}}
+		status, data, err := c.do(ctx, http.MethodGet, "/studios", q, nil)
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /studios answered HTTP %d", status))
+		}
+		var page struct {
+			Content    []vivaStudio `json:"content"`
+			Last       *bool        `json:"last"`
+			TotalPages *int         `json:"totalPages"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil || page.Content == nil {
+			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /studios: response is not a page of studios")
+		}
+		list = append(list, page.Content...)
+		more := page.TotalPages != nil && n+1 < *page.TotalPages
+		if page.Last != nil {
+			more = !*page.Last
+		}
+		if !more || len(page.Content) == 0 {
+			break
+		}
 	}
 	out := list[:0]
 	for _, st := range list {

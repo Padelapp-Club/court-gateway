@@ -115,3 +115,25 @@ func TestDiscoveryReadsEveryPriceListPage(t *testing.T) {
 		t.Fatalf("endless pages: %d requests, notices %v", n, noticeCodes(d))
 	}
 }
+
+// Viva answers GET /studios with a page of studios, like GET /pricing: an
+// account with more studios than a page holds is read page by page.
+func TestDiscoveryReadsEveryStudioPage(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	for i := 1; i <= 120; i++ {
+		stub.AddStudio(fmt.Sprintf("00000000-0000-4000-8000-1%011d", i), fmt.Sprintf("Студия %d", i), nil)
+	}
+	d, err := newAccount(t, stub, stubPass).Discover(context.Background(), driver.DiscoverQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages := 0
+	for _, c := range stub.Calls() {
+		if strings.HasPrefix(c, "GET /studios?") {
+			pages++
+		}
+	}
+	if len(d.Studios) != 121 || pages != 2 {
+		t.Fatalf("%d studios in %d pages", len(d.Studios), pages)
+	}
+}
