@@ -137,3 +137,55 @@ func TestDiscoveryReadsEveryStudioPage(t *testing.T) {
 		t.Fatalf("%d studios in %d pages", len(d.Studios), pages)
 	}
 }
+
+// A studio list the gateway cannot read to the end is an error, not a
+// shorter list: a studio left out would read as one the account lacks.
+func TestStudioListsThatCannotBeReadToTheEnd(t *testing.T) {
+	st := func(id string) map[string]any { return map[string]any{"id": id, "name": "Студия"} }
+	page := func(content []map[string]any, extra map[string]any) string {
+		m := map[string]any{"content": content}
+		maps.Copy(m, extra)
+		b, _ := json.Marshal(m)
+		return string(b)
+	}
+	cases := map[string][]string{
+		"always another page": slices.Repeat([]string{page([]map[string]any{st(studio)}, map[string]any{"last": false})}, 12),
+		"empty page before the last": {
+			page([]map[string]any{st(studio)}, map[string]any{"last": false}),
+			page([]map[string]any{}, map[string]any{"last": false}),
+		},
+		"no page marks":             {page([]map[string]any{st(studio)}, nil)},
+		"null content":              {`{"content": null, "last": true}`},
+		"neither a page nor a list": {`{"studios": []}`},
+	}
+	for name, answers := range cases {
+		t.Run(name, func(t *testing.T) {
+			stub := vivastub.New(stubUser, stubPass, studio)
+			for _, a := range answers {
+				stub.FailNext("GET", "/studios", 200, a)
+			}
+			_, err := newAccount(t, stub, stubPass).Discover(context.Background(), driver.DiscoverQuery{})
+			if !strings.Contains(fmt.Sprint(err), "GET /studios") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+
+	// a plain array of every studio is read as the whole list
+	stub := vivastub.New(stubUser, stubPass, studio)
+	arr, _ := json.Marshal([]map[string]any{st(studio), st(studio2)})
+	stub.FailNext("GET", "/studios", 200, string(arr))
+	d, err := newAccount(t, stub, stubPass).Discover(context.Background(), driver.DiscoverQuery{})
+	if err != nil || len(d.Studios) != 2 {
+		t.Fatalf("array: %+v, %v", d.Studios, err)
+	}
+
+	// a studio repeated on the next page is listed once
+	stub = vivastub.New(stubUser, stubPass, studio)
+	stub.FailNext("GET", "/studios", 200, page([]map[string]any{st(studio)}, map[string]any{"last": false}))
+	stub.FailNext("GET", "/studios", 200, page([]map[string]any{st(strings.ToUpper(studio)), st(studio2)}, map[string]any{"last": true}))
+	d, err = newAccount(t, stub, stubPass).Discover(context.Background(), driver.DiscoverQuery{})
+	if err != nil || len(d.Studios) != 2 {
+		t.Fatalf("repeated: %+v, %v", d.Studios, err)
+	}
+}

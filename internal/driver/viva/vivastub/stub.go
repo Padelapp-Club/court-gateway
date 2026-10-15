@@ -587,6 +587,7 @@ func pageOf(all []map[string]any, r *http.Request) map[string]any {
 	if size <= 0 {
 		size = 20
 	}
+	page = max(page, 0)
 	pages := (len(all) + size - 1) / size
 	content := all[min(page*size, len(all)):min((page+1)*size, len(all))]
 	return map[string]any{"content": content, "totalElements": len(all), "totalPages": pages,

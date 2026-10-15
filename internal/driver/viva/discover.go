@@ -1,6 +1,7 @@
 package viva
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,10 +17,11 @@ import (
 )
 
 // Discovery reads the account's studios. Verified against a live account
-// (read-only): GET /studios answers an array of every studio of the
-// account, each with id, name, offset (hours from UTC), workTime and its
-// rooms (id, name, studioId, ...). GET /rooms does not exist. Price lists
-// still come from GET /pricing?studioId=. Nothing about clients is read.
+// (read-only): GET /studios answers a page (content, last, totalPages, ...)
+// of the account's studios, each with id, name, offset (hours from UTC),
+// workTime and its rooms (id, name, studioId, ...); a plain array of every
+// studio is taken as well. GET /rooms does not exist. Price lists still
+// come from GET /pricing?studioId=. Nothing about clients is read.
 
 type vivaDay struct {
 	From string `json:"from"`
@@ -52,12 +54,19 @@ var (
 	maxStudioPages = 10
 )
 
-// listStudios reads GET /studios, a page of studios like GET /pricing.
+// listStudios reads GET /studios page by page, like GET /pricing (or the
+// whole list at once, if the CRM answers a plain array). A list it cannot
+// read to the end is an error, never a shorter list: a studio missing from
+// it would read as a studio the account does not have.
 // Only id, name, offset, workTime and the rooms' id and name are decoded;
 // rates, directions and the rest are not.
 func listStudios(ctx context.Context, c *client) ([]vivaStudio, error) {
 	var list []vivaStudio
-	for n := 0; n < maxStudioPages; n++ {
+	seen := map[string]bool{}
+	for n := 0; ; n++ {
+		if n == maxStudioPages {
+			return nil, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("GET /studios: more than %d pages of studios", maxStudioPages))
+		}
 		q := url.Values{"page": {strconv.Itoa(n)}, "size": {strconv.Itoa(studioPageSize)}}
 		status, data, err := c.do(ctx, http.MethodGet, "/studios", q, nil)
 		if err != nil {
@@ -71,16 +80,30 @@ func listStudios(ctx context.Context, c *client) ([]vivaStudio, error) {
 			Last       *bool        `json:"last"`
 			TotalPages *int         `json:"totalPages"`
 		}
-		if err := json.Unmarshal(data, &page); err != nil || page.Content == nil {
+		whole := false
+		if trimmed := bytes.TrimSpace(data); n == 0 && len(trimmed) > 0 && trimmed[0] == '[' {
+			whole = json.Unmarshal(trimmed, &page.Content) == nil && page.Content != nil
+		} else if json.Unmarshal(data, &page) != nil || (page.Last == nil && page.TotalPages == nil) {
+			page.Content = nil
+		}
+		if page.Content == nil {
 			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /studios: response is not a page of studios")
 		}
-		list = append(list, page.Content...)
+		for _, st := range page.Content {
+			if id := strings.ToLower(st.ID); !seen[id] {
+				seen[id] = true
+				list = append(list, st)
+			}
+		}
 		more := page.TotalPages != nil && n+1 < *page.TotalPages
 		if page.Last != nil {
 			more = !*page.Last
 		}
-		if !more || len(page.Content) == 0 {
+		if whole || !more {
 			break
+		}
+		if len(page.Content) == 0 {
+			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /studios: an empty page before the last one")
 		}
 	}
 	out := list[:0]
