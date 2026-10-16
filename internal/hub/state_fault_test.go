@@ -206,6 +206,12 @@ func TestLostCommitIsReadAgain(t *testing.T) {
 	}
 
 	p.Heal()
+	if rec := get("/health/ready"); rec.Code != http.StatusOK {
+		t.Fatalf("ready once the database is back: %d", rec.Code)
+	}
+	if v := s.ConfigVersion("net-c"); v != 2 {
+		t.Fatalf("ready with version %d in memory, want the database's 2", v)
+	}
 	rec := get(tunnel.PathConfig)
 	var cfgOut tunnel.RemoteConfig
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfgOut); rec.Code != http.StatusOK || err != nil {
@@ -213,9 +219,6 @@ func TestLostCommitIsReadAgain(t *testing.T) {
 	}
 	if cfgOut.Version != 2 || len(cfgOut.Clubs) != 0 {
 		t.Fatalf("config version %d with %d clubs, want the database's: version 2, no clubs", cfgOut.Version, len(cfgOut.Clubs))
-	}
-	if rec := get("/health/ready"); rec.Code != http.StatusOK {
-		t.Fatalf("ready after the state is read again: %d", rec.Code)
 	}
 	if _, v, err := s.PutClub("net-c", demoClub("club-d", "studio-d", "Корт 1")); err != nil || v != 3 {
 		t.Fatalf("the next change: version %d %v, want 3", v, err)
