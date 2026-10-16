@@ -114,7 +114,11 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	if now == nil {
 		now = time.Now
 	}
-	return &client{authURL: authURL, logoutURL: logoutURLOf(authURL), apiURL: strings.TrimRight(apiURL, "/"), username: username, password: cfg.Password, http: hc, now: now}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &client{authURL: authURL, logoutURL: logoutURLOf(authURL), apiURL: strings.TrimRight(apiURL, "/"), username: username, password: cfg.Password, http: hc, now: now, log: log}
 }
 
 // NewDriver validates the driver-specific config and builds the driver.

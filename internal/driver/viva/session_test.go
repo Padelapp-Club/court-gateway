@@ -126,16 +126,18 @@ func TestManyClubsShareOneSession(t *testing.T) {
 	}
 }
 
-// A wrong password is tried once and then never again, however long the
-// gateway runs and however often it is asked: every call fails at once
-// with the same error (partners get UPSTREAM_AUTH, readiness
-// CRM_AUTH_FAILED), so the gateway cannot get the account locked. A new
-// password (set-password: the service re-reads .env) logs in again.
-func TestWrongPasswordStopsLoginsUntilItChanges(t *testing.T) {
+// A rejected login (invalid_grant) is tried again only rarely: after 15
+// minutes, then once an hour, however often the gateway is asked; every
+// call in between fails at once with the same error (partners get
+// UPSTREAM_AUTH, readiness CRM_AUTH_FAILED), so a wrong password stays far
+// below any lockout threshold. A new password (set-password: the service
+// re-reads .env) logs in at once.
+func TestWrongPasswordIsTriedAgainOnlyRarely(t *testing.T) {
 	stub := vivastub.New(stubUser, stubPass, studio)
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	clk := &clock{t: time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)}
+	start := time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)
+	clk := &clock{t: start}
 	acct, err := viva.NewAccount(driver.Config{
 		CRM:      driver.Params{"username": stubUser, "auth_url": srv.URL + "/token", "api_url": srv.URL + "/api/v1"},
 		Password: "wrong-password-0000", HTTPClient: srv.Client(), Now: clk.now,
@@ -143,18 +145,65 @@ func TestWrongPasswordStopsLoginsUntilItChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 180; i++ { // thirty minutes, every ten seconds
-		if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" {
+	ps := acct.(driver.PasswordSetter)
+	var attempts []time.Duration // since the start
+	for i := 0; i < 3*360; i++ { // three hours, every ten seconds
+		before := stub.LoginAttempts()
+		if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" || !ps.PasswordRejected() {
 			t.Fatalf("call %d: %v", i, err)
+		}
+		if stub.LoginAttempts() != before {
+			attempts = append(attempts, clk.now().Sub(start))
 		}
 		clk.add(10 * time.Second)
 	}
-	if n := stub.LoginAttempts(); n != 1 {
-		t.Fatalf("%d login attempts in thirty minutes, want 1", n)
+	want := []time.Duration{0, 15 * time.Minute, 75 * time.Minute, 135 * time.Minute}
+	if fmt.Sprint(attempts) != fmt.Sprint(want) {
+		t.Fatalf("logins at %v, want %v", attempts, want)
 	}
-	acct.(driver.PasswordSetter).SetPassword(stubPass)
-	if err := acct.CheckLogin(context.Background()); err != nil || stub.LoginAttempts() != 2 {
+	if next := ps.NextLogin(); !next.Equal(start.Add(195 * time.Minute)) {
+		t.Fatalf("next login at %v", next)
+	}
+	ps.SetPassword(stubPass)
+	if err := acct.CheckLogin(context.Background()); err != nil || stub.LoginAttempts() != 5 || ps.PasswordRejected() || !ps.NextLogin().IsZero() {
 		t.Fatalf("after set-password: %v, %d attempts", err, stub.LoginAttempts())
+	}
+}
+
+// A rejection that passes by itself (the CRM refused a login it accepts
+// later: a temporary lock, a limit on sessions) ends with the rare retry,
+// nobody acting; the error names Keycloak's reason, printable and short.
+// A retry that meets another failure leaves the rejection as it was.
+func TestTransientRejectionEndsWithTheRareRetry(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+	clk := &clock{t: time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)}
+	acct, err := viva.NewAccount(driver.Config{
+		CRM:      driver.Params{"username": stubUser, "auth_url": srv.URL + "/token", "api_url": srv.URL + "/api/v1"},
+		Password: stubPass, HTTPClient: srv.Client(), Now: clk.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := acct.(driver.PasswordSetter)
+	stub.FailNext(http.MethodPost, "/token", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Account temporarily\u0007 disabled"}`)
+	err = acct.CheckLogin(context.Background())
+	if core.ReadyReason(err) != "CRM_AUTH_FAILED" || !strings.Contains(err.Error(), "invalid_grant: Account temporarily disabled)") {
+		t.Fatalf("rejected: %v", err)
+	}
+	clk.add(15 * time.Minute)
+	stub.FailNext(http.MethodPost, "/token", http.StatusServiceUnavailable, `{}`)
+	if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" || stub.LoginAttempts() != 2 {
+		t.Fatalf("the retry met an outage: %v, %d attempts", err, stub.LoginAttempts())
+	}
+	clk.add(59 * time.Minute)
+	if err := acct.CheckLogin(context.Background()); err == nil || stub.LoginAttempts() != 2 {
+		t.Fatalf("tried again within the hour: %v, %d attempts", err, stub.LoginAttempts())
+	}
+	clk.add(time.Minute)
+	if err := acct.CheckLogin(context.Background()); err != nil || stub.LoginAttempts() != 3 || ps.PasswordRejected() {
+		t.Fatalf("an hour later, the CRM accepts: %v, %d attempts", err, stub.LoginAttempts())
 	}
 }
 

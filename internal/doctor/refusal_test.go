@@ -201,6 +201,9 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 		return &core.HealthStatus{Time: time.Now(), Version: "1.0.0", Ready: crm == "ok", CRM: crm, CRMClubs: clubs, CRMCheckedAt: checked}
 	}
 	from := "по данным службы, проверка " + checked.Local().Format("15:04")
+	retryAt := checked.Add(15 * time.Minute)
+	retrying := running("CRM_AUTH_FAILED")
+	retrying.CRMNextLogin = retryAt
 	for name, tc := range map[string]struct {
 		svc              *core.HealthStatus
 		login, occupancy doctor.Status
@@ -209,6 +212,7 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 		"ready":                       {running("ok"), doctor.OK, doctor.OK, from, ""},
 		"password rejected":           {running("CRM_AUTH_FAILED"), doctor.Fail, doctor.Skip, from + ": вход в CRM не удался: CRM_AUTH_FAILED", "set-password"},
 		"rejected with a club":        {running("CRM_AUTH_FAILED", "club-a"), doctor.Fail, doctor.Skip, "CRM_AUTH_FAILED", "set-password"},
+		"rejected, retried later":     {retrying, doctor.Fail, doctor.Skip, "следующая попытка в " + retryAt.Local().Format("15:04"), "set-password"},
 		"CRM unreachable":             {running("CRM_UNREACHABLE"), doctor.Fail, doctor.Skip, "CRM_UNREACHABLE", "интернет"},
 		"a club's answer is rejected": {running("CRM_REJECTED", "club-a"), doctor.OK, doctor.Fail, from, ""},
 		"no check yet":                {running(""), doctor.Warn, doctor.Skip, "ещё не сообщила", "через минуту"},

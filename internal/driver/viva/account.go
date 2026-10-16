@@ -51,6 +51,9 @@ func (a *Account) EndSession(ctx context.Context) error { return a.c.endSession(
 // PasswordRejected implements driver.PasswordSetter.
 func (a *Account) PasswordRejected() bool { return a.c.rejectedPassword() }
 
+// NextLogin implements driver.PasswordSetter.
+func (a *Account) NextLogin() time.Time { return a.c.nextLogin() }
+
 // CheckLogin implements driver.Account: it logs in if needed and makes
 // one cheap call (GET /studios), so a cached token the CRM no longer
 // accepts, or an unreachable API, is noticed even while no club is

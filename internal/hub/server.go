@@ -508,7 +508,10 @@ type GatewayStatus struct {
 	// about clubs (e.g. TIMEZONE_MISMATCH).
 	ReadyReasonClubs []string `json:"ready_reason_clubs,omitempty"`
 	LastCheck        string   `json:"last_check,omitempty"`
-	RegisteredAt     string   `json:"registered_at"`
+	// NextLogin: the CRM rejected the gateway's login, and the gateway
+	// tries it again then (its clock), or at once after set-password.
+	NextLogin    string `json:"next_login,omitempty"`
+	RegisteredAt string `json:"registered_at"`
 	// The club config the gateway runs (from its heartbeats).
 	AppliedConfigVersion int64             `json:"applied_config_version"`
 	ConfigError          string            `json:"config_error,omitempty"`
@@ -552,7 +555,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		Installation: g.Installation, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
 		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
-		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), ReadyReason: h.Reason, ReadyReasonClubs: h.ReasonClubs,
+		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), NextLogin: ts(h.NextLogin), ReadyReason: h.Reason, ReadyReasonClubs: h.ReasonClubs,
 		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.Clubs,
 		Duplicate: h.Duplicate, DuplicateSeenAt: ts(h.DuplicateAt), RefusedRequests: h.RefusedRequests,
 	}

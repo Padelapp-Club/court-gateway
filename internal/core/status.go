@@ -34,6 +34,9 @@ type HealthStatus struct {
 	CRM          string    `json:"crm,omitempty"`
 	CRMClubs     []string  `json:"crm_clubs,omitempty"`
 	CRMCheckedAt time.Time `json:"crm_checked_at,omitzero"`
+	// CRMNextLogin is when the service tries a login the CRM rejected
+	// again (set-password: at once); zero without a rejection.
+	CRMNextLogin time.Time `json:"crm_next_login,omitzero"`
 }
 
 // WriteHealthStatus replaces the status file atomically.

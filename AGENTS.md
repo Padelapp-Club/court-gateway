@@ -242,7 +242,8 @@ then, in the install folder:
 It logs in to Viva with the new password first and replaces only `CRM_PASSWORD` in `.env`.
 **Expect:** `exit=0`; `CRM_AUTH_FAILED` means the password is wrong — ask again. The running
 service picks the new password up within a minute, no restart (in Docker: recreate the container
-as it prints). After a rejected password the service makes no CRM call at all until this is done.
+as it prints). After a rejected login the service tries again only rarely (after 15 minutes, then hourly);
+`set-password`, even with the same password, makes it log in at once.
 Then `unset CRM_PASSWORD` and run step 5.
 
 ## Uninstall

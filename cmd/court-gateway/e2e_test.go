@@ -831,6 +831,15 @@ func TestServiceRefusedThenSetPasswordWithTheSamePassword(t *testing.T) {
 		}
 	}
 	testkit.WaitFor(t, "the service refused", 10*time.Second, health(1, "reason=CRM_AUTH_FAILED"))
+	// it tries again by itself, but only in a quarter of an hour; the
+	// status file and the hub say when
+	st, err := core.ReadHealthStatus(filepath.Join(s.dir, "state"))
+	if wait := time.Until(st.CRMNextLogin); err != nil || wait < 14*time.Minute || wait > 15*time.Minute {
+		t.Fatalf("next login in %s (%v)", wait, err)
+	}
+	testkit.WaitFor(t, "the hub knows the next login", 10*time.Second, func() bool {
+		return s.hub.Server().Monitor().Health("club-one").NextLogin.Equal(st.CRMNextLogin)
+	})
 
 	logins := s.stub.LoginAttempts()
 	out.Reset()
@@ -844,6 +853,7 @@ func TestServiceRefusedThenSetPasswordWithTheSamePassword(t *testing.T) {
 		}
 	}
 	if login.Status != doctor.Fail || !strings.Contains(login.Message, "по данным службы") || !strings.Contains(login.Message, "CRM_AUTH_FAILED") ||
+		!strings.Contains(login.Message, "следующая попытка в "+st.CRMNextLogin.Local().Format("15:04")) ||
 		!strings.Contains(login.Hint, "set-password") || s.stub.LoginAttempts() != logins {
 		t.Fatalf("doctor beside a refused service: %+v, %d logins of its own", login, s.stub.LoginAttempts()-logins)
 	}
@@ -855,7 +865,10 @@ func TestServiceRefusedThenSetPasswordWithTheSamePassword(t *testing.T) {
 	if n := s.stub.LoginAttempts() - logins; n != 2 || s.stub.OpenSessions() != 1 {
 		t.Fatalf("set-password and the service: %d logins, %d sessions open", n, s.stub.OpenSessions())
 	}
-	if strings.Contains(logs.String(), crmPass) {
-		t.Fatal("the password was logged")
+	if st, _ := core.ReadHealthStatus(filepath.Join(s.dir, "state")); !st.CRMNextLogin.IsZero() || st.CRM != "ok" {
+		t.Fatalf("status after the login: %+v", st)
+	}
+	if strings.Contains(logs.String(), crmPass) || !strings.Contains(logs.String(), "invalid_grant") {
+		t.Fatalf("the log names the rejection, not the password:\n%s", logs.String())
 	}
 }

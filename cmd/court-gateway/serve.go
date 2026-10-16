@@ -202,24 +202,25 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 			// a newly applied config is reported at once, not with the
 			// next self-check a minute later
 			beat := checked && (due || cs.ConfigVersion != sentConfig)
+			next := nextLogin(s.Driver.Account)
 			if beat {
 				hb := crm
-				hb.Ready, hb.Reason, hb.AppliedConfig = ready, reason, cs
+				hb.Ready, hb.Reason, hb.AppliedConfig, hb.NextLogin = ready, reason, cs, next
 				sentConfig = cs.ConfigVersion
 				go sendHeartbeat(ctx, client, hb, log)
 			}
-			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
+			cur := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String(), CRMNextLogin: next}
 			if checked {
-				next.CRM, next.CRMClubs, next.CRMCheckedAt = cmp.Or(crm.Reason, "ok"), crm.ReasonClubs, crm.CheckedAt
+				cur.CRM, cur.CRMClubs, cur.CRMCheckedAt = cmp.Or(crm.Reason, "ok"), crm.ReasonClubs, crm.CheckedAt
 			}
-			if beat || unwritable || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
-				next.Time = time.Now().UTC()
-				werr := core.WriteHealthStatus(s.StateDir, next)
+			if beat || unwritable || cur.Ready != st.Ready || cur.Reason != st.Reason || cur.Hub != st.Hub {
+				cur.Time = time.Now().UTC()
+				werr := core.WriteHealthStatus(s.StateDir, cur)
 				if werr != nil && !unwritable {
 					log.Error("the state directory is not writable: the gateway reports STATE_UNWRITABLE", "path", s.StateDir, "error", werr)
 				}
 				if unwritable = werr != nil; !unwritable {
-					st = next
+					st = cur
 				}
 			}
 			select {
@@ -343,6 +344,15 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
+}
+
+// nextLogin is when acct tries a login the CRM rejected again (zero: none
+// rejected).
+func nextLogin(acct driver.Account) time.Time {
+	if ps, ok := acct.(driver.PasswordSetter); ok {
+		return ps.NextLogin()
+	}
+	return time.Time{}
 }
 
 // passwordRejected reports whether the CRM rejected acct's password: then no

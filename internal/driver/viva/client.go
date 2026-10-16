@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -25,11 +27,15 @@ const (
 	// CRM unreachable, 5xx, a timeout) the next attempt waits loginRetry,
 	// doubling with every failure in a row up to loginRetryMax; until then
 	// calls fail fast with that error. A rejected login (Keycloak's
-	// invalid_grant: a wrong password) is not tried again at all until the
-	// password changes (setPassword), so a wrong password cannot get the
-	// account locked; any other refusal of the login is retried.
-	loginRetry    = 5 * time.Second
-	loginRetryMax = time.Minute
+	// invalid_grant: a wrong password, but also a lock or a limit that
+	// passes by itself) is tried again only rarely: after rejectedRetry,
+	// then every rejectedRetryMax, far below any lockout threshold; at once
+	// when the password is set again (setPassword). Any other refusal of
+	// the login is retried like an outage.
+	loginRetry       = 5 * time.Second
+	loginRetryMax    = time.Minute
+	rejectedRetry    = 15 * time.Minute
+	rejectedRetryMax = time.Hour
 )
 
 // maxBody caps how much of an upstream response is read.
@@ -47,16 +53,18 @@ type client struct {
 	password  string
 	http      *http.Client
 	now       func() time.Time
+	log       *slog.Logger
 
-	mu       sync.Mutex
-	token    string
-	expires  time.Time
-	refresh  string    // of the last login, which opened a session
-	session  bool      // a login succeeded since the last endSession
-	rejected error     // the CRM rejected the password: no login until it changes
-	loginErr error     // the last failed login, another failure
-	failures int       // logins failed in a row, rejections aside
-	retryAt  time.Time // no login before this after loginErr
+	mu         sync.Mutex
+	token      string
+	expires    time.Time
+	refresh    string    // of the last login, which opened a session
+	session    bool      // a login succeeded since the last endSession
+	rejected   error     // the CRM rejected the login: no login before retryAt
+	rejections int       // logins rejected in a row
+	loginErr   error     // the last failed login, another failure
+	failures   int       // logins failed in a row, rejections aside
+	retryAt    time.Time // no login before this after rejected or loginErr
 	// the studio list of one evaluation (studioList)
 	studiosOf context.Context
 	studios   *studioRead
@@ -74,9 +82,10 @@ type tokenResponse struct {
 	RefreshToken string   `json:"refresh_token"`
 }
 
-// accessToken returns a cached token or logs in. After a rejected login
-// it never logs in again (until setPassword); after another failure not
-// before retryAt. Either way the error is returned at once instead.
+// accessToken returns a cached token or logs in, but not before retryAt
+// after a failed login: until then the error is returned at once instead.
+// A rejected login stays the error until a login passes, even when a
+// retry of it meets another failure.
 func (c *client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -84,7 +93,7 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 	switch {
 	case c.token != "" && now.Before(c.expires):
 		return c.token, nil
-	case c.rejected != nil:
+	case now.Before(c.retryAt) && c.rejected != nil:
 		return "", c.rejected
 	case now.Before(c.retryAt):
 		return "", c.loginErr
@@ -93,9 +102,21 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 	var ue *driver.UpstreamError
 	switch {
 	case err == nil:
-		c.loginErr, c.failures, c.retryAt = nil, 0, time.Time{}
+		if c.rejected != nil {
+			c.log.Info("the CRM accepted the login again", "rejected_logins", c.rejections)
+		}
+		c.rejected, c.rejections, c.loginErr, c.failures, c.retryAt = nil, 0, nil, 0, time.Time{}
 	case errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth:
-		c.rejected = err
+		c.rejections++
+		c.rejected, c.retryAt = err, now.Add(rejectedRetryMax)
+		if c.rejections == 1 {
+			c.retryAt = now.Add(rejectedRetry)
+		}
+		c.log.Error("the CRM rejected the login: it is tried again at next_login, or at once after set-password",
+			"error", ue.Detail, "next_login", c.retryAt.UTC().Format(time.RFC3339))
+	case c.rejected != nil: // the retry of a rejected login met another failure
+		c.retryAt = now.Add(rejectedRetryMax)
+		return "", c.rejected
 	case ctx.Err() == nil:
 		c.failures++
 		c.loginErr, c.retryAt = err, now.Add(min(loginRetry<<min(c.failures-1, 10), loginRetryMax))
@@ -109,7 +130,7 @@ func (c *client) setPassword(p string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.password, c.token = p, ""
-	c.rejected, c.loginErr, c.failures, c.retryAt = nil, nil, 0, time.Time{}
+	c.rejected, c.rejections, c.loginErr, c.failures, c.retryAt = nil, 0, nil, 0, time.Time{}
 }
 
 // rejectedPassword reports whether logins are stopped after the CRM
@@ -118,6 +139,17 @@ func (c *client) rejectedPassword() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.rejected != nil
+}
+
+// nextLogin is when a rejected login is tried again (zero when none was
+// rejected).
+func (c *client) nextLogin() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rejected == nil {
+		return time.Time{}
+	}
+	return c.retryAt
 }
 
 // studioList returns the account's studios: read once per evaluation
@@ -181,10 +213,13 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 		return "", redirected("login", resp.StatusCode)
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		var kc struct {
-			Error string `json:"error"`
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
 		}
 		if json.Unmarshal(body, &kc) == nil && kc.Error == "invalid_grant" {
-			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d (invalid_grant)", resp.StatusCode))
+			// Keycloak's reason (wrong credentials, a disabled or locked
+			// account) is no secret and tells a wrong password from a lock
+			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d (invalid_grant%s)", resp.StatusCode, describe(kc.Description)))
 		}
 		return "", driver.Upstream(driver.UpstreamLogin, fmt.Sprintf("login refused with HTTP %d", resp.StatusCode))
 	default:
@@ -252,6 +287,24 @@ func logoutURLOf(authURL string) string {
 	}
 	u.Path, u.RawPath, u.RawQuery = base+"/logout", "", ""
 	return u.String()
+}
+
+// describe is ": " and Keycloak's error_description, printable and short,
+// or nothing.
+func describe(d string) string {
+	d = strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, d)
+	if d = strings.TrimSpace(d); d == "" {
+		return ""
+	}
+	if r := []rune(d); len(r) > 120 {
+		d = string(r[:120]) + "…"
+	}
+	return ": " + d
 }
 
 func networkError(op string, err error) error {

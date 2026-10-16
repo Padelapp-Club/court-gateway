@@ -1,6 +1,9 @@
 package driver
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // An installation of the gateway is one CRM account. The account may hold
 // several clubs (a club network); each club is configured on the hub and
@@ -21,11 +24,13 @@ type Account interface {
 
 // PasswordSetter is implemented by accounts that take a new CRM password
 // while running (the gateway re-reads .env after set-password): it ends a
-// stop after a rejected login. PasswordRejected reports that stop: the
-// CRM rejected the password, and nothing logs in until it changes.
+// stop after a rejected login at once. PasswordRejected reports that stop:
+// the CRM rejected the login, and it is tried again only rarely, next at
+// NextLogin (zero without a stop).
 type PasswordSetter interface {
 	SetPassword(password string)
 	PasswordRejected() bool
+	NextLogin() time.Time
 }
 
 // SessionEnder is implemented by accounts whose CRM login opens a session
