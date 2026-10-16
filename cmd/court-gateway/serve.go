@@ -354,8 +354,10 @@ func passwordRejected(acct driver.Account) func() bool {
 
 // configWatch notices when setup or set-password rewrites gateway.yaml or
 // .env. A new CRM password is taken at once from .env (the redactor learns
-// it first), ending a stop after a rejected login; a changed hub
-// connection (setup --force) restarts the service.
+// it first), ending a stop after a rejected login; so is the same password
+// written again after a rejection (set-password checked it with a login
+// that passed). A changed hub connection (setup --force) restarts the
+// service.
 type configWatch struct {
 	cfgPath string
 	procEnv func(string) string
@@ -404,6 +406,7 @@ func (w *configWatch) check() {
 	if same(st[0], w.seen[0]) && same(st[1], w.seen[1]) {
 		return
 	}
+	envChanged := !same(st[1], w.seen[1])
 	w.seen = st
 	password, hub, err := w.read()
 	switch {
@@ -414,7 +417,7 @@ func (w *configWatch) check() {
 		w.hub = hub
 		w.restart()
 	}
-	if password != "" && w.acct != nil && password != w.password {
+	if password != "" && w.acct != nil && (password != w.password || envChanged && w.acct.PasswordRejected()) {
 		core.AddSecret(w.log, password)
 		w.acct.SetPassword(password)
 		w.log.Info("CRM password re-read from .env: logging in to the CRM again")

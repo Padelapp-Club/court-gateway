@@ -757,7 +757,8 @@ func TestSelfcheckWithARejectedPasswordIsNotRun(t *testing.T) {
 	cfg := filepath.Join(s.dir, "gateway.yaml")
 	before := s.stub.LoginAttempts()
 	var errb bytes.Buffer
-	if rc := run([]string{"selfcheck", "-config", cfg}, io.Discard, &errb, env{"CRM_PASSWORD": "changed-in-the-crm"}.get); rc != update.SelfCheckNotRunExit || s.stub.LoginAttempts() != before+1 {
+	s.stub.FailNext(http.MethodPost, vivastub.TokenPath, http.StatusUnauthorized, `{"error":"invalid_grant"}`) // the password changed in the CRM
+	if rc := run([]string{"selfcheck", "-config", cfg}, io.Discard, &errb, env{}.get); rc != update.SelfCheckNotRunExit || s.stub.LoginAttempts() != before+1 {
 		t.Fatalf("selfcheck with a rejected password: rc=%d %s, %d logins", rc, errb.String(), s.stub.LoginAttempts()-before)
 	}
 	// with the password of .env it logs in and reaches the hub
@@ -800,5 +801,61 @@ func TestServiceRestartsWhenSetupRewritesTheHubConnection(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the service kept running with the replaced secret")
+	}
+}
+
+// The CRM refused the service's login (not the password: it is the one
+// setup checked). The service does not retry a rejected login by itself;
+// doctor reports the service's state, without a login of its own beside
+// it; set-password with the same password, which it checks, makes the
+// service log in again, once.
+func TestServiceRefusedThenSetPasswordWithTheSamePassword(t *testing.T) {
+	s := newStack(t)
+	statusInterval = 200 * time.Millisecond
+	defer func() { statusInterval = 60 * time.Second }()
+	var out, errb bytes.Buffer
+	if rc := run(s.setupArgs(), &out, &errb, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	s.stub.FailNext(http.MethodPost, vivastub.TokenPath, http.StatusBadRequest, `{"error":"invalid_grant"}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	logs := &contract.LogBuffer{}
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, cfg, "", logs, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	health := func(rc int, want string) func() bool {
+		return func() bool {
+			var b bytes.Buffer
+			return run([]string{"healthcheck", "-config", cfg}, &b, io.Discard, env{}.get) == rc && strings.Contains(b.String(), want)
+		}
+	}
+	testkit.WaitFor(t, "the service refused", 10*time.Second, health(1, "reason=CRM_AUTH_FAILED"))
+
+	logins := s.stub.LoginAttempts()
+	out.Reset()
+	if rc := run([]string{"doctor", "--json", "-config", cfg}, &out, &errb, env{}.get); rc != 1 {
+		t.Fatalf("doctor: rc=%d %s", rc, out.String())
+	}
+	var login doctor.Check
+	for _, c := range decodeDoctor(t, out.Bytes()).Checks {
+		if c.Code == doctor.CodeCRMLogin {
+			login = c
+		}
+	}
+	if login.Status != doctor.Fail || !strings.Contains(login.Message, "по данным службы") || !strings.Contains(login.Message, "CRM_AUTH_FAILED") ||
+		!strings.Contains(login.Hint, "set-password") || s.stub.LoginAttempts() != logins {
+		t.Fatalf("doctor beside a refused service: %+v, %d logins of its own", login, s.stub.LoginAttempts()-logins)
+	}
+
+	if rc := run([]string{"set-password", "-config", cfg}, &out, &errb, env{"CRM_PASSWORD": crmPass}.get); rc != 0 {
+		t.Fatalf("set-password: %s", errb.String())
+	}
+	testkit.WaitFor(t, "the service logged in again", 10*time.Second, health(0, "ready=true"))
+	if n := s.stub.LoginAttempts() - logins; n != 2 || s.stub.OpenSessions() != 1 {
+		t.Fatalf("set-password and the service: %d logins, %d sessions open", n, s.stub.OpenSessions())
+	}
+	if strings.Contains(logs.String(), crmPass) {
+		t.Fatal("the password was logged")
 	}
 }

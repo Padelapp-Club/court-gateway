@@ -53,7 +53,11 @@ func unquote(v string) string {
 // EnvWithDotEnv returns a getenv that prefers the process environment and
 // falls back to the .env file next to cfgPath, when that file exists. The
 // service managers on every OS start the gateway without a shell, so the
-// gateway reads its secrets file itself.
+// gateway reads its secrets file itself. The CRM password is the
+// exception: .env first, where setup and set-password write it and the
+// running service re-reads it, so a CRM_PASSWORD left in the environment
+// of the machine cannot make the service log in with another password than
+// the one set-password checked.
 func EnvWithDotEnv(cfgPath string, getenv func(string) string) (func(string) string, error) {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -71,6 +75,9 @@ func EnvWithDotEnv(cfgPath string, getenv func(string) string) (func(string) str
 		return nil, err
 	}
 	return func(k string) string {
+		if v := vals[k]; k == PasswordEnv && v != "" {
+			return v
+		}
 		if v := getenv(k); v != "" {
 			return v
 		}
