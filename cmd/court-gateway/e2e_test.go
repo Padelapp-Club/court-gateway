@@ -356,6 +356,10 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 	if rep := decodeDoctor(t, out.Bytes()); status(rep, doctor.CodeTunnel) != doctor.Fail || status(rep, doctor.CodeCRMLogin) != doctor.OK {
 		t.Fatalf("doctor without service: %s", out.String())
 	}
+	// setup and doctor each logged in once and ended that session
+	if s.stub.Logins() != 2 || s.stub.OpenSessions() != 0 {
+		t.Fatalf("before the service: %d logins, %d sessions open", s.stub.Logins(), s.stub.OpenSessions())
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logs := &contract.LogBuffer{}
@@ -374,10 +378,16 @@ func TestServeDoctorHealthcheck(t *testing.T) {
 	})
 
 	out.Reset()
+	logins := s.stub.LoginAttempts()
 	rc := run([]string{"doctor", "--json", "-config", cfg}, &out, &errb, env{}.get)
 	rep := decodeDoctor(t, out.Bytes())
 	if rc != 0 || !rep.OK {
 		t.Fatalf("doctor: rc=%d %s", rc, out.String())
+	}
+	// with the service running doctor reports its checks and logs in not
+	// at all: one session open, the service's
+	if s.stub.LoginAttempts() != logins || s.stub.OpenSessions() != 1 {
+		t.Fatalf("doctor beside the service: %d logins, %d sessions open", s.stub.LoginAttempts()-logins, s.stub.OpenSessions())
 	}
 	if rep.Installation != "club-one" || rep.ConfigVersion != 1 || rep.AppliedConfigVersion != 1 || strings.Join(rep.ClubsServed, ",") != "club-one" {
 		t.Fatalf("doctor report: %s", out.String())

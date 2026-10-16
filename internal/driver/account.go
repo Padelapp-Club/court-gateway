@@ -28,6 +28,23 @@ type PasswordSetter interface {
 	PasswordRejected() bool
 }
 
+// SessionEnder is implemented by accounts whose CRM login opens a session
+// on the CRM's side that outlives the process: EndSession ends the session
+// of the last login, and the next call logs in again. The commands that log
+// in only to check the login (setup, set-password, doctor) end their
+// session, so the CRM sees one session of the installation, the service's.
+type SessionEnder interface {
+	EndSession(ctx context.Context) error
+}
+
+// EndSession ends acct's CRM session if it has one to end.
+func EndSession(ctx context.Context, acct Account) error {
+	if se, ok := acct.(SessionEnder); ok {
+		return se.EndSession(ctx)
+	}
+	return nil
+}
+
 // AccountFactory builds an Account. Config carries CRM, Password, Logger,
 // HTTPClient and Now; Courts and Services are empty.
 type AccountFactory func(Config) (Account, error)

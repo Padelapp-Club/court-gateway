@@ -425,3 +425,38 @@ func TestSetupTakesNothingUnsignedFromTheHub(t *testing.T) {
 		t.Fatalf("CRM login after a hostile name: %v, %d calls to the hub's host, auth_url %v", err, evilCalls.Load(), s.Driver.CRM["auth_url"])
 	}
 }
+
+// setup and set-password log in to check the login and then end that
+// session: the installation's one CRM session is the service's. A session
+// that cannot be ended is a note, not a failure, and the note holds no
+// secret.
+func TestSetupEndsItsCRMSession(t *testing.T) {
+	const password = "fixture-crm-password"
+	stub := vivastub.New("admin@example.test", password, "00000000-0000-4000-8000-000000000001")
+	crm := httptest.NewServer(stub)
+	defer crm.Close()
+	var notes []string
+	deps := Deps{HubTransport: registerTransport, CRMClient: crm.Client(), Note: func(s string) { notes = append(notes, s) }}
+	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA",
+		HubKey: testHubKey, Username: "admin@example.test", Password: password, AuthURL: crm.URL + "/token", APIURL: crm.URL + "/api/v1"}
+	if _, err := Run(context.Background(), in, deps); err != nil {
+		t.Fatal(err)
+	}
+	if stub.Logins() != 1 || stub.OpenSessions() != 0 || len(notes) != 0 {
+		t.Fatalf("setup: %d logins, %d sessions left open, notes %q", stub.Logins(), stub.OpenSessions(), notes)
+	}
+	noEnv := func(string) string { return "" }
+	if err := SetPassword(context.Background(), in.ConfigPath, password, noEnv, deps); err != nil {
+		t.Fatal(err)
+	}
+	if stub.Logins() != 2 || stub.OpenSessions() != 0 || len(notes) != 0 {
+		t.Fatalf("set-password: %d logins, %d sessions left open, notes %q", stub.Logins(), stub.OpenSessions(), notes)
+	}
+	stub.FailNext(http.MethodPost, vivastub.LogoutPath, http.StatusServiceUnavailable, "")
+	if err := SetPassword(context.Background(), in.ConfigPath, password, noEnv, deps); err != nil {
+		t.Fatalf("a failed logout failed set-password: %v", err)
+	}
+	if len(notes) != 1 || strings.Contains(notes[0], password) || strings.Contains(notes[0], "ref-") || strings.Contains(notes[0], "tok-") {
+		t.Fatalf("notes: %q", notes)
+	}
+}

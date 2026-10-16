@@ -33,7 +33,7 @@ import (
 // statusInterval is how often serve runs its self-check, its one scheduled
 // CRM call: the result feeds the status file (the container healthcheck)
 // and the heartbeat to the hub. A variable for tests.
-var statusInterval = 60 * time.Second
+var statusInterval = core.HealthStatusInterval
 
 // confirmDeadline is how long a freshly updated binary has to become
 // ready (and connected to the hub) before it rolls itself back.
@@ -209,6 +209,9 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 				go sendHeartbeat(ctx, client, hb, log)
 			}
 			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
+			if checked {
+				next.CRM, next.CRMClubs, next.CRMCheckedAt = cmp.Or(crm.Reason, "ok"), crm.ReasonClubs, crm.CheckedAt
+			}
 			if beat || unwritable || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
 				next.Time = time.Now().UTC()
 				werr := core.WriteHealthStatus(s.StateDir, next)
@@ -411,7 +414,7 @@ func (w *configWatch) check() {
 		w.hub = hub
 		w.restart()
 	}
-	if password != "" && password != w.password && w.acct != nil {
+	if password != "" && w.acct != nil && password != w.password {
 		core.AddSecret(w.log, password)
 		w.acct.SetPassword(password)
 		w.log.Info("CRM password re-read from .env: logging in to the CRM again")

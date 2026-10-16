@@ -13,6 +13,11 @@ import (
 // a hub). It holds no secrets and no CRM data.
 const HealthStatusFile = "health.json"
 
+// HealthStatusInterval is how often a running service checks its
+// readiness and rewrites HealthStatusFile at the latest. A file older
+// than three intervals is a service that stopped or hangs.
+const HealthStatusInterval = time.Minute
+
 // HealthStatus is the content of HealthStatusFile.
 type HealthStatus struct {
 	Time    time.Time `json:"time"`
@@ -21,6 +26,14 @@ type HealthStatus struct {
 	Reason  string    `json:"reason,omitempty"`
 	// Hub is "connected", "disconnected" or empty without a hub.
 	Hub string `json:"hub,omitempty"`
+	// CRM is the result of the service's last CRM self-check: "ok" or its
+	// reason code (CRM_AUTH_FAILED, ...), empty before the first one;
+	// CRMClubs are the clubs the reason is about (none: the account's own
+	// login check) and CRMCheckedAt is when it ran. doctor reports these
+	// instead of logging in to the CRM beside the service.
+	CRM          string    `json:"crm,omitempty"`
+	CRMClubs     []string  `json:"crm_clubs,omitempty"`
+	CRMCheckedAt time.Time `json:"crm_checked_at,omitzero"`
 }
 
 // WriteHealthStatus replaces the status file atomically.

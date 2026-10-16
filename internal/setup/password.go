@@ -54,7 +54,7 @@ func SetPassword(ctx context.Context, cfgPath, password string, getenv func(stri
 	if err != nil {
 		return problem("CONFIG_INVALID", "%v", err)
 	}
-	if p := checkLogin(ctx, acct); p != nil {
+	if p := checkLogin(ctx, acct, deps.Note); p != nil {
 		return p
 	}
 	protect := func() error {

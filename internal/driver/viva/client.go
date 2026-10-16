@@ -37,18 +37,22 @@ const maxBody = 8 << 20
 
 // client talks HTTP to VivaCRM. One client serves the installation's
 // account and all its clubs. It keeps only the access token (in memory,
-// until shortly before it expires) and how its last login failed.
+// until shortly before it expires), the refresh token of the same login
+// (only to end its session, endSession) and how its last login failed.
 type client struct {
-	authURL  string
-	apiURL   string
-	username string
-	password string
-	http     *http.Client
-	now      func() time.Time
+	authURL   string
+	logoutURL string // empty: no logout endpoint known (logoutURLOf)
+	apiURL    string
+	username  string
+	password  string
+	http      *http.Client
+	now       func() time.Time
 
 	mu       sync.Mutex
 	token    string
 	expires  time.Time
+	refresh  string    // of the last login, which opened a session
+	session  bool      // a login succeeded since the last endSession
 	rejected error     // the CRM rejected the password: no login until it changes
 	loginErr error     // the last failed login, another failure
 	failures int       // logins failed in a row, rejections aside
@@ -65,8 +69,9 @@ type studioRead struct {
 }
 
 type tokenResponse struct {
-	AccessToken string   `json:"access_token"`
-	ExpiresIn   *float64 `json:"expires_in"`
+	AccessToken  string   `json:"access_token"`
+	ExpiresIn    *float64 `json:"expires_in"`
+	RefreshToken string   `json:"refresh_token"`
 }
 
 // accessToken returns a cached token or logs in. After a rejected login
@@ -189,9 +194,64 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(body, &tr); err != nil || tr.AccessToken == "" || tr.ExpiresIn == nil {
 		return "", driver.Upstream(driver.UpstreamInvalid, "login response has no access_token/expires_in")
 	}
-	c.token = tr.AccessToken
+	c.token, c.refresh, c.session = tr.AccessToken, tr.RefreshToken, true
 	c.expires = c.now().Add(time.Duration(*tr.ExpiresIn*float64(time.Second)) - tokenSafety)
 	return c.token, nil
+}
+
+// endSession ends the Keycloak session of the last login, if one is open,
+// and forgets its tokens: an OpenID Connect logout with the login's
+// refresh token and the client id, at the logout endpoint next to the
+// token endpoint. Keycloak ends a session only by its refresh token (or an
+// id token, which a password login without the openid scope does not get);
+// revoking the access token would not end the session. So a login answered
+// without a refresh token leaves a session that only expires. The error
+// never holds a token.
+func (c *client) endSession(ctx context.Context) error {
+	c.mu.Lock()
+	open, refresh := c.session, c.refresh
+	c.token, c.refresh, c.session = "", "", false
+	c.mu.Unlock()
+	switch {
+	case !open:
+		return nil
+	case refresh == "":
+		return errors.New("the login answer had no refresh_token, so the session cannot be ended and expires by itself")
+	case c.logoutURL == "":
+		return errors.New("auth_url does not end in /token, so no logout endpoint is known and the session expires by itself")
+	}
+	form := url.Values{"client_id": {ClientID}, "refresh_token": {refresh}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.logoutURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return driver.Upstream(driver.UpstreamUnavailable, "build logout request")
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return networkError("logout", err)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("logout answered HTTP %d", resp.StatusCode))
+	}
+	return nil
+}
+
+// logoutURLOf is the OpenID Connect logout endpoint next to a token
+// endpoint (Keycloak: .../protocol/openid-connect/token and .../logout);
+// empty when the token endpoint's path does not end in /token.
+func logoutURLOf(authURL string) string {
+	u, err := url.Parse(authURL)
+	if err != nil {
+		return ""
+	}
+	base, ok := strings.CutSuffix(u.Path, "/token")
+	if !ok {
+		return ""
+	}
+	u.Path, u.RawPath, u.RawQuery = base+"/logout", "", ""
+	return u.String()
 }
 
 func networkError(op string, err error) error {
