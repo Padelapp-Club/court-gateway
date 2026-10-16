@@ -860,11 +860,17 @@ func (s *Store) deleteInstallationLocked(id string) error {
 	if !ok {
 		return ErrUnknownInstallation
 	}
-	if err := s.deleteInstallation(id, in.Version); err != nil {
+	err := s.deleteInstallation(id, in.Version)
+	if err == nil || errors.Is(err, errOutcomeUnknown) {
+		// a deletion that may have taken effect counts as one for the
+		// redemptions begun before it (at worst one is refused while the
+		// installation stays)
+		s.deletions++
+		s.deleted[id] = s.deletions
+	}
+	if err != nil {
 		return err
 	}
-	s.deletions++
-	s.deleted[id] = s.deletions
 	delete(s.gateways, id)
 	s.nextGen(id)
 	for club := range in.Clubs {

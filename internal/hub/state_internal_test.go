@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -229,4 +230,127 @@ func TestNoChangeFromAStaleMemory(t *testing.T) {
 	if len(installs) != 1 || installs[0].Version != 1 || len(installs[0].Clubs) != 1 || len(gateways) != 0 {
 		t.Fatalf("the state was changed: %+v %+v", installs, gateways)
 	}
+}
+
+// testStore is a store on st with a fixed signing key.
+func testStore(t *testing.T, st State) *Store {
+	t.Helper()
+	s, err := NewStore(st, ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// lostDeletion is a state that deletes an installation and then loses
+// the answer, as a COMMIT left unanswered does.
+type lostDeletion struct{ State }
+
+func (l lostDeletion) deleteInstallation(id string, prev int64) error {
+	if err := l.State.deleteInstallation(id, prev); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrStateUnavailable, errOutcomeUnknown)
+}
+
+// A deletion whose answer was lost may have taken effect: a redemption
+// that took its code before it does not bring the installation back.
+func TestLostDeletionDuringRedemption(t *testing.T) {
+	eachState(t, func(t *testing.T, st State) {
+		paused := pausedTake{State: lostDeletion{st}, taken: make(chan struct{}), release: make(chan struct{})}
+		s := testStore(t, paused)
+		if _, err := s.CreateInstallation("net-d", ""); err != nil {
+			t.Fatal(err)
+		}
+		jc, err := s.CreateJoinCode("net-d", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := s.Redeem(jc.Code)
+			done <- err
+		}()
+		<-paused.taken
+		if err := s.DeleteInstallation("net-d"); !errors.Is(err, ErrStateUnavailable) {
+			t.Fatalf("a deletion with its answer lost: %v", err)
+		}
+		close(paused.release)
+		if err := <-done; !errors.Is(err, ErrJoinCode) {
+			t.Fatalf("a redemption begun before the deletion: %v, want ErrJoinCode", err)
+		}
+		if _, ok := testStore(t, st).Installation("net-d"); ok {
+			t.Fatal("the deleted installation is back in the state")
+		}
+	})
+}
+
+// A redemption on a stale memory reads the state again first, when it
+// can, and registers: the new secret works and the code is spent.
+func TestRedemptionReadsAStaleMemoryAgain(t *testing.T) {
+	eachState(t, func(t *testing.T, st State) {
+		s := testStore(t, st)
+		if _, err := s.CreateInstallation("net-a", ""); err != nil {
+			t.Fatal(err)
+		}
+		jc, err := CreateJoinCode(st, "net-a", "", time.Hour, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		s.stale = true
+		s.mu.Unlock()
+		g, secret, err := s.Redeem(jc.Code)
+		if err != nil || g.Installation != "net-a" {
+			t.Fatalf("a redemption on a stale memory: %+v %v", g, err)
+		}
+		if _, err := s.Authenticate(secret); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Redeem(jc.Code); !errors.Is(err, ErrJoinCode) {
+			t.Fatalf("the code used again: %v", err)
+		}
+	})
+}
+
+// forceReload reads the state again as after a refused write.
+func forceReload(t *testing.T, s *Store) {
+	t.Helper()
+	s.mu.Lock()
+	s.stale = true
+	s.mu.Unlock()
+	if err := s.reload(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A reload that finds other clubs under the version the hub announced
+// starts a new epoch once; reading the same state again keeps it.
+func TestOtherClubsUnderTheSameVersionStartANewEpoch(t *testing.T) {
+	eachState(t, func(t *testing.T, st State) {
+		s := testStore(t, st)
+		if _, err := s.CreateInstallation("net-e", ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.PutClub("net-e", core.ClubSpec{ID: "club-e", Name: "Клуб"}); err != nil {
+			t.Fatal(err)
+		}
+		forceReload(t, s)
+		_, before := s.announced("net-e")
+		in, _ := s.Installation("net-e")
+		other := in.clone()
+		other.Clubs["club-e"] = core.ClubSpec{ID: "club-e", Name: "Другой клуб"}
+		if err := st.putInstallation(&other, in.Version); err != nil { // the same version, other clubs
+			t.Fatal(err)
+		}
+		forceReload(t, s)
+		v, after := s.announced("net-e")
+		if v != in.Version || after == before {
+			t.Fatalf("other clubs under version %d: epoch %s, was %s", v, after, before)
+		}
+		forceReload(t, s)
+		if _, again := s.announced("net-e"); again != after {
+			t.Fatalf("the same state read again changed the epoch: %s, was %s", again, after)
+		}
+	})
 }
