@@ -16,5 +16,5 @@
 /hub.yaml
 /state/
 
-# The release public key is published with each release, not kept here
+# A release key file is never kept here (the public key is written into the install docs)
 /release.pub
