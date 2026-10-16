@@ -82,6 +82,7 @@ func readDoc(t *testing.T, name string) string {
 type installWorld struct {
 	dir, bin, fixtures, mark, signer string
 	env                              []string
+	keepKey                          bool // run the docs with their own release key (the release is signed by another)
 }
 
 // fault is what is wrong with a stand-in release, or with the machine it
@@ -89,18 +90,24 @@ type installWorld struct {
 type fault int
 
 const (
-	noFault       fault = iota
-	wrongChecksum       // SHA256SUMS gives the file another sum
-	notSigned           // SHA256SUMS is not the one the release key signed
-	noSums              // the release has no SHA256SUMS
-	twoBuilds           // the signed SHA256SUMS names two builds for the platform
-	noBuild             // the release has no file under the name SHA256SUMS gives
-	oldKeygen           // ssh-keygen predates -Y (OpenSSH before 8.1)
-	noKeygen            // there is no ssh-keygen
-	otherPlatform       // a machine there is no build for
+	noFault          fault = iota
+	wrongChecksum          // SHA256SUMS gives the file another sum
+	notSigned              // SHA256SUMS is not the one the release key signed
+	noSums                 // the release has no SHA256SUMS
+	twoBuilds              // the signed SHA256SUMS names two builds for the platform
+	noBuild                // the release has no file under the name SHA256SUMS gives
+	oldKeygen              // ssh-keygen predates -Y (OpenSSH before 8.1)
+	noKeygen               // there is no ssh-keygen
+	otherPlatform          // a machine there is no build for
+	staleSigner            // a read-only allowed_signers with another key where the docs work, and a release signed by that key
+	signerUnwritable       // the docs' own allowed_signers cannot be written (an attacker's file there), release signed by its key
+	manifestSwap           // a writer replaces SHA256SUMS and the build right after the signature check succeeds
+	binarySwap             // a writer replaces the downloaded build right after its checksum succeeds (stays verified)
+	dirIsLink              // the install folder is a symbolic link
 )
 
-var faults = []fault{wrongChecksum, notSigned, noSums, twoBuilds, noBuild, oldKeygen, noKeygen, otherPlatform}
+var faults = []fault{wrongChecksum, notSigned, noSums, twoBuilds, noBuild, oldKeygen, noKeygen, otherPlatform,
+	staleSigner, signerUnwritable, manifestSwap, dirIsLink}
 
 // unames are what uname -s and uname -m print on each POSIX release
 // platform.
@@ -115,6 +122,13 @@ var unames = map[string][2]string{"linux-amd64": {"Linux", "x86_64"}, "linux-arm
 // system tools are stand-ins too. w.signer is the test key's
 // allowed_signers line.
 func newInstallWorld(t *testing.T, release string, f fault) *installWorld {
+	return newInstallWorldAt(t, release, f, "")
+}
+
+// newInstallWorldAt is newInstallWorld for docs that install into
+// install (relative to the world's directory; "" is the directory
+// itself), where staleSigner and dirIsLink spoil it.
+func newInstallWorldAt(t *testing.T, release string, f fault, install string) *installWorld {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell commands")
@@ -135,7 +149,7 @@ func newInstallWorld(t *testing.T, release string, f fault) *installWorld {
 	}
 	w := &installWorld{dir: t.TempDir()}
 	w.bin, w.fixtures, w.mark = filepath.Join(w.dir, "bin"), filepath.Join(w.dir, "release"), filepath.Join(w.dir, "ran")
-	for _, d := range []string{w.bin, w.fixtures, filepath.Join(w.dir, "home")} {
+	for _, d := range []string{w.bin, w.fixtures, filepath.Join(w.dir, "home"), filepath.Join(w.dir, "tmp")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -208,9 +222,22 @@ cp "`+w.fixtures+`/$name" "${out:-$name}"
 		write(filepath.Join(w.bin, noop), "#!/bin/sh\nexit 0\n", 0o755)
 	}
 	write(filepath.Join(w.bin, "dpkg"), "#!/bin/sh\necho amd64\n", 0o755)
-	// both checksum tools, whichever this machine has
-	write(filepath.Join(w.bin, "sha256sum"), "#!/bin/sh\nexec "+map[bool]string{true: sum, false: sum + " -a 256"}[filepath.Base(sum) == "sha256sum"]+" \"$@\"\n", 0o755)
-	write(filepath.Join(w.bin, "shasum"), "#!/bin/sh\n[ \"$1\" = -a ] && shift 2\nexec "+map[bool]string{true: sum, false: sum + " -a 256"}[filepath.Base(sum) == "sha256sum"]+" \"$@\"\n", 0o755)
+	// a build that was never verified, for the writers below
+	unverified := "#!/bin/sh\necho \"UNVERIFIED $*\" >> '" + w.mark + "'\n"
+	write(filepath.Join(w.dir, "unverified"), unverified, 0o755)
+	badSum := sha256.Sum256([]byte(unverified))
+	write(filepath.Join(w.dir, "unverified-sums"), hex.EncodeToString(badSum[:])+"  "+release+"\n", 0o644)
+	// both checksum tools, whichever this machine has; binarySwap: then a
+	// writer replaces the build under its release name in the working
+	// directory, as soon as the check has succeeded
+	check := map[bool]string{true: sum, false: sum + " -a 256"}[filepath.Base(sum) == "sha256sum"] + " \"$@\"\n"
+	if f == binarySwap {
+		check = check[:len(check)-1] + "; rc=$?\n[ $rc = 0 ] && cp '" + filepath.Join(w.dir, "unverified") + "' '" + release + "'\nexit $rc\n"
+	} else {
+		check = "exec " + check
+	}
+	write(filepath.Join(w.bin, "sha256sum"), "#!/bin/sh\n"+check, 0o755)
+	write(filepath.Join(w.bin, "shasum"), "#!/bin/sh\n[ \"$1\" = -a ] && shift 2\n"+check, 0o755)
 	system := "/usr/bin:/bin"
 	switch f {
 	case oldKeygen: // as OpenSSH before 8.1 answers -Y
@@ -226,8 +253,36 @@ cp "`+w.fixtures+`/$name" "${out:-$name}"
 				}
 			}
 		}
+	default: // the real ssh-keygen, noting where it verifies; manifestSwap: then the writer
+		hook := ""
+		if f == manifestSwap {
+			hook = "[ $rc = 0 ] && cp '" + filepath.Join(w.dir, "unverified-sums") + "' SHA256SUMS && cp '" + filepath.Join(w.dir, "unverified") + "' '" + filepath.Join(w.fixtures, release) + "'\n"
+		}
+		write(filepath.Join(w.bin, "ssh-keygen"), "#!/bin/sh\n[ \"$1\" = -Y ] && { pwd; ls -ld .; } >> '"+filepath.Join(w.dir, "keygen-at")+"'\n'"+keygen+"' \"$@\"\nrc=$?\n"+hook+"exit $rc\n", 0o755)
 	}
-	w.env = []string{"PATH=" + w.bin + ":" + system, "HOME=" + filepath.Join(w.dir, "home"), "LC_ALL=C"}
+	installDir := filepath.Join(w.dir, install)
+	switch f {
+	case staleSigner, signerUnwritable: // the docs keep their own key: the release is signed by the test key only
+		w.keepKey = true
+		stale := w.signer + "\n"
+		if f == staleSigner {
+			for _, d := range slices.Compact([]string{installDir, w.dir}) {
+				_ = os.MkdirAll(d, 0o755)
+				write(filepath.Join(d, "allowed_signers"), stale, 0o444)
+			}
+		} else { // mktemp hands out a folder whose allowed_signers cannot be written
+			stage := filepath.Join(w.dir, "tmp", "stage")
+			write(filepath.Join(w.bin, "mktemp"), "#!/bin/sh\nmkdir -m 700 '"+stage+"' && printf '%s' '"+stale+"' > '"+stage+"/allowed_signers' && chmod 444 '"+stage+"/allowed_signers' && echo '"+stage+"'\n", 0o755)
+		}
+	case dirIsLink:
+		elsewhere := filepath.Join(w.dir, "elsewhere")
+		_ = os.MkdirAll(elsewhere, 0o755)
+		_ = os.MkdirAll(filepath.Dir(installDir), 0o755)
+		if err := os.Symlink(elsewhere, installDir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.env = []string{"PATH=" + w.bin + ":" + system, "HOME=" + filepath.Join(w.dir, "home"), "TMPDIR=" + filepath.Join(w.dir, "tmp"), "LC_ALL=C"}
 	return w
 }
 
@@ -235,7 +290,9 @@ cp "`+w.fixtures+`/$name" "${out:-$name}"
 // zsh is interactively) in dir and reports the exit code and output.
 func (w *installWorld) run(t *testing.T, shell, dir, script string) (int, string) {
 	t.Helper()
-	script = strings.ReplaceAll(script, docSigner, w.signer)
+	if !w.keepKey {
+		script = strings.ReplaceAll(script, docSigner, w.signer)
+	}
 	var cmd *exec.Cmd
 	switch shell {
 	case "zsh":
@@ -262,34 +319,40 @@ func (w *installWorld) ran() string {
 // sh, bash and zsh: no version to fill in, the platform found by uname
 // and the file name taken from the verified SHA256SUMS. Every fault stops
 // them before anything runs the program, with its own message and no
-// other; with none they run it on every platform.
+// other; with none they run it on every platform, after verifying in a
+// private temporary folder that is gone afterwards, from an install
+// folder closed to other users. A writer that replaces the downloaded
+// build under its release name once its checksum passed changes nothing.
 func TestPosixInstallBlocksSayWhatIsWrong(t *testing.T) {
 	for _, d := range []struct {
-		doc, marker string
-		msgs        map[fault]string
-		then, want  string // appended to the block; what the program then runs
+		doc, marker, install string
+		msgs                 map[fault]string
+		then, want           string // appended to the block; what the program then runs
 	}{
-		{"README.md", "### macOS и Linux", map[fault]string{
+		{"README.md", "### macOS и Linux", "home/court-gateway", map[fault]string{
 			wrongChecksum: "контрольная сумма court-gateway-9.9.9-", notSigned: "подпись SHA256SUMS не сошлась",
 			noSums: "не удалось скачать SHA256SUMS", twoBuilds: "в SHA256SUMS не одна сборка",
 			noBuild: "не удалось скачать https://", oldKeygen: "ssh-keygen старше OpenSSH 8.1",
-			noKeygen: "нет ssh-keygen", otherPlatform: "выпуска нет",
+			noKeygen: "нет ssh-keygen", otherPlatform: "выпуска нет", staleSigner: "подпись SHA256SUMS не сошлась",
+			signerUnwritable: "не удалось записать ключ выпуска", manifestSwap: "контрольная сумма court-gateway-9.9.9-",
+			dirIsLink: "не ваша или это ссылка",
 		}, "", "setup\ninstall-service\ndoctor\n"},
-		{"AGENTS.md", "\nLinux and macOS:\n", map[fault]string{
+		{"AGENTS.md", "\nLinux and macOS:\n", "", map[fault]string{
 			wrongChecksum: "CHECKSUM MISMATCH", notSigned: "SIGNATURE MISMATCH", noSums: "DOWNLOAD FAILED: SHA256SUMS",
 			twoBuilds: "NOT ONE BUILD", noBuild: "DOWNLOAD FAILED: court-gateway-", oldKeygen: "SSH-KEYGEN TOO OLD",
-			noKeygen: "NO SSH-KEYGEN", otherPlatform: "UNSUPPORTED PLATFORM",
+			noKeygen: "NO SSH-KEYGEN", otherPlatform: "UNSUPPORTED PLATFORM", staleSigner: "SIGNATURE MISMATCH",
+			signerUnwritable: "CANNOT WRITE THE RELEASE KEY", manifestSwap: "CHECKSUM MISMATCH",
 		}, "[ -x court-gateway ] && ./court-gateway version\n", "version\n"},
 	} {
 		block := fencedBlock(t, d.doc, d.marker, "sh")
 		if regexp.MustCompile(`<\pL+>`).MatchString(block) {
 			t.Fatalf("%s: the install block has a placeholder to fill in:\n%s", d.doc, block)
 		}
-		said := func(out string) []fault {
-			var got []fault
-			for f, msg := range d.msgs {
-				if strings.Contains(out, msg) {
-					got = append(got, f)
+		said := func(out string) []string { // the messages of the faults out shows
+			var got []string
+			for _, msg := range d.msgs {
+				if strings.Contains(out, msg) && !slices.Contains(got, msg) {
+					got = append(got, msg)
 				}
 			}
 			return got
@@ -301,17 +364,39 @@ func TestPosixInstallBlocksSayWhatIsWrong(t *testing.T) {
 			t.Run(d.doc+"/"+shell, func(t *testing.T) {
 				t.Parallel()
 				for _, f := range faults {
-					w := newInstallWorld(t, "court-gateway-9.9.9-linux-amd64", f)
+					if d.msgs[f] == "" {
+						continue
+					}
+					w := newInstallWorldAt(t, "court-gateway-9.9.9-linux-amd64", f, d.install)
 					rc, out := w.run(t, shell, w.dir, block+d.then)
-					if rc == 0 || w.ran() != "" || strings.Contains(out, "checksum-ok") || !slices.Equal(said(out), []fault{f}) {
-						t.Errorf("fault %d (%q): exit %d, program ran %q, messages of faults %v\n%s", f, d.msgs[f], rc, w.ran(), said(out), out)
+					if rc == 0 || w.ran() != "" || strings.Contains(out, "checksum-ok") || !slices.Equal(said(out), []string{d.msgs[f]}) {
+						t.Errorf("fault %d (%q): exit %d, program ran %q, messages %q\n%s", f, d.msgs[f], rc, w.ran(), said(out), out)
 					}
 				}
-				for platform := range unames {
-					w := newInstallWorld(t, "court-gateway-9.9.9-"+platform, noFault)
+				for _, c := range []struct {
+					platform string
+					f        fault
+				}{{"linux-amd64", noFault}, {"linux-arm64", noFault}, {"darwin-arm64", noFault}, {"darwin-amd64", noFault}, {"linux-amd64", binarySwap}} {
+					w := newInstallWorldAt(t, "court-gateway-9.9.9-"+c.platform, c.f, d.install)
 					rc, out := w.run(t, shell, w.dir, block+d.then)
 					if rc != 0 || w.ran() != d.want || len(said(out)) != 0 {
-						t.Errorf("%s: exit %d, program ran %q\n%s", platform, rc, w.ran(), out)
+						t.Errorf("%s fault %d: exit %d, program ran %q\n%s", c.platform, c.f, rc, w.ran(), out)
+						continue
+					}
+					at, _ := os.ReadFile(filepath.Join(w.dir, "keygen-at"))
+					where := strings.SplitN(string(at), "\n", 2)
+					install := filepath.Join(w.dir, d.install)
+					mode := os.FileMode(0)
+					if fi, err := os.Stat(install); err == nil {
+						mode = fi.Mode().Perm()
+					}
+					if len(where) != 2 || !strings.HasPrefix(where[1], "drwx------") || where[0] == install || mode != 0o700 {
+						t.Errorf("%s: verified in %q, install folder mode %v; want a private temporary folder and a closed install folder", c.platform, at, mode)
+					} else if _, err := os.Stat(where[0]); err == nil {
+						t.Errorf("%s: the temporary folder %s is left behind", c.platform, where[0])
+					}
+					if _, err := os.Stat(filepath.Join(install, "court-gateway")); err != nil {
+						t.Errorf("%s: no court-gateway in the install folder: %v", c.platform, err)
 					}
 				}
 			})
@@ -378,18 +463,56 @@ func TestCloudInitStopsOnChecksumMismatchAndForgetsSecrets(t *testing.T) {
 
 // PowerShell is not run here: the Windows blocks are checked for their
 // shape. One script block (a throw ends all of it, not only its own
-// line) with nothing to fill in. In order: the platform, TLS 1.2 (Windows
-// PowerShell 5.1 does not offer it by default), the README's folder,
-// SHA256SUMS and its signature downloaded (README: or taken from the
-// folder, a .txt the browser added renamed, and a clear throw if neither),
-// ssh-keygen there, the signature, the build's name from the verified
-// SHA256SUMS, the build downloaded, its hash; each check throws its own
-// message, and nothing renames or runs the file before the hash. The
-// pattern that picks the build is run here on a SHA256SUMS of every
-// release platform.
+// line) with nothing to fill in, whose steps come in this order with
+// these very predicates: the platform; TLS 1.2 (Windows PowerShell 5.1
+// does not offer it by default); C:\court-gateway created, or, if it is
+// there, refused when it is a link or holds foreign files while open to
+// others; then closed to everyone but Administrators and SYSTEM (by SID,
+// as setup closes it) and checked, before anything is downloaded;
+// SHA256SUMS and its signature downloaded to fresh files (README: or
+// copied from the folder, a .txt the browser added included); the
+// release key written to a fresh file; the signature; the build's name
+// from the verified SHA256SUMS; the build; its hash; only then the build
+// put in place and run. Every cmdlet that touches a file stops on error
+// and takes its path literally. The patterns that pick the build and
+// that tell release files from foreign ones are run here.
 func TestWindowsInstallBlocksCheckBeforeRunning(t *testing.T) {
-	for doc, marker := range map[string]string{"README.md": "### Windows", "AGENTS.md": "\nWindows: run in PowerShell"} {
-		block := strings.TrimSpace(fencedBlock(t, doc, marker, "powershell"))
+	steps := []string{
+		"[Net.ServicePointManager]::SecurityProtocol = 'Tls12'",
+		"if (-not $a) { throw \"",
+		"$acl.AreAccessRulesProtected -and $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -in $ok -and",
+		"| Where-Object { $_.AccessControlType -ne 'Allow' -or $_.IdentityReference.Value -notin $ok[0..1] })",
+		"if (Test-Path -LiteralPath $d) {",
+		"-band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw \"",
+		"if ($extra -and -not (& $closed)) { throw \"",
+		"} else { New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null }",
+		"icacls $d /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null\n",
+		"if ($LASTEXITCODE -ne 0 -or -not (& $closed)) { throw \"",
+		"Set-Location -LiteralPath $d -ErrorAction Stop\n",
+		"$drop = { param($p) if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } }",
+		"& $drop \"$n.part\"\n",
+		"try { Invoke-WebRequest \"$b/$n\" -OutFile \"$n.part\" -UseBasicParsing -ErrorAction Stop } catch {",
+		"Move-Item -LiteralPath \"$n.part\" -Destination $n -Force -ErrorAction Stop\n",
+		"& $get SHA256SUMS\n",
+		"& $get SHA256SUMS.sig\n",
+		"if (-not (Get-Command ssh-keygen -ErrorAction SilentlyContinue)) { throw \"",
+		"& $drop allowed_signers\n",
+		"' | Set-Content -LiteralPath allowed_signers -Encoding ascii -ErrorAction Stop\n",
+		"$out = cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS 2>&1'\n",
+		"if ($LASTEXITCODE -ne 0 -and \"$out\" -match 'unknown option|illegal option|usage:') { throw \"",
+		"if ($LASTEXITCODE -ne 0) { throw \"",
+		"$m = @(Select-String -LiteralPath SHA256SUMS -Pattern \"",
+		"if ($m.Count -ne 1) { throw \"",
+		"$want, $f = $m[0].Matches[0].Groups[1].Value, $m[0].Matches[0].Groups[2].Value\n",
+		"& $get $f\n",
+		"if ((Get-FileHash -LiteralPath $f -Algorithm SHA256 -ErrorAction Stop).Hash -ne $want) { throw \"",
+		"try { Move-Item -LiteralPath $f -Destination court-gateway.exe -Force -ErrorAction Stop } catch { throw \"",
+	}
+	for doc, c := range map[string]struct{ marker, fallback, last string }{
+		"README.md": {"### Windows", "Copy-Item -LiteralPath $src -Destination \"$n.part\" -ErrorAction Stop\n", ".\\court-gateway.exe setup --install-service\n"},
+		"AGENTS.md": {"\nWindows: run in PowerShell", "catch { throw \"DOWNLOAD FAILED: $n", "'checksum-ok'\n"},
+	} {
+		block := strings.TrimSpace(fencedBlock(t, doc, c.marker, "powershell"))
 		body := block[strings.Index(block, "& {"):]
 		if !strings.HasPrefix(body, "& {") || !strings.HasSuffix(body, "}") || !strings.Contains(body, docSigner) {
 			t.Fatalf("%s: one script block with the release key:\n%s", doc, block)
@@ -401,78 +524,81 @@ func TestWindowsInstallBlocksCheckBeforeRunning(t *testing.T) {
 		if bad := regexp.MustCompile(`\$\w+:[^\w]`).FindString(body); bad != "" {
 			t.Fatalf("%s: %q does not parse in a PowerShell string:\n%s", doc, bad, block)
 		}
-		steps := []string{"SecurityProtocol = 'Tls12'", "$env:PROCESSOR_ARCHITECTURE", "Invoke-WebRequest \"$b/$n\" -OutFile $n -UseBasicParsing -ErrorAction Stop",
-			"& $get SHA256SUMS\n", "& $get SHA256SUMS.sig\n", "Get-Command ssh-keygen", "ssh-keygen -Y verify", "Select-String -LiteralPath SHA256SUMS",
-			"& $get $f\n", "Get-FileHash", "Move-Item"}
-		if doc == "README.md" {
-			steps = slices.Insert(steps, 2, "New-Item -ItemType Directory -Force C:\\court-gateway -ErrorAction Stop", "Set-Location C:\\court-gateway -ErrorAction Stop")
-			steps = slices.Insert(steps, 5, `Rename-Item -LiteralPath "$n.txt" $n`, `if (-not (Test-Path -LiteralPath $n)) { throw`)
-		}
 		at := -1
-		for _, step := range steps {
-			i := strings.Index(body, step)
-			if i <= at {
-				t.Fatalf("%s: %q is missing or out of order (%v):\n%s", doc, step, steps, block)
+		for _, step := range append(slices.Insert(slices.Clone(steps), 14, c.fallback), c.last) {
+			i := strings.Index(body[at+1:], step)
+			if i < 0 {
+				t.Fatalf("%s: no %q after the step before it:\n%s", doc, step, block)
 			}
-			at = i
+			at += 1 + i
 		}
-		line := func(i int) string { return body[strings.LastIndex(body[:i], "\n")+1 : i+strings.Index(body[i:], "\n")] }
-		verify := strings.Index(body, "ssh-keygen -Y verify")
-		after := body[verify+strings.Index(body[verify:], "\n")+1:]
-		for _, check := range []string{"if (-not $a)", "Get-Command ssh-keygen", "$m.Count -ne 1", "Get-FileHash"} {
-			if i := strings.Index(body, check); i < 0 || !strings.Contains(line(i), "throw") {
-				t.Fatalf("%s: no %q that throws:\n%s", doc, check, block)
+		if i := strings.Index(body, "court-gateway.exe setup"); i >= 0 && i < strings.Index(body, "try { Move-Item -LiteralPath $f") {
+			t.Fatalf("%s: setup runs before the build is put in place:\n%s", doc, block)
+		}
+		// every cmdlet that touches a file: -ErrorAction Stop, and -LiteralPath where it takes a path
+		unquoted := regexp.MustCompile(`"[^"]*"`).ReplaceAllString(body, `""`)
+		for _, m := range regexp.MustCompile(`\b(New-Item|Set-Location|Set-Content|Get-FileHash|Move-Item|Copy-Item|Remove-Item|Get-Acl|Get-ChildItem|Get-Item|Invoke-WebRequest|Select-String)\b[^|})\n]*`).FindAllStringSubmatch(unquoted, -1) {
+			if !strings.Contains(m[0], "-ErrorAction Stop") || (m[1] != "New-Item" && m[1] != "Invoke-WebRequest" && !strings.Contains(m[0], "-LiteralPath")) {
+				t.Fatalf("%s: %q must stop on error and take its path literally", doc, m[0])
 			}
 		}
-		if l := strings.SplitN(after, "\n", 3); !strings.Contains(l[0], "throw") || !strings.Contains(l[1], "throw") || !strings.Contains(l[0], "8.1") {
-			t.Fatalf("%s: the signature check must throw for an old ssh-keygen, then for a mismatch:\n%s", doc, block)
-		}
-		throws := regexp.MustCompile(`throw "([^"$]*)`).FindAllStringSubmatch(body, -1)
 		seen := map[string]bool{}
-		for _, m := range throws {
+		for _, m := range regexp.MustCompile(`throw "([^"$]*)`).FindAllStringSubmatch(body, -1) {
 			if seen[m[1]] {
 				t.Fatalf("%s: two checks throw %q", doc, m[1])
 			}
 			seen[m[1]] = true
 		}
-		hash := strings.Index(body, "Get-FileHash")
-		for _, use := range []string{".exe setup", "court-gateway.exe", "Unblock-File"} {
-			if i := strings.Index(body, use); i >= 0 && i < hash {
-				t.Fatalf("%s: %q comes before the hash check:\n%s", doc, use, block)
-			}
-		}
-		if doc == "AGENTS.md" && !strings.Contains(line(strings.Index(body, "Invoke-WebRequest")), `throw "DOWNLOAD FAILED`) {
-			t.Fatalf("%s: a failed download must throw its own message:\n%s", doc, block)
-		}
+		// the build is picked from SHA256SUMS of every release platform, by a strict name
 		pattern := regexp.MustCompile(`-Pattern "([^"]+)"`).FindStringSubmatch(body)
 		if pattern == nil {
 			t.Fatalf("%s: no Select-String pattern", doc)
 		}
 		for _, c := range []struct {
 			arch   string
-			extra  string
+			extra  []string
 			builds []string
 		}{
-			{"amd64", "", []string{"court-gateway-1.0.0-windows-amd64.exe"}},
-			{"arm64", "", []string{"court-gateway-1.0.0-windows-arm64.exe"}},
-			{"amd64", "  court-gateway-0.9.0-windows-amd64.exe\n", []string{"court-gateway-1.0.0-windows-amd64.exe", "court-gateway-0.9.0-windows-amd64.exe"}},
+			{"amd64", nil, []string{"court-gateway-1.0.0-windows-amd64.exe"}},
+			{"arm64", nil, []string{"court-gateway-1.0.0-windows-arm64.exe"}},
+			{"amd64", []string{"court-gateway-0.9.0-windows-amd64.exe"}, []string{"court-gateway-1.0.0-windows-amd64.exe", "court-gateway-0.9.0-windows-amd64.exe"}},
+			{"amd64", []string{"court-gateway-1[0]-windows-amd64.exe", "court-gateway-1*-windows-amd64.exe", `court-gateway-1\..\x-windows-amd64.exe`, "court-gateway-1/x-windows-amd64.exe", "court-gateway-1 x-windows-amd64.exe"},
+				[]string{"court-gateway-1.0.0-windows-amd64.exe"}},
 		} {
 			re := regexp.MustCompile("(?i)" + strings.ReplaceAll(pattern[1], "$a", c.arch)) // Select-String ignores case
-			var got []string
-			sums := ""
+			lines := []string{}
 			for _, p := range update.Platforms {
-				sums += strings.Repeat("ab", 32) + "  court-gateway-1.0.0-" + p + map[bool]string{true: ".exe"}[strings.HasPrefix(p, "windows-")] + "\n"
+				lines = append(lines, strings.Repeat("ab", 32)+"  court-gateway-1.0.0-"+p+map[bool]string{true: ".exe"}[strings.HasPrefix(p, "windows-")])
 			}
-			if c.extra != "" {
-				sums += strings.Repeat("cd", 32) + c.extra
+			for _, e := range c.extra {
+				lines = append(lines, strings.Repeat("cd", 32)+"  "+e)
 			}
-			for _, l := range strings.Split(strings.TrimSuffix(sums, "\n"), "\n") {
+			var got []string
+			for _, l := range lines {
 				if m := re.FindStringSubmatch(l); m != nil {
 					got = append(got, m[2])
 				}
 			}
 			if !slices.Equal(got, c.builds) {
-				t.Fatalf("%s: windows-%s picks %v from SHA256SUMS, want %v", doc, c.arch, got, c.builds)
+				t.Fatalf("%s: windows-%s picks %q from SHA256SUMS, want %q", doc, c.arch, got, c.builds)
+			}
+		}
+		// what may lie in a folder still open to others: the release files and leftovers of a run, nothing else
+		release := regexp.MustCompile(`-notmatch '([^']+)'`).FindStringSubmatch(body)
+		if release == nil {
+			t.Fatalf("%s: no pattern of the files a folder open to others may hold", doc)
+		}
+		re := regexp.MustCompile("(?i)" + release[1]) // -notmatch ignores case
+		for _, name := range []string{"SHA256SUMS", "SHA256SUMS.txt", "SHA256SUMS.sig", "SHA256SUMS.sig.txt", "SHA256SUMS.part", "allowed_signers",
+			"court-gateway-1.0.0-windows-amd64.exe", "court-gateway-1.0.0-windows-arm64.exe.part"} {
+			if !re.MatchString(name) {
+				t.Errorf("%s: a release file %q counts as foreign", doc, name)
+			}
+		}
+		for _, name := range []string{"court-gateway.exe", "gateway.yaml", ".env", "state", "version.dll", "court-gateway-1[0]-windows-amd64.exe",
+			"court-gateway-1.0.0-windows-amd64.exe.dll", "xSHA256SUMS", "allowed_signers.d"} {
+			if re.MatchString(name) {
+				t.Errorf("%s: %q counts as a release file", doc, name)
 			}
 		}
 	}

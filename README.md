@@ -45,39 +45,60 @@
 меняя. Она сама создаст папку `C:\court-gateway`, скачает в неё последний выпуск для этого
 компьютера (x64 или ARM), сверит подпись `SHA256SUMS` ключом выпуска, вписанным в команду, и сумму
 программы — и только тогда запустит её. Если что-то не так, команда пишет, что именно, и **ничего
-не запускает**.
+не запускает**. Папку она закрывает от других пользователей до того, как что-либо скачать; если папка
+уже есть, открыта и в ней лежат посторонние файлы, команда остановится и скажет, что сделать.
 
 ```powershell
 & {
   $ProgressPreference = 'SilentlyContinue'
   [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
   $b = 'https://github.com/Padelapp-Club/court-gateway/releases/latest/download'
+  $d = 'C:\court-gateway'
   $cpu = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
   $a = @{ AMD64 = 'amd64'; ARM64 = 'arm64' }[$cpu]
   if (-not $a) { throw "Процессор $cpu не поддерживается: нужен 64-разрядный Windows (x64 или ARM64)" }
-  New-Item -ItemType Directory -Force C:\court-gateway -ErrorAction Stop | Out-Null
-  Set-Location C:\court-gateway -ErrorAction Stop
+  $ok = 'S-1-5-32-544', 'S-1-5-18', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $closed = {
+    $acl = Get-Acl -LiteralPath $d -ErrorAction Stop
+    $acl.AreAccessRulesProtected -and $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -in $ok -and
+      -not @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -ne 'Allow' -or $_.IdentityReference.Value -notin $ok[0..1] })
+  }
+  if (Test-Path -LiteralPath $d) {
+    if (((Get-Item -LiteralPath $d -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "C:\court-gateway — ссылка на другое место, а не папка. Удалите её и повторите" }
+    $extra = @(Get-ChildItem -LiteralPath $d -Force -Name -ErrorAction Stop | Where-Object { $_ -notmatch '^(allowed_signers|(SHA256SUMS(\.sig)?|court-gateway-[0-9][0-9A-Za-z.\-]*-windows-(amd64|arm64)\.exe)(\.txt|\.part)?)$' })
+    if ($extra -and -not (& $closed)) { throw "Папка C:\court-gateway уже есть, она открыта другим пользователям, и в ней посторонние файлы ($($extra -join ', ')). Переименуйте её, например в court-gateway.old, и повторите" }
+  } else { New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null }
+  icacls $d /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null
+  if ($LASTEXITCODE -ne 0 -or -not (& $closed)) { throw "Не удалось закрыть папку C:\court-gateway от других пользователей (её владелец — не администратор?). Переименуйте её, например в court-gateway.old, и повторите" }
+  Set-Location -LiteralPath $d -ErrorAction Stop
+  $drop = { param($p) if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } }
   $get = {
     param($n)
-    try { Invoke-WebRequest "$b/$n" -OutFile $n -UseBasicParsing -ErrorAction Stop } catch {
-      if (-not (Test-Path -LiteralPath $n) -and (Test-Path -LiteralPath "$n.txt")) { Rename-Item -LiteralPath "$n.txt" $n }
-      if (-not (Test-Path -LiteralPath $n)) { throw "Не удалось скачать $n ($($_.Exception.Message)), и в папке C:\court-gateway его нет. Ничего не запущено" }
-      Write-Host "Не удалось скачать $n — проверяю файл, который лежит в папке"
+    & $drop "$n.part"
+    try { Invoke-WebRequest "$b/$n" -OutFile "$n.part" -UseBasicParsing -ErrorAction Stop } catch {
+      $e = $_.Exception.Message
+      & $drop "$n.part"
+      $src = @($n, "$n.txt") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+      if (-not $src) { throw "Не удалось скачать $n ($e), и в папке C:\court-gateway его нет. Ничего не запущено" }
+      Copy-Item -LiteralPath $src -Destination "$n.part" -ErrorAction Stop
+      Write-Host "Не удалось скачать $n — проверяю копию файла $src из папки"
     }
+    Move-Item -LiteralPath "$n.part" -Destination $n -Force -ErrorAction Stop
   }
   & $get SHA256SUMS
   & $get SHA256SUMS.sig
   if (-not (Get-Command ssh-keygen -ErrorAction SilentlyContinue)) { throw "Нет ssh-keygen (OpenSSH) — выполните winget install Microsoft.OpenSSH.Beta, откройте PowerShell от имени администратора заново и повторите" }
-  'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' | Set-Content allowed_signers -Encoding ascii
+  & $drop allowed_signers
+  'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' | Set-Content -LiteralPath allowed_signers -Encoding ascii -ErrorAction Stop
   $out = cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS 2>&1'
   if ($LASTEXITCODE -ne 0 -and "$out" -match 'unknown option|illegal option|usage:') { throw "ssh-keygen старше OpenSSH 8.1 и не проверяет подписи — выполните winget install Microsoft.OpenSSH.Beta, откройте PowerShell от имени администратора заново и повторите" }
   if ($LASTEXITCODE -ne 0) { throw "Подпись SHA256SUMS не сошлась с ключом выпуска ($out). Ничего не запущено; удалите SHA256SUMS и SHA256SUMS.sig из папки и повторите" }
-  $m = @(Select-String -LiteralPath SHA256SUMS -Pattern "^([0-9a-f]{64})  (court-gateway-\S+-windows-$a\.exe)$")
+  $m = @(Select-String -LiteralPath SHA256SUMS -Pattern "^([0-9a-f]{64})  (court-gateway-[0-9][0-9A-Za-z.\-]*-windows-$a\.exe)$" -ErrorAction Stop)
   if ($m.Count -ne 1) { throw "В SHA256SUMS не одна сборка для windows-$a, а $($m.Count). Ничего не запущено; напишите нам" }
   $want, $f = $m[0].Matches[0].Groups[1].Value, $m[0].Matches[0].Groups[2].Value
   & $get $f
-  if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash -ne $want) { throw "Контрольная сумма $f не совпала: файл повреждён или подменён. Ничего не запущено; удалите его из папки и повторите" }
-  Move-Item -Force $f court-gateway.exe
+  if ((Get-FileHash -LiteralPath $f -Algorithm SHA256 -ErrorAction Stop).Hash -ne $want) { throw "Контрольная сумма $f не совпала: файл повреждён или подменён. Ничего не запущено; удалите его из папки и повторите" }
+  try { Move-Item -LiteralPath $f -Destination court-gateway.exe -Force -ErrorAction Stop } catch { throw "Не удалось заменить court-gateway.exe ($($_.Exception.Message)). Если служба уже установлена, сначала выполните .\court-gateway.exe uninstall-service. Ничего не запущено" }
   .\court-gateway.exe setup --install-service
   .\court-gateway.exe doctor
 }
@@ -107,15 +128,18 @@ PowerShell от имени администратора заново и повт
 Вставьте и выполните целиком, ничего не меняя: команда сама определит систему и процессор
 (Linux x86-64 или ARM, например Raspberry Pi 4/5; Mac на Apple Silicon или Intel), скачает в папку
 `~/court-gateway` последний выпуск, сверит подпись и сумму и только потом запустит программу.
+Скачивает и сверяет она во временной папке, доступной только вам, а в `~/court-gateway` (её команда
+тоже закрывает от других пользователей) кладёт только сверенную программу.
 `install-service` через `sudo` ставит системную службу: она стартует при включении компьютера (на
 Mac — даже если никто не вошёл) и работает от вашего имени. Но если на Mac включён
 FileVault, после отключения питания Mac ждёт пароль на экране входа, и шлюз не работает, пока
 кто-нибудь не войдёт; чтобы шлюз поднимался сам, FileVault должен быть выключен.
 
 ```sh
-mkdir -p ~/court-gateway && cd ~/court-gateway && (
+(
   fail() { printf 'court-gateway: %s\n' "$*" >&2; exit 1; }
   B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
+  D="$HOME/court-gateway"
   case "$(uname -s) $(uname -m)" in
     'Linux x86_64') P=linux-amd64 ;;
     'Linux aarch64' | 'Linux arm64') P=linux-arm64 ;;
@@ -123,20 +147,25 @@ mkdir -p ~/court-gateway && cd ~/court-gateway && (
     'Darwin x86_64') P=darwin-amd64 ;;
     *) fail "для $(uname -s) $(uname -m) выпуска нет" ;;
   esac
+  mkdir -p "$D" && [ ! -L "$D" ] && [ -O "$D" ] && chmod 700 "$D" || fail "папка $D не ваша или это ссылка: переименуйте её и повторите"
+  T="$(mktemp -d)" && cd "$T" || fail "не удалось создать временную папку"
+  trap 'rm -rf "$T"' EXIT
   curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" || fail "не удалось скачать SHA256SUMS и SHA256SUMS.sig с $B"
   command -v ssh-keygen >/dev/null || fail "нет ssh-keygen: поставьте OpenSSH 8.1 или новее"
-  echo 'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' > allowed_signers
-  V="$(ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS 2>&1)" || {
+  echo 'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' > allowed_signers || fail "не удалось записать ключ выпуска в $T"
+  S="$(cat SHA256SUMS)" || fail "не удалось прочитать SHA256SUMS"
+  V="$(printf '%s\n' "$S" | ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig 2>&1)" || {
     case "$V" in *'illegal option'* | *'unknown option'* | *usage:*) fail "ssh-keygen старше OpenSSH 8.1 и не проверяет подписи: обновите OpenSSH" ;; esac
     fail "подпись SHA256SUMS не сошлась с ключом выпуска ($V); ничего не запущено"
   }
-  F="$(awk '$2 ~ /^court-gateway-.*-'"$P"'$/ { n++; f = $2 } END { if (n == 1) print f }' SHA256SUMS)"
-  [ -n "$F" ] || fail "в SHA256SUMS не одна сборка для $P; ничего не запущено"
-  curl -fLO "$B/$F" || fail "не удалось скачать $B/$F"
-  grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi ||
+  L="$(printf '%s\n' "$S" | awk 'NF == 2 && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 && $2 ~ /^court-gateway-[0-9][0-9A-Za-z.-]*-'"$P"'$/ { n++; l = $0 } END { if (n == 1) print l }')"
+  [ -n "$L" ] || fail "в SHA256SUMS не одна сборка для $P; ничего не запущено"
+  F="${L##* }"
+  curl -fL -o court-gateway "$B/$F" || fail "не удалось скачать $B/$F"
+  printf '%s  court-gateway\n' "${L%% *}" | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi ||
     fail "контрольная сумма $F не совпала: файл повреждён или подменён, ничего не запущено"
-  mv "$F" court-gateway && chmod +x court-gateway || fail "не удалось переименовать $F в court-gateway"
-  ./court-gateway setup && sudo ./court-gateway install-service && ./court-gateway doctor
+  chmod 755 court-gateway && mv -f court-gateway "$D/court-gateway" || fail "не удалось положить программу в $D"
+  cd "$D" && ./court-gateway setup && sudo ./court-gateway install-service && ./court-gateway doctor
 )
 ```
 
