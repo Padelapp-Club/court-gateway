@@ -165,7 +165,7 @@ func cmdHubKeygen(args []string, stdout, stderr io.Writer) int {
 		return hubFail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "key: %s\nfingerprint: %s\n", core.EncodeHubKey(key), core.HubKeyFingerprint(key))
-	fmt.Fprintf(stderr, "Ключ подписи хаба записан в %s (только владельцу). Храните копию: с другим ключом уже подключённые шлюзы хаб не примут.\n", *out)
+	fmt.Fprintf(stderr, "Ключ подписи хаба записан в %s (другим пользователям закрыт; на Windows — доступ только администраторам и системе). Храните копию: с другим ключом уже подключённые шлюзы хаб не примут.\n", *out)
 	return 0
 }
 

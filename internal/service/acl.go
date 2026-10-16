@@ -14,16 +14,17 @@ type ACE struct {
 	SID  string
 }
 
-// ACLProblem judges the DACL of the folder holding .env, or of .env
-// itself: it must not inherit (protected), must exist (a null DACL allows
-// everyone) and must hold allow entries for exactly Administrators and
-// SYSTEM — no other entry of any type. "" means it is closed.
+// ACLProblem judges the DACL of the folder holding .env, of .env itself or
+// of the hub's signing key file: it must not inherit (protected), must
+// exist (a null DACL allows everyone) and must hold allow entries for
+// exactly Administrators and SYSTEM — no other entry of any type. ""
+// means it is closed.
 func ACLProblem(protected, nullDACL bool, aces []ACE) string {
 	switch {
 	case nullDACL:
 		return "нет списка доступа: читает любой пользователь"
 	case !protected:
-		return "права наследуются от родительской папки: пароль CRM могут прочитать другие пользователи"
+		return "права наследуются от родительской папки: секреты могут прочитать другие пользователи"
 	}
 	seen := map[string]bool{}
 	for _, a := range aces {

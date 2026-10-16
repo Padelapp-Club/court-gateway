@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -366,9 +365,9 @@ func SigningKey(cfg *Settings) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("signing_key_file: %w", err)
 	case !fi.Mode().IsRegular():
 		return nil, fmt.Errorf("signing_key_file: %s — не обычный файл", p)
-	case runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0:
-		// as .env: readable by its owner only (Windows has no such bits)
-		return nil, fmt.Errorf("signing_key_file: %s доступен группе или другим пользователям (%s) — chmod 600 %s", p, fi.Mode().Perm(), p)
+	}
+	if msg := keyFileExposure(p, fi); msg != "" {
+		return nil, fmt.Errorf("signing_key_file: %s: %s", p, msg)
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -382,13 +381,14 @@ func SigningKey(cfg *Settings) (ed25519.PrivateKey, error) {
 }
 
 // WriteSigningKey makes a new signing key in the file p, which must not
-// exist (`hub keygen`), in the format of state_dir/hub-signing.key.
+// exist (`hub keygen`), in the format of state_dir/hub-signing.key, closed
+// to others as SigningKey requires (createKeyFile) and checked so.
 func WriteSigningKey(p string) (ed25519.PublicKey, error) {
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := createKeyFile(p)
 	if err != nil {
 		return nil, err
 	}
@@ -398,6 +398,14 @@ func WriteSigningKey(p string) (ed25519.PublicKey, error) {
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil {
+		var fi os.FileInfo
+		if fi, err = os.Stat(p); err == nil {
+			if msg := keyFileExposure(p, fi); msg != "" {
+				err = fmt.Errorf("%s: %s", p, msg)
+			}
+		}
 	}
 	if err != nil {
 		_ = os.Remove(p)
