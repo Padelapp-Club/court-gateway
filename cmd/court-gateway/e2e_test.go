@@ -20,6 +20,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/doctor"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
+	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
@@ -844,6 +845,14 @@ func TestServiceRefusedThenSetPasswordWithTheSamePassword(t *testing.T) {
 	testkit.WaitFor(t, "the hub knows the next login", 10*time.Second, func() bool {
 		return s.hub.Server().Monitor().Health("club-one").NextLogin.Equal(st.CRMNextLogin)
 	})
+	// the rejection is kept for a restart, and no password with it
+	kept, err := core.RejectionStore(filepath.Join(s.dir, "state")).LoadRejections()
+	if err != nil || kept.Count != 1 || kept.Key == "" {
+		t.Fatalf("rejections kept: %+v (%v)", kept, err)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(s.dir, "state", core.RejectionsFile)); strings.Contains(string(raw), crmPass) {
+		t.Fatal("the password is in the state directory")
+	}
 
 	logins := s.stub.LoginAttempts()
 	out.Reset()
@@ -872,7 +881,58 @@ func TestServiceRefusedThenSetPasswordWithTheSamePassword(t *testing.T) {
 	if st, _ := core.ReadHealthStatus(filepath.Join(s.dir, "state")); !st.CRMNextLogin.IsZero() || st.CRM != "ok" {
 		t.Fatalf("status after the login: %+v", st)
 	}
+	if _, err := os.Stat(filepath.Join(s.dir, "state", core.RejectionsFile)); !os.IsNotExist(err) {
+		t.Fatalf("rejections still kept after the login: %v", err)
+	}
 	if strings.Contains(logs.String(), crmPass) || !strings.Contains(logs.String(), "invalid_grant") {
 		t.Fatalf("the log names the rejection, not the password:\n%s", logs.String())
+	}
+}
+
+// A running service whose CRM check failed is never a doctor success,
+// whatever its status file says: a status ahead of the clock, a CRM check
+// too old under a fresh file, a status of a version before the crm fields
+// (its reason is the failure) and an unfinished check. doctor logs in to
+// the CRM in none of them.
+func TestDoctorTrustsNoUnusableStatus(t *testing.T) {
+	s := newStack(t)
+	old := statusInterval
+	statusInterval = time.Hour // the service does not rewrite the file meanwhile
+	defer func() { statusInterval = old }()
+	var out bytes.Buffer
+	if rc := run(s.setupArgs(), &out, io.Discard, env{"CRM_PASSWORD": crmPass, "GATEWAY_JOIN_CODE": s.hub.JoinCode("club-one", "Клуб Один")}.get); rc != 0 {
+		t.Fatalf("setup: %s", out.String())
+	}
+	cfg := filepath.Join(s.dir, "gateway.yaml")
+	s.stub.FailNext(http.MethodPost, vivastub.TokenPath, http.StatusBadRequest, `{"error":"invalid_grant"}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- serve(ctx, cfg, "", &contract.LogBuffer{}, env{}.get) }()
+	defer func() { cancel(); <-done }()
+	stateDir := filepath.Join(s.dir, "state")
+	testkit.WaitFor(t, "the service connected, its login rejected", 10*time.Second, func() bool {
+		st, err := core.ReadHealthStatus(stateDir)
+		return err == nil && st.CRM == "CRM_AUTH_FAILED" && st.Hub == "connected"
+	})
+	for name, tc := range map[string]struct {
+		st   core.HealthStatus
+		want doctor.Status
+	}{
+		"ahead of the clock":        {core.HealthStatus{Time: time.Now().Add(24 * time.Hour), CRM: "ok", CRMCheckedAt: time.Now(), Ready: true, Hub: "connected"}, doctor.Warn},
+		"old CRM check, fresh file": {core.HealthStatus{Time: time.Now(), CRM: "ok", CRMCheckedAt: time.Now().Add(-24 * time.Hour), Ready: true, Hub: "connected"}, doctor.Warn},
+		"legacy, CRM failed":        {core.HealthStatus{Time: time.Now(), Ready: false, Reason: "CRM_AUTH_FAILED", Hub: "connected"}, doctor.Fail},
+		"unfinished CRM check":      {core.HealthStatus{Time: time.Now(), Ready: false, Reason: "STARTING", Hub: "connected"}, doctor.Warn},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := core.WriteHealthStatus(stateDir, tc.st); err != nil {
+				t.Fatal(err)
+			}
+			before := s.stub.LoginAttempts()
+			rep := doctor.Run(context.Background(), doctor.Options{ConfigPath: cfg, Getenv: env{}.get, Factories: drivers.Factories, Accounts: drivers.Accounts,
+				Version: version, Timeout: 50 * time.Millisecond})
+			if rep.OK || status(rep, doctor.CodeCRMLogin) != tc.want || s.stub.LoginAttempts() != before {
+				t.Fatalf("ok=%v CRM_LOGIN %s, %d logins of doctor's", rep.OK, status(rep, doctor.CodeCRMLogin), s.stub.LoginAttempts()-before)
+			}
+		})
 	}
 }

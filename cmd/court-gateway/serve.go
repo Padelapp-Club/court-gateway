@@ -106,6 +106,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		return fail(err)
 	}
 	s.Driver.Clock = verifier.Now
+	// the retry budget after a rejected CRM login outlives a restart
+	s.Driver.Rejections = core.RejectionStore(s.StateDir)
 	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
 		return fail(err)

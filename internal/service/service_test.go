@@ -98,3 +98,32 @@ func TestBootoutComplaintIsQuiet(t *testing.T) {
 		t.Fatalf("err=%v, shown: %q", err, out)
 	}
 }
+
+// Running reads each service manager's answer; a manager that cannot be
+// asked is not known, an absent service is known not to run.
+func TestRunningAsksTheServiceManager(t *testing.T) {
+	answers := func(m map[string]string, ran bool) func(string, ...string) (string, bool) {
+		return func(name string, args ...string) (string, bool) {
+			return m[name+" "+strings.Join(args, " ")], ran
+		}
+	}
+	for name, tc := range map[string]struct {
+		goos           string
+		out            map[string]string
+		ran            bool
+		running, known bool
+	}{
+		"systemd active":     {"linux", map[string]string{"systemctl is-active court-gateway": "active\n"}, true, true, true},
+		"systemd inactive":   {"linux", map[string]string{"systemctl is-active court-gateway": "inactive\n"}, true, false, true},
+		"no systemctl":       {"linux", nil, false, false, false},
+		"launchd daemon":     {"darwin", map[string]string{"launchctl print system/court-gateway": "\tstate = running\n"}, true, true, true},
+		"launchd agent":      {"darwin", map[string]string{"launchctl print gui/501/court-gateway": "\tstate = running\n"}, true, true, true},
+		"launchd none":       {"darwin", nil, true, false, true},
+		"windows running":    {"windows", map[string]string{"sc.exe query court-gateway": "        STATE              : 4  RUNNING\n"}, true, true, true},
+		"windows no service": {"windows", map[string]string{"sc.exe query court-gateway": "[SC] EnumQueryServicesStatus:OpenService FAILED 1060:\n"}, true, false, true},
+	} {
+		if running, known := Running(tc.goos, 501, answers(tc.out, tc.ran)); running != tc.running || known != tc.known {
+			t.Errorf("%s: running %v known %v", name, running, known)
+		}
+	}
+}

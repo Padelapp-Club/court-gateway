@@ -3,6 +3,8 @@ package viva
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -26,17 +27,27 @@ const (
 	// After a login that failed for another reason than the password (the
 	// CRM unreachable, 5xx, a timeout) the next attempt waits loginRetry,
 	// doubling with every failure in a row up to loginRetryMax; until then
-	// calls fail fast with that error. A rejected login (Keycloak's
-	// invalid_grant: a wrong password, but also a lock or a limit that
-	// passes by itself) is tried again only rarely: after rejectedRetry,
-	// then every rejectedRetryMax, far below any lockout threshold; at once
-	// when the password is set again (setPassword). Any other refusal of
-	// the login is retried like an outage.
-	loginRetry       = 5 * time.Second
-	loginRetryMax    = time.Minute
-	rejectedRetry    = 15 * time.Minute
-	rejectedRetryMax = time.Hour
+	// calls fail fast with that error. Any refusal of the login other than
+	// a rejection is retried like an outage.
+	loginRetry    = 5 * time.Second
+	loginRetryMax = time.Minute
+	// rejectedOutageRetry: a retry of a rejected login that met another
+	// failure is not tried again before this.
+	rejectedOutageRetry = time.Hour
+	// restartRetryAfter: once the retries after a rejection are spent, a
+	// restart of the gateway may try one login, if the last was this long
+	// ago; rejectedCap bounds all rejected logins in a row, restarts
+	// included, far below a lockout threshold (Keycloak's default: 30).
+	restartRetryAfter = 4 * time.Hour
+	rejectedCap       = 8
 )
+
+// rejectedRetries: a rejected login (Keycloak's invalid_grant: a wrong
+// password, but also a lock or a limit that passes by itself) is tried
+// again only these long after the first rejection, then not at all until
+// the password is set again (setPassword: at once). The count is kept
+// across restarts (driver.RejectionStore).
+var rejectedRetries = []time.Duration{15 * time.Minute, time.Hour, 4 * time.Hour}
 
 // maxBody caps how much of an upstream response is read.
 const maxBody = 8 << 20
@@ -57,15 +68,19 @@ type client struct {
 	http      *http.Client
 	now       func() time.Time
 	log       *slog.Logger
+	store     driver.RejectionStore // nil: rejections are not kept
 
 	mu         sync.Mutex
 	token      string
 	expires    time.Time
 	refresh    string    // of the session the last login opened
 	refreshEnd time.Time // when refresh expires (zero: not said)
+	earlyTried string    // the refresh token an early renewal failed with
 	session    bool      // a login succeeded since the last endSession
 	rejected   error     // the CRM rejected the login: no login before retryAt
-	rejections int       // logins rejected in a row
+	rej        driver.Rejections
+	stopped    bool      // after rejected: no automatic login at all
+	staleStore bool      // the store holds rejections of other credentials
 	loginErr   error     // the last failed login, another failure
 	failures   int       // logins failed in a row, rejections aside
 	retryAt    time.Time // no login before this after rejected or loginErr
@@ -87,22 +102,34 @@ type tokenResponse struct {
 	RefreshExpiresIn float64  `json:"refresh_expires_in"`
 }
 
-// accessToken returns a cached token or logs in, but not before retryAt
-// after a failed login: until then the error is returned at once instead.
-// A rejected login stays the error until a login passes, even when a
-// retry of it meets another failure.
+// accessToken returns a cached token, renews it within the session or logs
+// in, but not before retryAt after a failed login, nor at all once the
+// retries after a rejection are spent: then the error is returned at once
+// instead. A rejected login stays the error until a login passes, even
+// when a retry of it meets another failure. A refresh token about to
+// expire is renewed early, while the access token still serves.
 func (c *client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	switch {
-	case c.token != "" && now.Before(c.expires):
+	if c.token != "" && now.Before(c.expires) {
+		if c.refresh != "" && c.earlyTried != c.refresh && !c.refreshEnd.IsZero() &&
+			!now.Before(c.refreshEnd.Add(-tokenSafety)) && now.Before(c.refreshEnd) {
+			if tok, err := c.renewLocked(ctx); err == nil {
+				return tok, nil
+			}
+			c.earlyTried = c.refresh // the access token serves until it expires
+		}
 		return c.token, nil
-	case now.Before(c.retryAt) && c.rejected != nil:
+	}
+	switch {
+	case c.rejected != nil && (c.stopped || now.Before(c.retryAt)):
 		return "", c.rejected
 	case now.Before(c.retryAt):
 		return "", c.loginErr
 	}
+	// the session's refresh token is kept until it expires, so it can be
+	// renewed or, failing that, ended before a login opens another
 	if c.refresh != "" && (c.refreshEnd.IsZero() || now.Before(c.refreshEnd)) {
 		tok, err := c.renewLocked(ctx)
 		var ue *driver.UpstreamError
@@ -120,8 +147,10 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 		}
 		// refused (the session expired or was ended): no word on the
 		// password; end what may be left of the session, then log in
-		_ = c.logout(ctx, c.refresh)
 		c.log.Info("the CRM did not renew the session: logging in again", "error", err.Error())
+	}
+	if c.refresh != "" { // whatever is left of the session goes before the next
+		_ = c.logout(ctx, c.refresh)
 	}
 	c.refresh, c.refreshEnd = "", time.Time{}
 	tok, err := c.loginLocked(ctx)
@@ -129,25 +158,95 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 	switch {
 	case err == nil:
 		if c.rejected != nil {
-			c.log.Info("the CRM accepted the login again", "rejected_logins", c.rejections)
+			c.log.Info("the CRM accepted the login again", "rejected_logins", c.rej.Count)
 		}
-		c.rejected, c.rejections, c.loginErr, c.failures, c.retryAt = nil, 0, nil, 0, time.Time{}
+		c.clearRejectionsLocked()
+		c.loginErr, c.failures, c.retryAt = nil, 0, time.Time{}
 	case errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth:
-		c.rejections++
-		c.rejected, c.retryAt = err, now.Add(rejectedRetryMax)
-		if c.rejections == 1 {
-			c.retryAt = now.Add(rejectedRetry)
+		if c.rej.Count == 0 {
+			c.rej.First = now
 		}
-		c.log.Error("the CRM rejected the login: it is tried again at next_login, or at once after set-password",
-			"error", ue.Detail, "next_login", c.retryAt.UTC().Format(time.RFC3339))
+		c.rej.Key, c.rej.Count, c.rej.Last = c.credentialKey(), c.rej.Count+1, now
+		c.rejected = err
+		c.scheduleLocked(false)
+		c.saveRejectionsLocked()
+		if c.stopped {
+			c.log.Error("the CRM rejected the login: no more logins until set-password", "error", ue.Detail, "rejected_logins", c.rej.Count)
+		} else {
+			c.log.Error("the CRM rejected the login: it is tried again at next_login, or at once after set-password",
+				"error", ue.Detail, "rejected_logins", c.rej.Count, "next_login", c.retryAt.UTC().Format(time.RFC3339))
+		}
 	case c.rejected != nil: // the retry of a rejected login met another failure
-		c.retryAt = now.Add(rejectedRetryMax)
+		c.retryAt = now.Add(rejectedOutageRetry)
 		return "", c.rejected
 	case ctx.Err() == nil:
 		c.failures++
 		c.loginErr, c.retryAt = err, now.Add(min(loginRetry<<min(c.failures-1, 10), loginRetryMax))
 	}
 	return tok, err
+}
+
+// scheduleLocked sets when a rejected login is tried again: rejectedRetries
+// after the first rejection, then never (stopped); at a start (restart)
+// with those spent, once at once if the last was restartRetryAfter ago,
+// up to rejectedCap rejections in a row.
+func (c *client) scheduleLocked(restart bool) {
+	n := c.rej.Count
+	c.stopped = false
+	switch {
+	case n <= len(rejectedRetries):
+		c.retryAt = c.rej.First.Add(rejectedRetries[n-1])
+	case restart && n < rejectedCap && !c.now().Before(c.rej.Last.Add(restartRetryAfter)):
+		c.retryAt = c.now()
+	default:
+		c.retryAt, c.stopped = time.Time{}, true
+	}
+}
+
+// loadRejections takes up the rejections a previous run of the gateway
+// kept for these credentials.
+func (c *client) loadRejections() {
+	if c.store == nil {
+		return
+	}
+	r, err := c.store.LoadRejections()
+	if err != nil {
+		c.log.Warn("the CRM logins rejected before could not be read: counting from none", "error", err)
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r.Count <= 0 || r.Key != c.credentialKey() {
+		c.staleStore = r.Count > 0
+		return
+	}
+	c.rej = r
+	c.rejected = driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected %d times in a row (kept since %s)", r.Count, r.Last.UTC().Format(time.RFC3339)))
+	c.scheduleLocked(true)
+}
+
+func (c *client) saveRejectionsLocked() {
+	if c.store == nil {
+		return
+	}
+	if err := c.store.SaveRejections(c.rej); err != nil {
+		c.log.Warn("the CRM logins rejected could not be kept: a restart counts from none", "error", err)
+	}
+}
+
+func (c *client) clearRejectionsLocked() {
+	had := c.rej.Count > 0 || c.staleStore
+	c.rejected, c.rej, c.stopped, c.staleStore = nil, driver.Rejections{}, false, false
+	if had {
+		c.saveRejectionsLocked()
+	}
+}
+
+// credentialKey names the credentials rejections are about: a hash of the
+// token endpoint, the username and the password, never the password.
+func (c *client) credentialKey() string {
+	sum := sha256.Sum256([]byte("court-gateway crm login\x00" + c.authURL + "\x00" + c.username + "\x00" + c.password))
+	return hex.EncodeToString(sum[:16])
 }
 
 // setPassword replaces the password, as set-password writes it to .env,
@@ -157,7 +256,9 @@ func (c *client) setPassword(p string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.password, c.token = p, ""
-	c.rejected, c.rejections, c.loginErr, c.failures, c.retryAt = nil, 0, nil, 0, time.Time{}
+	c.rejected, c.rej, c.stopped = nil, driver.Rejections{}, false
+	c.saveRejectionsLocked() // none kept, whatever credentials they were about
+	c.loginErr, c.failures, c.retryAt = nil, 0, time.Time{}
 }
 
 // rejectedPassword reports whether logins are stopped after the CRM
@@ -169,11 +270,11 @@ func (c *client) rejectedPassword() bool {
 }
 
 // nextLogin is when a rejected login is tried again (zero when none was
-// rejected).
+// rejected, or when none will be until the password is set again).
 func (c *client) nextLogin() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.rejected == nil {
+	if c.rejected == nil || c.stopped {
 		return time.Time{}
 	}
 	return c.retryAt
@@ -260,9 +361,9 @@ func (c *client) tokenLocked(ctx context.Context, op string, form url.Values) (s
 			Description string `json:"error_description"`
 		}
 		if json.Unmarshal(body, &kc) == nil && kc.Error == "invalid_grant" {
-			// Keycloak's reason (wrong credentials, a disabled or locked
-			// account) is no secret and tells a wrong password from a lock
-			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s rejected with HTTP %d (invalid_grant%s)", op, resp.StatusCode, describe(kc.Description)))
+			// Keycloak's reason, as a fixed label: its text is never
+			// passed on (an upstream may echo a token in it)
+			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s rejected with HTTP %d (invalid_grant: %s)", op, resp.StatusCode, rejectionLabel(kc.Description)))
 		}
 		return "", driver.Upstream(driver.UpstreamLogin, fmt.Sprintf("%s refused with HTTP %d", op, resp.StatusCode))
 	default:
@@ -277,8 +378,8 @@ func (c *client) tokenLocked(ctx context.Context, op string, form url.Values) (s
 	c.expires = now.Add(time.Duration(*tr.ExpiresIn*float64(time.Second)) - tokenSafety)
 	if tr.RefreshToken != "" || form.Get("grant_type") == "password" {
 		c.refresh, c.refreshEnd = tr.RefreshToken, time.Time{}
-		if tr.RefreshExpiresIn > 0 {
-			c.refreshEnd = now.Add(time.Duration(tr.RefreshExpiresIn*float64(time.Second)) - tokenSafety)
+		if tr.RefreshExpiresIn > 0 { // its real end: renewed early before it (accessToken)
+			c.refreshEnd = now.Add(time.Duration(tr.RefreshExpiresIn * float64(time.Second)))
 		}
 	}
 	return c.token, nil
@@ -347,22 +448,22 @@ func logoutURLOf(authURL string) string {
 	return u.String()
 }
 
-// describe is ": " and Keycloak's error_description, printable and short,
-// or nothing.
-func describe(d string) string {
-	d = strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return -1
-	}, d)
-	if d = strings.TrimSpace(d); d == "" {
-		return ""
+// rejectionLabel names Keycloak's error_description of an invalid_grant
+// with a fixed label; any other text is "other".
+func rejectionLabel(d string) string {
+	switch strings.ToLower(strings.TrimSpace(d)) {
+	case "invalid user credentials":
+		return "invalid_credentials"
+	case "account disabled", "user is disabled":
+		return "account_disabled"
+	case "account temporarily disabled":
+		return "account_temporarily_locked"
+	case "account is not fully set up":
+		return "account_not_set_up"
+	case "session not active", "token is not active", "invalid refresh token", "stale token", "session doesn't have required client":
+		return "session_not_active"
 	}
-	if r := []rune(d); len(r) > 120 {
-		d = string(r[:120]) + "…"
-	}
-	return ": " + d
+	return "other"
 }
 
 func networkError(op string, err error) error {

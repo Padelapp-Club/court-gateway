@@ -281,3 +281,37 @@ func CurrentSpec(cfgPath string, system bool) (Spec, error) {
 	}
 	return s, nil
 }
+
+// Running asks goos's service manager whether the gateway's service runs
+// (out runs a command and returns its output and whether it ran at all).
+// known is false when the manager could not be asked.
+func Running(goos string, uid int, out func(name string, args ...string) (string, bool)) (running, known bool) {
+	switch goos {
+	case "linux":
+		o, ok := out("systemctl", "is-active", Name)
+		return strings.TrimSpace(o) == "active", ok
+	case "darwin":
+		known := false
+		for _, domain := range []string{"system", "gui/" + strconv.Itoa(uid)} {
+			o, ok := out("launchctl", "print", domain+"/"+Name)
+			known = known || ok
+			if strings.Contains(o, "state = running") {
+				return true, true
+			}
+		}
+		return false, known
+	case "windows":
+		o, ok := out("sc.exe", "query", Name)
+		return strings.Contains(o, "RUNNING"), ok
+	}
+	return false, false
+}
+
+// CommandOutput runs a command for Running: its output, and whether it
+// ran (an exit code other than 0 still ran).
+func CommandOutput(name string, args ...string) (string, bool) {
+	cmd := exec.Command(name, args...)
+	o, err := cmd.Output()
+	var ee *exec.ExitError
+	return string(o), err == nil || errors.As(err, &ee)
+}

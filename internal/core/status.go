@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // HealthStatusFile is written by `serve` into the state directory and read
@@ -89,4 +91,43 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// RejectionsFile is where the service keeps the CRM logins rejected in a
+// row (driver.Rejections), in the state directory.
+const RejectionsFile = "crm-rejections.json"
+
+// RejectionStore is the driver.RejectionStore in the state directory dir.
+type RejectionStore string
+
+// LoadRejections implements driver.RejectionStore.
+func (d RejectionStore) LoadRejections() (driver.Rejections, error) {
+	var r driver.Rejections
+	data, err := os.ReadFile(filepath.Join(string(d), RejectionsFile))
+	if os.IsNotExist(err) {
+		return r, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &r)
+	}
+	return r, err
+}
+
+// SaveRejections implements driver.RejectionStore; none is no file.
+func (d RejectionStore) SaveRejections(r driver.Rejections) error {
+	p := filepath.Join(string(d), RejectionsFile)
+	if r.Count == 0 {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(string(d), 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(p, data, 0o600)
 }

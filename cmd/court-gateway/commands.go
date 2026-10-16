@@ -277,6 +277,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	}
 	rep := doctor.Run(context.Background(), doctor.Options{
 		ConfigPath: *cfgPath, Getenv: getenv, Factories: drivers.Factories, Accounts: drivers.Accounts, Version: version, ReleaseKey: releaseKey,
+		ServiceRunning: func() (bool, bool) { return service.Running(runtime.GOOS, os.Getuid(), service.CommandOutput) },
 	})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)

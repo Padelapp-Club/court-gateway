@@ -41,6 +41,10 @@ func doctorAgainstHub(t *testing.T, clubStudio string, who tunnel.Whoami, ahead 
 	return rep
 }
 
+// managerSays is what the service manager answers doctor (nil: it cannot
+// be asked).
+var managerSays func() (bool, bool)
+
 // doctorWithService is doctorAgainstHub with the status file a running
 // service wrote (svc; nil: no service runs); it returns the CRM too.
 func doctorWithService(t *testing.T, clubStudio string, who tunnel.Whoami, ahead time.Duration, svc *core.HealthStatus) (doctor.Report, *vivastub.Stub) {
@@ -86,7 +90,7 @@ func doctorWithService(t *testing.T, clubStudio string, who tunnel.Whoami, ahead
 	}
 	env := map[string]string{"CRM_PASSWORD": "fixture-password", "GATEWAY_HUB_SECRET": "fixture-hub-secret"}
 	return doctor.Run(context.Background(), doctor.Options{ConfigPath: p, Getenv: func(k string) string { return env[k] },
-		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", Timeout: 3 * time.Second}), stub
+		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", Timeout: 3 * time.Second, ServiceRunning: managerSays}), stub
 }
 
 func hubConfig(rep doctor.Report) doctor.Check {
@@ -204,18 +208,28 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 	retryAt := checked.Add(15 * time.Minute)
 	retrying := running("CRM_AUTH_FAILED")
 	retrying.CRMNextLogin = retryAt
+	future, stale, legacy := running("ok"), running("ok"), running("")
+	future.Time = time.Now().Add(24 * time.Hour)
+	stale.CRMCheckedAt = time.Now().Add(-24 * time.Hour)
+	legacy.Reason = "CRM_AUTH_FAILED" // a status of a version without the crm fields
+	aheadCheck := running("ok")
+	aheadCheck.CRMCheckedAt = time.Now().Add(time.Hour)
 	for name, tc := range map[string]struct {
 		svc              *core.HealthStatus
 		login, occupancy doctor.Status
 		message, hint    string
 	}{
 		"ready":                       {running("ok"), doctor.OK, doctor.OK, from, ""},
-		"password rejected":           {running("CRM_AUTH_FAILED"), doctor.Fail, doctor.Skip, from + ": вход в CRM не удался: CRM_AUTH_FAILED", "set-password"},
+		"password rejected":           {running("CRM_AUTH_FAILED"), doctor.Fail, doctor.Skip, from + ": вход в CRM не удался: CRM_AUTH_FAILED; сама служба больше не пробует войти", "set-password"},
 		"rejected with a club":        {running("CRM_AUTH_FAILED", "club-a"), doctor.Fail, doctor.Skip, "CRM_AUTH_FAILED", "set-password"},
 		"rejected, retried later":     {retrying, doctor.Fail, doctor.Skip, "следующая попытка в " + retryAt.Local().Format("15:04"), "set-password"},
 		"CRM unreachable":             {running("CRM_UNREACHABLE"), doctor.Fail, doctor.Skip, "CRM_UNREACHABLE", "интернет"},
 		"a club's answer is rejected": {running("CRM_REJECTED", "club-a"), doctor.OK, doctor.Fail, from, ""},
-		"no check yet":                {running(""), doctor.Warn, doctor.Skip, "ещё не сообщила", "через минуту"},
+		"legacy status, CRM failed":   {legacy, doctor.Fail, doctor.Skip, "CRM_AUTH_FAILED", "set-password"},
+		"no check yet":                {running(""), doctor.Warn, doctor.Skip, "нет свежих данных службы: служба ещё не сообщила", "через минуту"},
+		"status from the future":      {future, doctor.Warn, doctor.Skip, "нет свежих данных службы: время данных службы впереди", "через минуту"},
+		"old CRM check, fresh file":   {stale, doctor.Warn, doctor.Skip, "нет свежих данных службы: последняя проверка CRM", "через минуту"},
+		"CRM check from the future":   {aheadCheck, doctor.Warn, doctor.Skip, "нет свежих данных службы: время проверки CRM", "через минуту"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rep, stub := doctorWithService(t, studio, served, 0, tc.svc)
@@ -226,7 +240,7 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 			if c := check(rep, doctor.CodeOccupancy); c.Status != tc.occupancy {
 				t.Fatalf("CRM_OCCUPANCY %s %q", c.Status, c.Message)
 			}
-			if rep.OK != (tc.login != doctor.Fail && tc.occupancy != doctor.Fail) {
+			if rep.OK != (tc.login == doctor.OK && tc.occupancy != doctor.Fail) {
 				t.Fatalf("ok=%v", rep.OK)
 			}
 			if n := stub.LoginAttempts(); n != 0 || len(stub.Calls()) != 0 {
@@ -251,6 +265,33 @@ func TestDoctorWithoutTheServiceEndsItsSession(t *testing.T) {
 			}
 			if stub.Logins() != 1 || stub.OpenSessions() != 0 {
 				t.Fatalf("%d logins, %d sessions left open", stub.Logins(), stub.OpenSessions())
+			}
+		})
+	}
+}
+
+// No status file of a running service, but the service manager says the
+// service runs: doctor does not log in beside it on that inference, and
+// is not a success. When the manager says it does not run (or cannot
+// tell), doctor checks itself.
+func TestDoctorAsksTheServiceManager(t *testing.T) {
+	served := tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}
+	defer func() { managerSays = nil }()
+	for name, tc := range map[string]struct {
+		says   func() (bool, bool)
+		logins int
+		status doctor.Status
+	}{
+		"running":         {func() (bool, bool) { return true, true }, 0, doctor.Warn},
+		"not running":     {func() (bool, bool) { return false, true }, 1, doctor.OK},
+		"cannot be asked": {func() (bool, bool) { return false, false }, 1, doctor.OK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			managerSays = tc.says
+			rep, stub := doctorWithService(t, studio, served, 0, nil)
+			login := check(rep, doctor.CodeCRMLogin)
+			if login.Status != tc.status || stub.LoginAttempts() != tc.logins || rep.OK != (tc.status == doctor.OK) || stub.OpenSessions() != 0 {
+				t.Fatalf("CRM_LOGIN %s %q, ok=%v, %d logins, %d sessions open", login.Status, login.Message, rep.OK, stub.LoginAttempts(), stub.OpenSessions())
 			}
 		})
 	}

@@ -50,6 +50,22 @@ func EndSession(ctx context.Context, acct Account) error {
 	return nil
 }
 
+// Rejections are an account's logins the CRM rejected in a row. Key tells
+// which credentials they are about (a hash, never the password itself):
+// rejections of other credentials do not count.
+type Rejections struct {
+	Key   string    `json:"key"`
+	Count int       `json:"count"`
+	First time.Time `json:"first"`
+	Last  time.Time `json:"last"`
+}
+
+// RejectionStore keeps Rejections; Load of nothing kept is the zero value.
+type RejectionStore interface {
+	LoadRejections() (Rejections, error)
+	SaveRejections(Rejections) error
+}
+
 // AccountFactory builds an Account. Config carries CRM, Password, Logger,
 // HTTPClient and Now; Courts and Services are empty.
 type AccountFactory func(Config) (Account, error)
