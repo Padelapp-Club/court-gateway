@@ -30,8 +30,11 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 	if len(args) >= 1 && args[0] == "key" {
 		return cmdHubKey(args[1:], stdout, stderr, getenv, defaultConfig)
 	}
+	if len(args) >= 1 && args[0] == "keygen" {
+		return cmdHubKeygen(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && (len(args[0]) == 0 || args[0][0] != '-') {
-		fmt.Fprintf(stderr, "hub: неизвестная команда %q (есть: hub, hub join-code create, hub gateway revoke, hub key)\n", args[0])
+		fmt.Fprintf(stderr, "hub: неизвестная команда %q (есть: hub, hub join-code create, hub gateway revoke, hub key, hub keygen)\n", args[0])
 		return 2
 	}
 	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
@@ -45,10 +48,11 @@ func cmdHub(args []string, stdout, stderr io.Writer, getenv func(string) string)
 		return hubFail(stderr, err)
 	}
 	log := core.NewLogger(stderr, slog.LevelInfo, s.Secrets)
-	store, err := hub.OpenStore(s.StateDir, nil)
+	store, err := hub.Open(s, nil)
 	if err != nil {
 		return hubFail(stderr, err)
 	}
+	defer store.Close()
 	srv, err := hub.NewServer(s, store, hub.Options{Logger: log, Version: version})
 	if err != nil {
 		return hubFail(stderr, err)
@@ -89,7 +93,16 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 	if err != nil {
 		return hubFail(stderr, err)
 	}
-	jc, err := hub.CreateJoinCode(s.StateDir, *inst, *name, *ttl, time.Now())
+	key, err := hub.PublicKey(s)
+	if err != nil {
+		return hubFail(stderr, err)
+	}
+	st, err := hub.OpenState(s)
+	if err != nil {
+		return hubFail(stderr, err)
+	}
+	defer st.Close()
+	jc, err := hub.CreateJoinCode(st, *inst, *name, *ttl, time.Now())
 	switch {
 	case errors.Is(err, hub.ErrInvalidID):
 		fmt.Fprintf(stderr, "court-gateway hub: --installation: «%s» — от 2 до 63 символов: строчные латинские буквы, цифры и дефис\n", *inst)
@@ -101,10 +114,6 @@ func cmdJoinCode(args []string, stdout, stderr io.Writer, getenv func(string) st
 		fmt.Fprintf(stderr, "court-gateway hub: --ttl: больше нуля и не дольше %s\n", hub.MaxJoinCodeTTL)
 		return 2
 	case err != nil:
-		return hubFail(stderr, err)
-	}
-	key, err := hub.PublicKey(s.StateDir)
-	if err != nil {
 		return hubFail(stderr, err)
 	}
 	fp := core.HubKeyFingerprint(key)
@@ -130,12 +139,34 @@ func cmdHubKey(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	s, err := loadHub(*cfgPath, getenv)
 	if err == nil {
 		var key []byte
-		if key, err = hub.PublicKey(s.StateDir); err == nil {
+		if key, err = hub.PublicKey(s); err == nil {
 			fmt.Fprintf(stdout, "key: %s\nfingerprint: %s\n", core.EncodeHubKey(key), core.HubKeyFingerprint(key))
 			return 0
 		}
 	}
 	return hubFail(stderr, err)
+}
+
+// cmdHubKeygen makes the hub's signing key in a new file, once, for
+// signing_key_file: the key never goes into the database.
+func cmdHubKeygen(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("hub keygen", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	out := fs.String("out", "", "new key file (must not exist), for signing_key_file in hub.yaml")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	if *out == "" {
+		fmt.Fprintln(stderr, "court-gateway hub keygen: укажите -out <файл> — файл ключа подписи хаба для signing_key_file")
+		return 2
+	}
+	key, err := hub.WriteSigningKey(*out)
+	if err != nil {
+		return hubFail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "key: %s\nfingerprint: %s\n", core.EncodeHubKey(key), core.HubKeyFingerprint(key))
+	fmt.Fprintf(stderr, "Ключ подписи хаба записан в %s (только владельцу). Храните копию: с другим ключом уже подключённые шлюзы хаб не примут.\n", *out)
+	return 0
 }
 
 func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
@@ -150,7 +181,12 @@ func cmdRevoke(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	if err != nil {
 		return hubFail(stderr, err)
 	}
-	if err := hub.RevokeGateway(s.StateDir, *inst); err != nil {
+	st, err := hub.OpenState(s)
+	if err != nil {
+		return hubFail(stderr, err)
+	}
+	defer st.Close()
+	if err := hub.RevokeGateway(st, *inst); err != nil {
 		if errors.Is(err, hub.ErrNotRegistered) {
 			fmt.Fprintf(stderr, "court-gateway hub: у установки %s нет зарегистрированного шлюза\n", *inst)
 		} else {

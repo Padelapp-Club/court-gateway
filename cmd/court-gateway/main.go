@@ -64,6 +64,7 @@ const usage = `court-gateway — партнёрский API клуба пове�
   hub join-code create       выдать одноразовый код подключения установки (--installation id --name "Название")
   hub gateway revoke         отозвать подключение установки (--installation id)
   hub key                    показать открытый ключ хаба и его отпечаток
+  hub keygen                 создать файл ключа подписи хаба для signing_key_file (-out файл), один раз
 
 Общий параметр:
   -config путь     gateway.yaml (по умолчанию gateway.yaml или $GATEWAY_CONFIG)

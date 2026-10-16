@@ -357,7 +357,7 @@ func TestOperatorJoinCodes(t *testing.T) {
 	if err != nil || who.Installation != "inst-1" {
 		t.Fatalf("new secret: %+v %v", who, err)
 	}
-	assertNoPlaintext(t, h.StateDir, []string{rr2.Secret, hub.NormalizeJoinCode(jc.Code)})
+	assertNoPlaintext(t, h, []string{rr2.Secret, hub.NormalizeJoinCode(jc.Code)})
 
 	// delete: the gateway loses access, pending codes die, GET is 404
 	pending := newCode("")
@@ -378,7 +378,14 @@ func TestInstallationsSurviveRestart(t *testing.T) {
 	in := demoInstallation(t, h, "net-r", demoClub("club-r", "demo-north", "Корт 1"))
 	h.Restart()
 	testkit.WaitFor(t, "reconnected", 15*time.Second, func() bool { return h.Server().Broker().Connected("net-r") })
-	if r := call(t, h, http.MethodGet, "/v1/clubs/club-r/courts", contract.ReadKey, ""); r.status != http.StatusOK {
+	// connected may come before the config of the new run is applied: the
+	// club answers 503 CONFIG_PENDING meanwhile, then serves
+	var r partnerResp
+	testkit.WaitFor(t, "served after restart", 15*time.Second, func() bool {
+		r = call(t, h, http.MethodGet, "/v1/clubs/club-r/courts", contract.ReadKey, "")
+		return r.status != http.StatusServiceUnavailable || !strings.Contains(string(r.body), "CONFIG_PENDING")
+	})
+	if r.status != http.StatusOK {
 		t.Fatalf("after restart: %d %s", r.status, r.body)
 	}
 	if st := in.Syncer.State(); st.ConfigVersion != 1 {

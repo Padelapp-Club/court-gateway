@@ -171,7 +171,7 @@ func TestUnauthorizedGatewayRejected(t *testing.T) {
 	}
 	// a revoked gateway loses access at its next request
 	secret := w.hub.Register("demo-club", "Демо-клуб")
-	if err := hub.RevokeGateway(w.hub.StateDir, "demo-club"); err != nil {
+	if err := hub.RevokeGateway(w.hub.State, "demo-club"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := testkit.FetchWhoami(context.Background(), w.hub.Transport(), w.hub.URL(), secret); !errors.Is(err, tunnel.ErrUnauthorized) {
@@ -216,7 +216,7 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 		t.Fatalf("one code redeemed %d times", wins)
 	}
 	// expiry
-	jc, err := hub.CreateJoinCode(w.hub.StateDir, "demo-club", "Демо-клуб", time.Hour, now)
+	jc, err := hub.CreateJoinCode(w.hub.State, "demo-club", "Демо-клуб", time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestJoinCodeSingleUseAndExpiry(t *testing.T) {
 		t.Fatalf("new secret: %+v %v", who, err)
 	}
 	// nothing secret is stored in plain text
-	assertNoPlaintext(t, w.hub.StateDir, []string{secret2, hub.NormalizeJoinCode(code)})
+	assertNoPlaintext(t, w.hub, []string{secret2, hub.NormalizeJoinCode(code)})
 }
 
 func TestReconnectAfterHubRestart(t *testing.T) {
@@ -320,10 +320,24 @@ func TestUpdateHint(t *testing.T) {
 	testkit.WaitFor(t, "hint", 10*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return hint == "1.2.0" })
 }
 
-func assertNoPlaintext(t *testing.T, dir string, secrets []string) {
+func assertNoPlaintext(t *testing.T, h *testkit.Hub, secrets []string) {
 	t.Helper()
+	if h.StateDir == "" {
+		rows := h.DatabaseRows(t)
+		for _, row := range rows {
+			for _, s := range secrets {
+				if strings.Contains(row, s) {
+					t.Fatalf("the database holds a secret in plain text: %s", row)
+				}
+			}
+		}
+		if len(rows) == 0 {
+			t.Fatal("the database is empty")
+		}
+		return
+	}
 	n := 0
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(h.StateDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -410,7 +424,7 @@ func TestHubStopsPromptlyAndCleanly(t *testing.T) {
 	ran := make(chan error, 1)
 	go func() { ran <- hub.Run(ctx, settings, srv, log) }()
 	url := "http://" + addr
-	jc, _ := hub.CreateJoinCode(settings.StateDir, "stop-net", "", time.Hour, time.Now())
+	jc, _ := hub.CreateJoinCode(hub.FileState(settings.StateDir), "stop-net", "", time.Hour, time.Now())
 	var rr tunnel.RegisterResponse
 	testkit.WaitFor(t, "the hub listens", 5*time.Second, func() bool {
 		rr, err = tunnel.Register(context.Background(), http.DefaultTransport, url, jc.Code, "1.0.0")

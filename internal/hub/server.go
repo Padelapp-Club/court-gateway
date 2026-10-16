@@ -118,6 +118,11 @@ func (s *Server) Handler() http.Handler {
 		core.WriteJSON(w, http.StatusOK, map[string]string{"status": "live"})
 	})
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) {
+		if err := s.store.Ready(); err != nil {
+			s.log.Error("the hub's state is unavailable", "error", err)
+			core.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+			return
+		}
 		core.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 	mux.HandleFunc("POST "+tunnel.PathRegister, s.handleRegister)
@@ -175,6 +180,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, secret, err := s.store.Redeem(req.Code)
+	if errors.Is(err, ErrStateUnavailable) {
+		// not a verdict on the code, nor the client's failure (the code may
+		// be spent already if the state failed after taking it)
+		s.log.Error("registration failed", "error", err)
+		w.Header().Set("Retry-After", "10")
+		core.WriteError(w, r, http.StatusServiceUnavailable, "HUB_UNAVAILABLE", "the hub cannot register a gateway right now, retry")
+		return
+	}
 	if err != nil {
 		s.regLim.fail(client, s.now())
 		if errors.Is(err, ErrJoinCode) {

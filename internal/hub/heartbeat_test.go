@@ -626,7 +626,7 @@ func TestRevokedGatewayLeavesTheStatusFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jc, err := hub.CreateJoinCode(dir, "inst-r", "", time.Hour, time.Now())
+	jc, err := hub.CreateJoinCode(hub.FileState(dir), "inst-r", "", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestRevokedGatewayLeavesTheStatusFiles(t *testing.T) {
 	status := filepath.Join(dir, "status")
 	m := hub.NewMonitor(st, nil, hub.MonitorConfig{StatusDir: status, OfflineAfter: time.Minute})
 	m.Tick()
-	if err := hub.RevokeGateway(dir, "inst-r"); err != nil {
+	if err := hub.RevokeGateway(hub.FileState(dir), "inst-r"); err != nil {
 		t.Fatal(err)
 	}
 	m.Tick()

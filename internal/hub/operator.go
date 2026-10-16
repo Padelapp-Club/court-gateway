@@ -101,6 +101,11 @@ func (s *Server) storeError(w http.ResponseWriter, r *http.Request, err error) {
 		core.WriteError(w, r, http.StatusConflict, "STUDIO_TAKEN", err.Error())
 	case errors.Is(err, ErrRoomTaken):
 		core.WriteError(w, r, http.StatusConflict, "ROOM_TAKEN", err.Error())
+	case errors.Is(err, ErrStateUnavailable):
+		// nothing was changed: the same request may be sent again
+		s.log.Error("operator request failed", "error", err)
+		w.Header().Set("Retry-After", "10")
+		core.WriteError(w, r, http.StatusServiceUnavailable, "HUB_UNAVAILABLE", "the hub's state is unavailable right now, retry")
 	default:
 		s.log.Error("operator request failed", "error", err)
 		core.WriteError(w, r, http.StatusInternalServerError, "INTERNAL", "internal error")
