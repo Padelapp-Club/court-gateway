@@ -390,15 +390,22 @@ func TestDatabaseKeepsAClubInItsInstallation(t *testing.T) {
 }
 
 // The hub reads its state in one snapshot: started while another hub
-// writes, it neither fails nor sees a club of an installation it has not
-// read.
+// writes (here, as fast as the database takes them, transactions that
+// replace an installation with a new one and its club), it neither fails
+// nor sees a club of an installation it has not read.
 func TestStartWhileAnotherHubWrites(t *testing.T) {
 	url := testkit.TestDatabase(t)
 	if url == "" {
 		t.Skip("set " + testkit.TestDatabaseEnv + " to run on Postgres")
 	}
 	cfg := postgresSettings(t, url)
-	writer := openStore(t, cfg)
+	openStore(t, cfg).Close() // the tables
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -409,8 +416,20 @@ func TestStartWhileAnotherHubWrites(t *testing.T) {
 			default:
 			}
 			id := fmt.Sprintf("net-%d", i)
-			if _, err := writer.CreateInstallation(id, ""); err == nil {
-				_, _, _ = writer.PutClub(id, demoClub("club-"+id, "studio-"+id, "Корт 1"))
+			spec, _ := json.Marshal(demoClub("club-"+id, "studio-"+id, "Корт 1"))
+			err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, `DELETE FROM court_gateway_hub.installations`); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `INSERT INTO court_gateway_hub.installations (id, name, created, version) VALUES ($1, $1, now(), 1)`, id); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `INSERT INTO court_gateway_hub.clubs (id, installation, spec) VALUES ($1, $2, $3)`, "club-"+id, id, string(spec))
+				return err
+			})
+			if err != nil {
+				t.Errorf("the writer: %v", err)
+				return
 			}
 		}
 	})
