@@ -519,3 +519,42 @@ func TestNewerSchemaIsRefused(t *testing.T) {
 		t.Fatalf("the command line on a newer schema: %v", err)
 	}
 }
+
+// A code of an installation another hub deleted meanwhile: the
+// registration's reference to it is refused by the database, the hub
+// reads its state again and makes the installation anew for the code,
+// as for any code of an installation it does not know.
+func TestRedemptionForAnInstallationDeletedBehindTheHub(t *testing.T) {
+	url := testkit.TestDatabase(t)
+	if url == "" {
+		t.Skip("set " + testkit.TestDatabaseEnv + " to run on Postgres")
+	}
+	cfg := postgresSettings(t, url)
+	a := openStore(t, cfg)
+	if _, err := a.CreateInstallation("net-f", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.PutClub("net-f", demoClub("club-f", "studio-f", "Корт 1")); err != nil {
+		t.Fatal(err)
+	}
+	b := openStore(t, cfg)
+	if err := b.DeleteInstallation("net-f"); err != nil {
+		t.Fatal(err)
+	}
+	jc, err := hub.CreateJoinCode(openState(t, cfg), "net-f", "Сеть Ф", time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, _, err := a.Redeem(jc.Code); err != nil || g.Installation != "net-f" {
+		t.Fatalf("redeem: %+v %v", g, err)
+	}
+	if in, ok := a.Installation("net-f"); !ok || in.Version != 0 || len(in.Clubs) != 0 || in.Name != "Сеть Ф" {
+		t.Fatalf("the installation made anew: %+v %v", in, ok)
+	}
+	if _, ok := a.Route("club-f"); ok {
+		t.Fatal("the deleted installation's club is still routed")
+	}
+	if err := a.Ready(); err != nil {
+		t.Fatal(err)
+	}
+}

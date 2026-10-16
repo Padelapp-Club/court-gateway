@@ -116,7 +116,8 @@ func openPostgres(url string) (State, error) {
 }
 
 // failed is a database error as the store reports it: a refusal of the
-// data (a broken constraint, ErrClubTaken, ErrConflict) as it is, any
+// data (a broken constraint, ErrClubTaken, ErrConflict — also a foreign
+// key to a row gone behind the hub) as it is, any
 // other — no connection, a timeout, a server going down — as
 // ErrStateUnavailable.
 func failed(err error) error {
@@ -124,6 +125,10 @@ func failed(err error) error {
 	switch {
 	case err == nil, errors.Is(err, ErrClubTaken), errors.Is(err, ErrConflict):
 		return err
+	case errors.As(err, &pe) && pe.Code == "23503":
+		// a foreign key: the row it names (an installation) is gone
+		// behind this hub
+		return fmt.Errorf("%w: %v", ErrConflict, err)
 	case errors.As(err, &pe) && (strings.HasPrefix(pe.Code, "22") || strings.HasPrefix(pe.Code, "23")):
 		return err
 	}
