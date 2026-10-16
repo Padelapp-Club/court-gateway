@@ -16,3 +16,13 @@ func TestLogoutURLOf(t *testing.T) {
 		}
 	}
 }
+
+// The credentials' key tells fields apart: a field boundary moved does not
+// give the same key.
+func TestCredentialKeySeparatesFields(t *testing.T) {
+	a := &client{authURL: DefaultAuthURL, username: "user\x00segment", password: "tail"}
+	b := &client{authURL: DefaultAuthURL, username: "user", password: "segment\x00tail"}
+	if a.credentialKey() == b.credentialKey() {
+		t.Fatal("two credentials share a key")
+	}
+}

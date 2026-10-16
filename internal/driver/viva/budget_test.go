@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -232,7 +236,8 @@ func TestKeycloakTextNeverReachesTheLog(t *testing.T) {
 			t.Fatalf("%q passed on:\n%s\n%v", secret, logs.String(), err)
 		}
 	}
-	if !strings.Contains(logs.String(), "invalid_grant: other") || !strings.Contains(err.Error(), "invalid_grant: other") {
+	if !strings.Contains(logs.String(), "invalid_grant: other") || !strings.Contains(err.Error(), "invalid_grant: other") ||
+		!strings.Contains(logs.String(), "the previous CRM session could not be ended") {
 		t.Fatalf("no label:\n%s\n%v", logs.String(), err)
 	}
 }
@@ -273,6 +278,101 @@ func TestRefreshLifetimeBoundaries(t *testing.T) {
 			}
 			if stub.LoginAttempts() != tc.logins || stub.Refreshes() != tc.renewals || stub.OpenSessions() != 1 {
 				t.Fatalf("%d logins, %d renewals, %d sessions open", stub.LoginAttempts(), stub.Refreshes(), stub.OpenSessions())
+			}
+		})
+	}
+}
+
+// A password login is counted in the store before it is sent: when the
+// CRM receives it, the state directory already holds it, so a crash at
+// that moment does not free it. A login that ends neither accepted nor
+// rejected (the CRM not reached) is taken back.
+func TestLoginIsCountedBeforeItIsSent(t *testing.T) {
+	dir := t.TempDir()
+	store := core.RejectionStore(dir)
+	stub := vivastub.New(stubUser, stubPass, studio)
+	var mu sync.Mutex
+	var seen []int // the count kept when each password login arrived
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == vivastub.TokenPath && r.ParseForm() == nil && r.PostForm.Get("grant_type") == "password" {
+			kept, _ := store.LoadRejections()
+			mu.Lock()
+			seen = append(seen, kept.Count)
+			mu.Unlock()
+		}
+		stub.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	clk := &clock{t: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	acct := accountOn(t, srv, "wrong-password-0000", clk, store)
+	for range 2 {
+		_ = acct.CheckLogin(context.Background())
+		clk.add(15 * time.Minute)
+	}
+	stub.FailNext(http.MethodPost, vivastub.TokenPath, http.StatusServiceUnavailable, `{}`)
+	clk.add(45 * time.Minute)
+	_ = acct.CheckLogin(context.Background()) // the retry at an hour meets an outage
+	mu.Lock()
+	got := fmt.Sprint(seen)
+	mu.Unlock()
+	if got != "[1 2 3]" {
+		t.Fatalf("counts kept as the logins arrived: %s, want [1 2 3]", got)
+	}
+	if kept, _ := store.LoadRejections(); kept.Count != 2 {
+		t.Fatalf("after the outage %d kept, want 2", kept.Count)
+	}
+	// a first login that meets an outage is taken back too
+	fresh := core.RejectionStore(t.TempDir())
+	stub.FailNext(http.MethodPost, vivastub.TokenPath, http.StatusServiceUnavailable, `{}`)
+	if err := accountOn(t, srv, stubPass, clk, fresh).CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_UNREACHABLE" {
+		t.Fatal(err)
+	}
+	if kept, err := fresh.LoadRejections(); err != nil || kept.Count != 0 {
+		t.Fatalf("after an outage at the first login: %+v (%v)", kept, err)
+	}
+}
+
+// failingStore cannot keep anything.
+type failingStore struct{ memRejections }
+
+func (*failingStore) SaveRejections(driver.Rejections) error { return errors.New("disk full") }
+
+// A store that cannot be read (corrupt, the state path not a directory)
+// or written leaves no budget to count: one login, and after a rejection
+// none by itself for thirty days; set-password allows one more.
+func TestNoRetriesWithoutAWorkingStore(t *testing.T) {
+	corrupt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(corrupt, core.RejectionsFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notDir := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(notDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]driver.RejectionStore{
+		"corrupt":         core.RejectionStore(corrupt),
+		"not a directory": core.RejectionStore(notDir),
+		"not writable":    &failingStore{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clk := &clock{t: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+			crm := &lockoutCRM{stub: vivastub.New(stubUser, stubPass, studio), clk: clk}
+			srv := httptest.NewServer(crm)
+			t.Cleanup(srv.Close)
+			acct := accountOn(t, srv, "wrong-password-0000", clk, store)
+			ps := acct.(driver.PasswordSetter)
+			for minute := 0; minute < 30*24*60; minute += 10 {
+				if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" {
+					t.Fatalf("minute %d: %v", minute, err)
+				}
+				clk.add(10 * time.Minute)
+			}
+			if n := crm.stub.LoginAttempts(); n != 1 || !ps.NextLogin().IsZero() {
+				t.Fatalf("%d logins in thirty days, next %v", n, ps.NextLogin())
+			}
+			ps.SetPassword(stubPass)
+			if err := acct.CheckLogin(context.Background()); err != nil || crm.stub.LoginAttempts() != 2 {
+				t.Fatalf("after set-password: %v, %d logins", err, crm.stub.LoginAttempts())
 			}
 		})
 	}

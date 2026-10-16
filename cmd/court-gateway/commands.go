@@ -277,7 +277,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	}
 	rep := doctor.Run(context.Background(), doctor.Options{
 		ConfigPath: *cfgPath, Getenv: getenv, Factories: drivers.Factories, Accounts: drivers.Accounts, Version: version, ReleaseKey: releaseKey,
-		ServiceRunning: func() (bool, bool) { return service.Running(runtime.GOOS, os.Getuid(), service.CommandOutput) },
+		ServiceState: serviceState,
 	})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -307,6 +307,10 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	}
 	return 0
 }
+
+// serviceState asks this computer's service manager about the gateway's
+// service, for doctor; a variable for tests.
+var serviceState = func() service.State { return service.Query(runtime.GOOS, os.Getuid(), service.RunProbe) }
 
 func listOrNone(v []string) string {
 	if len(v) == 0 {

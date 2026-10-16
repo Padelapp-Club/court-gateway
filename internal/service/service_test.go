@@ -1,11 +1,14 @@
 package service
 
 import (
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // On macOS the service must log through the rotating writer: launchd's own
@@ -99,31 +102,57 @@ func TestBootoutComplaintIsQuiet(t *testing.T) {
 	}
 }
 
-// Running reads each service manager's answer; a manager that cannot be
-// asked is not known, an absent service is known not to run.
-func TestRunningAsksTheServiceManager(t *testing.T) {
-	answers := func(m map[string]string, ran bool) func(string, ...string) (string, bool) {
-		return func(name string, args ...string) (string, bool) {
-			return m[name+" "+strings.Join(args, " ")], ran
+// Query trusts only the manager's own answer about this service: no
+// manager, an error or a timeout is Unknown, never Stopped.
+func TestQueryAsksTheServiceManager(t *testing.T) {
+	type answer struct {
+		out  string
+		exit int
+		err  error
+	}
+	probe := func(m map[string]answer) Probe {
+		return func(name string, args ...string) (string, int, error) {
+			a, ok := m[filepath.Base(name)+" "+strings.Join(args, " ")]
+			if !ok {
+				return "", 0, errors.New("not found")
+			}
+			return a.out, a.exit, a.err
 		}
 	}
+	timeout := errors.New("context deadline exceeded")
 	for name, tc := range map[string]struct {
-		goos           string
-		out            map[string]string
-		ran            bool
-		running, known bool
+		goos string
+		m    map[string]answer
+		want State
 	}{
-		"systemd active":     {"linux", map[string]string{"systemctl is-active court-gateway": "active\n"}, true, true, true},
-		"systemd inactive":   {"linux", map[string]string{"systemctl is-active court-gateway": "inactive\n"}, true, false, true},
-		"no systemctl":       {"linux", nil, false, false, false},
-		"launchd daemon":     {"darwin", map[string]string{"launchctl print system/court-gateway": "\tstate = running\n"}, true, true, true},
-		"launchd agent":      {"darwin", map[string]string{"launchctl print gui/501/court-gateway": "\tstate = running\n"}, true, true, true},
-		"launchd none":       {"darwin", nil, true, false, true},
-		"windows running":    {"windows", map[string]string{"sc.exe query court-gateway": "        STATE              : 4  RUNNING\n"}, true, true, true},
-		"windows no service": {"windows", map[string]string{"sc.exe query court-gateway": "[SC] EnumQueryServicesStatus:OpenService FAILED 1060:\n"}, true, false, true},
+		"systemd active":     {"linux", map[string]answer{"systemctl is-active court-gateway": {"active\n", 0, nil}}, Running},
+		"systemd inactive":   {"linux", map[string]answer{"systemctl is-active court-gateway": {"inactive\n", 3, nil}}, Stopped},
+		"systemd no bus":     {"linux", map[string]answer{"systemctl is-active court-gateway": {"", 1, nil}}, Unknown},
+		"no systemctl":       {"linux", nil, Unknown},
+		"systemctl hangs":    {"linux", map[string]answer{"systemctl is-active court-gateway": {"", 0, timeout}}, Unknown},
+		"launchd daemon":     {"darwin", map[string]answer{"launchctl print system/court-gateway": {"\tstate = running\n", 0, nil}}, Running},
+		"launchd agent":      {"darwin", map[string]answer{"launchctl print system/court-gateway": {"", 113, nil}, "launchctl print gui/501/court-gateway": {"\tstate = running\n", 0, nil}}, Running},
+		"launchd none":       {"darwin", map[string]answer{"launchctl print system/court-gateway": {"", 113, nil}, "launchctl print gui/501/court-gateway": {"", 113, nil}}, Stopped},
+		"launchd denied":     {"darwin", map[string]answer{"launchctl print system/court-gateway": {"", 1, nil}}, Unknown},
+		"windows running":    {"windows", map[string]answer{"sc.exe query court-gateway": {"        STATE              : 4  RUNNING\n", 0, nil}}, Running},
+		"windows stopped":    {"windows", map[string]answer{"sc.exe query court-gateway": {"        STATE              : 1  STOPPED\n", 0, nil}}, Stopped},
+		"windows no service": {"windows", map[string]answer{"sc.exe query court-gateway": {"[SC] OpenService FAILED 1060:\n", 1060, nil}}, Stopped},
+		"windows denied":     {"windows", map[string]answer{"sc.exe query court-gateway": {"", 5, nil}}, Unknown},
+		"another OS":         {"freebsd", nil, Unknown},
 	} {
-		if running, known := Running(tc.goos, 501, answers(tc.out, tc.ran)); running != tc.running || known != tc.known {
-			t.Errorf("%s: running %v known %v", name, running, known)
+		if got := Query(tc.goos, 501, probe(tc.m)); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
 		}
+	}
+}
+
+// A manager command that hangs is cut off: Unknown within the bound.
+func TestRunProbeIsBounded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no sleep command")
+	}
+	start := time.Now()
+	if _, _, err := RunProbe("/bin/sleep", "60"); err == nil || time.Since(start) > probeTimeout+5*time.Second {
+		t.Fatalf("a hanging command: %v after %s", err, time.Since(start))
 	}
 }

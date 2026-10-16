@@ -124,8 +124,8 @@ sudo -u court-gateway /opt/court-gateway/court-gateway setup --config /opt/court
 **не обновляется сам**, и `setup` нужны адрес хаба и отпечаток его ключа. Когда образ выпуска
 появится, его дайджест будет в подписанном `SHA256SUMS`, и в `docker-compose.yml` вписывается
 `<реестр>/court-gateway@sha256:<дайджест>` оттуда, а не тег. Обновления он будет ставить внутри
-контейнера, поэтому пересоздание контейнера (`docker compose up --force-recreate`, в том числе после
-смены пароля) вернёт версию образа — до следующей проверки обновлений.
+контейнера. Папка состояния (счёт отклонённых входов в Viva и проверенные обновления) лежит в томе
+`state` из `docker-compose.yml` и переживает пересоздание контейнера (`docker compose up --force-recreate`).
 
 ```sh
 docker build -t court-gateway:local .

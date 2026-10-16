@@ -18,6 +18,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
@@ -41,9 +42,8 @@ func doctorAgainstHub(t *testing.T, clubStudio string, who tunnel.Whoami, ahead 
 	return rep
 }
 
-// managerSays is what the service manager answers doctor (nil: it cannot
-// be asked).
-var managerSays func() (bool, bool)
+// managerSays is what the service manager answers doctor.
+var managerSays = func() service.State { return service.Stopped }
 
 // doctorWithService is doctorAgainstHub with the status file a running
 // service wrote (svc; nil: no service runs); it returns the CRM too.
@@ -90,7 +90,7 @@ func doctorWithService(t *testing.T, clubStudio string, who tunnel.Whoami, ahead
 	}
 	env := map[string]string{"CRM_PASSWORD": "fixture-password", "GATEWAY_HUB_SECRET": "fixture-hub-secret"}
 	return doctor.Run(context.Background(), doctor.Options{ConfigPath: p, Getenv: func(k string) string { return env[k] },
-		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", Timeout: 3 * time.Second, ServiceRunning: managerSays}), stub
+		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", Timeout: 3 * time.Second, ServiceState: managerSays}), stub
 }
 
 func hubConfig(rep doctor.Report) doctor.Check {
@@ -169,7 +169,7 @@ func TestDoctorOccupancyWithNoClubOnTheHub(t *testing.T) {
 	}
 	env := map[string]string{"GATEWAY_HUB_SECRET": rr.Secret}
 	rep := doctor.Run(context.Background(), doctor.Options{ConfigPath: p, Getenv: func(k string) string { return env[k] },
-		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", HubTransport: h.Transport(), Timeout: 10 * time.Second})
+		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", HubTransport: h.Transport(), Timeout: 10 * time.Second, ServiceState: managerSays})
 	if c := hubConfig(rep); c.Status != doctor.OK {
 		t.Fatalf("HUB_CONFIG %s (%s)", c.Status, c.Message)
 	}
@@ -202,7 +202,11 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 	served := tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}
 	checked := time.Now().Add(-30 * time.Second)
 	running := func(crm string, clubs ...string) *core.HealthStatus {
-		return &core.HealthStatus{Time: time.Now(), Version: "1.0.0", Ready: crm == "ok", CRM: crm, CRMClubs: clubs, CRMCheckedAt: checked}
+		st := &core.HealthStatus{Time: time.Now(), Version: "1.0.0", Hub: "connected", Ready: crm == "ok", CRM: crm, CRMClubs: clubs, CRMCheckedAt: checked}
+		if crm != "ok" {
+			st.Reason = crm
+		}
+		return st
 	}
 	from := "по данным службы, проверка " + checked.Local().Format("15:04")
 	retryAt := checked.Add(15 * time.Minute)
@@ -211,9 +215,15 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 	future, stale, legacy := running("ok"), running("ok"), running("")
 	future.Time = time.Now().Add(24 * time.Hour)
 	stale.CRMCheckedAt = time.Now().Add(-24 * time.Hour)
-	legacy.Reason = "CRM_AUTH_FAILED" // a status of a version without the crm fields
+	// a status of a version without the crm fields
+	legacy.Reason, legacy.CRMCheckedAt = "CRM_AUTH_FAILED", time.Time{}
 	aheadCheck := running("ok")
 	aheadCheck.CRMCheckedAt = time.Now().Add(time.Hour)
+	// incomplete, unknown or contradicting itself
+	noVersion, unknownResult, contradicting, okButFailed := running("ok"), running("garbage", "club-a"), running("ok"), running("CRM_AUTH_FAILED")
+	noVersion.Version = ""
+	contradicting.Ready, contradicting.Reason = false, "CRM_UNREACHABLE"
+	okButFailed.Ready = true
 	for name, tc := range map[string]struct {
 		svc              *core.HealthStatus
 		login, occupancy doctor.Status
@@ -230,6 +240,10 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 		"status from the future":      {future, doctor.Warn, doctor.Skip, "нет свежих данных службы: время данных службы впереди", "через минуту"},
 		"old CRM check, fresh file":   {stale, doctor.Warn, doctor.Skip, "нет свежих данных службы: последняя проверка CRM", "через минуту"},
 		"CRM check from the future":   {aheadCheck, doctor.Warn, doctor.Skip, "нет свежих данных службы: время проверки CRM", "через минуту"},
+		"status without its version":  {noVersion, doctor.Warn, doctor.Skip, "данные службы неполные", "через минуту"},
+		"unknown CRM result":          {unknownResult, doctor.Warn, doctor.Skip, "неизвестный результат", "через минуту"},
+		"ok CRM, CRM reason":          {contradicting, doctor.Warn, doctor.Skip, "расходится", "через минуту"},
+		"failed CRM, ready":           {okButFailed, doctor.Warn, doctor.Skip, "расходится", "через минуту"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rep, stub := doctorWithService(t, studio, served, 0, tc.svc)
@@ -270,24 +284,24 @@ func TestDoctorWithoutTheServiceEndsItsSession(t *testing.T) {
 	}
 }
 
-// No status file of a running service, but the service manager says the
-// service runs: doctor does not log in beside it on that inference, and
-// is not a success. When the manager says it does not run (or cannot
-// tell), doctor checks itself.
+// No status file of a running service: doctor logs in itself only when
+// the service manager says the service is stopped or not installed. When
+// it runs, or the manager cannot tell, doctor does not log in and the
+// report is not a success.
 func TestDoctorAsksTheServiceManager(t *testing.T) {
 	served := tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}
-	defer func() { managerSays = nil }()
+	defer func() { managerSays = func() service.State { return service.Stopped } }()
 	for name, tc := range map[string]struct {
-		says   func() (bool, bool)
+		says   service.State
 		logins int
 		status doctor.Status
 	}{
-		"running":         {func() (bool, bool) { return true, true }, 0, doctor.Warn},
-		"not running":     {func() (bool, bool) { return false, true }, 1, doctor.OK},
-		"cannot be asked": {func() (bool, bool) { return false, false }, 1, doctor.OK},
+		"running":         {service.Running, 0, doctor.Warn},
+		"stopped":         {service.Stopped, 1, doctor.OK},
+		"cannot be asked": {service.Unknown, 0, doctor.Warn},
 	} {
 		t.Run(name, func(t *testing.T) {
-			managerSays = tc.says
+			managerSays = func() service.State { return tc.says }
 			rep, stub := doctorWithService(t, studio, served, 0, nil)
 			login := check(rep, doctor.CodeCRMLogin)
 			if login.Status != tc.status || stub.LoginAttempts() != tc.logins || rep.OK != (tc.status == doctor.OK) || stub.OpenSessions() != 0 {

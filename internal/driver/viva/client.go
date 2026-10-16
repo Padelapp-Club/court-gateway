@@ -80,6 +80,8 @@ type client struct {
 	rejected   error     // the CRM rejected the login: no login before retryAt
 	rej        driver.Rejections
 	stopped    bool      // after rejected: no automatic login at all
+	degraded   bool      // the store cannot count logins: none retried after a rejection
+	reserved   bool      // the login being sent is counted in the store
 	staleStore bool      // the store holds rejections of other credentials
 	loginErr   error     // the last failed login, another failure
 	failures   int       // logins failed in a row, rejections aside
@@ -150,10 +152,17 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 		c.log.Info("the CRM did not renew the session: logging in again", "error", err.Error())
 	}
 	if c.refresh != "" { // whatever is left of the session goes before the next
-		_ = c.logout(ctx, c.refresh)
+		if err := c.logout(ctx, c.refresh); err != nil {
+			c.log.Warn("the previous CRM session could not be ended: it expires by itself", "error", err.Error())
+		}
 	}
 	c.refresh, c.refreshEnd = "", time.Time{}
+	if !c.reserveLocked(now) {
+		return "", c.rejected
+	}
 	tok, err := c.loginLocked(ctx)
+	reserved := c.reserved
+	c.reserved = false
 	var ue *driver.UpstreamError
 	switch {
 	case err == nil:
@@ -163,13 +172,14 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 		c.clearRejectionsLocked()
 		c.loginErr, c.failures, c.retryAt = nil, 0, time.Time{}
 	case errors.As(err, &ue) && ue.Kind == driver.UpstreamAuth:
-		if c.rej.Count == 0 {
-			c.rej.First = now
+		if !reserved { // counted here: no store counted it before
+			if c.rej.Count == 0 {
+				c.rej.First = now
+			}
+			c.rej.Key, c.rej.Count, c.rej.Last = c.credentialKey(), c.rej.Count+1, now
 		}
-		c.rej.Key, c.rej.Count, c.rej.Last = c.credentialKey(), c.rej.Count+1, now
 		c.rejected = err
 		c.scheduleLocked(false)
-		c.saveRejectionsLocked()
 		if c.stopped {
 			c.log.Error("the CRM rejected the login: no more logins until set-password", "error", ue.Detail, "rejected_logins", c.rej.Count)
 		} else {
@@ -177,11 +187,19 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 				"error", ue.Detail, "rejected_logins", c.rej.Count, "next_login", c.retryAt.UTC().Format(time.RFC3339))
 		}
 	case c.rejected != nil: // the retry of a rejected login met another failure
+		if reserved {
+			c.releaseLocked()
+		}
 		c.retryAt = now.Add(rejectedOutageRetry)
 		return "", c.rejected
-	case ctx.Err() == nil:
-		c.failures++
-		c.loginErr, c.retryAt = err, now.Add(min(loginRetry<<min(c.failures-1, 10), loginRetryMax))
+	default:
+		if reserved {
+			c.releaseLocked()
+		}
+		if ctx.Err() == nil {
+			c.failures++
+			c.loginErr, c.retryAt = err, now.Add(min(loginRetry<<min(c.failures-1, 10), loginRetryMax))
+		}
 	}
 	return tok, err
 }
@@ -194,6 +212,8 @@ func (c *client) scheduleLocked(restart bool) {
 	n := c.rej.Count
 	c.stopped = false
 	switch {
+	case c.degraded: // no store counts the logins: none tried again by itself
+		c.retryAt, c.stopped = time.Time{}, true
 	case n <= len(rejectedRetries):
 		c.retryAt = c.rej.First.Add(rejectedRetries[n-1])
 	case restart && n < rejectedCap && !c.now().Before(c.rej.Last.Add(restartRetryAfter)):
@@ -210,12 +230,13 @@ func (c *client) loadRejections() {
 		return
 	}
 	r, err := c.store.LoadRejections()
-	if err != nil {
-		c.log.Warn("the CRM logins rejected before could not be read: counting from none", "error", err)
-		return
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err != nil {
+		c.degraded = true
+		c.log.Error("the CRM login attempts kept in the state directory cannot be read: a rejected login will not be tried again by itself", "error", err)
+		return
+	}
 	if r.Count <= 0 || r.Key != c.credentialKey() {
 		c.staleStore = r.Count > 0
 		return
@@ -223,6 +244,39 @@ func (c *client) loadRejections() {
 	c.rej = r
 	c.rejected = driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected %d times in a row (kept since %s)", r.Count, r.Last.UTC().Format(time.RFC3339)))
 	c.scheduleLocked(true)
+}
+
+// reserveLocked counts a password login in the store before it is sent,
+// so neither a crash nor a lost answer frees it; false when it must not be
+// sent: the store cannot count it and a login was rejected before.
+func (c *client) reserveLocked(now time.Time) bool {
+	if c.store == nil {
+		return true // nothing kept (the commands): counted after the answer
+	}
+	if !c.degraded {
+		next := c.rej
+		if next.Count == 0 {
+			next.First = now
+		}
+		next.Key, next.Count, next.Last = c.credentialKey(), next.Count+1, now
+		err := c.store.SaveRejections(next)
+		if err == nil {
+			c.rej, c.reserved = next, true
+			return true
+		}
+		c.degraded = true
+		c.log.Error("the CRM login attempts cannot be kept in the state directory: a rejected login will not be tried again by itself", "error", err)
+	}
+	return c.rejected == nil
+}
+
+// releaseLocked takes back a reserved login that ended neither accepted
+// nor rejected (the CRM not reached, another refusal).
+func (c *client) releaseLocked() {
+	if c.rej.Count--; c.rej.Count <= 0 {
+		c.rej = driver.Rejections{}
+	}
+	c.saveRejectionsLocked()
 }
 
 func (c *client) saveRejectionsLocked() {
@@ -243,9 +297,11 @@ func (c *client) clearRejectionsLocked() {
 }
 
 // credentialKey names the credentials rejections are about: a hash of the
-// token endpoint, the username and the password, never the password.
+// token endpoint, the username and the password as a JSON array (no two
+// differ only in where one field ends), never the password itself.
 func (c *client) credentialKey() string {
-	sum := sha256.Sum256([]byte("court-gateway crm login\x00" + c.authURL + "\x00" + c.username + "\x00" + c.password))
+	fields, _ := json.Marshal([]string{"court-gateway crm login", c.authURL, c.username, c.password})
+	sum := sha256.Sum256(fields)
 	return hex.EncodeToString(sum[:16])
 }
 

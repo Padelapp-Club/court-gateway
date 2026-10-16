@@ -16,6 +16,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
@@ -81,7 +82,8 @@ func TestDoctorStepsHaveTheirOwnTimeouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := Run(context.Background(), Options{
-		ConfigPath: cfg, Getenv: func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] },
+		ServiceState: func() service.State { return service.Stopped },
+		ConfigPath:   cfg, Getenv: func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] },
 		Factories: map[string]driver.Factory{"demo": func(c driver.Config) (driver.Driver, error) {
 			d, err := demo.New(c)
 			return ctxDriver{d}, err
@@ -117,7 +119,8 @@ func TestDoctorOccupancyWhileTheHubIsUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := Run(context.Background(), Options{
-		ConfigPath: cfg, Getenv: func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] },
+		ServiceState: func() service.State { return service.Stopped },
+		ConfigPath:   cfg, Getenv: func(k string) string { return map[string]string{"GATEWAY_HUB_SECRET": "cgs_x"}[k] },
 		Factories: map[string]driver.Factory{"demo": demo.New}, Accounts: map[string]driver.AccountFactory{"demo": demo.NewAccount},
 		Version: "1.0.0", HubTransport: downHub{}, Timeout: time.Second,
 	})
@@ -139,7 +142,8 @@ func TestDoctorReportsTheRunningVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := Run(context.Background(), Options{
-		ConfigPath: cfg, Getenv: getenv,
+		ServiceState: func() service.State { return service.Stopped },
+		ConfigPath:   cfg, Getenv: getenv,
 		Factories: map[string]driver.Factory{"demo": demo.New}, Accounts: map[string]driver.AccountFactory{"demo": demo.NewAccount},
 		Version: "1.0.0", HubTransport: slowHub(0), Timeout: time.Second,
 	})

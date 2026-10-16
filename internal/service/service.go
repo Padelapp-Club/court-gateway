@@ -5,6 +5,8 @@
 package service
 
 import (
+	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Name is the service name on every OS.
@@ -282,36 +285,112 @@ func CurrentSpec(cfgPath string, system bool) (Spec, error) {
 	return s, nil
 }
 
-// Running asks goos's service manager whether the gateway's service runs
-// (out runs a command and returns its output and whether it ran at all).
-// known is false when the manager could not be asked.
-func Running(goos string, uid int, out func(name string, args ...string) (string, bool)) (running, known bool) {
+// State is what the service manager says of the gateway's service.
+type State int
+
+const (
+	// Unknown: the manager could not be asked or gave no clear answer.
+	Unknown State = iota
+	// Running: the service runs (or is starting or stopping).
+	Running
+	// Stopped: the service is not installed, or installed and stopped.
+	Stopped
+)
+
+// Probe runs one manager command: its output and exit code; err when it
+// did not run to an exit code (not found, timed out).
+type Probe func(name string, args ...string) (out string, exit int, err error)
+
+// Query asks goos's service manager about the gateway's service with probe.
+// Only an answer the manager gives for this service is Running or Stopped;
+// anything else (no manager, an error, a timeout) is Unknown.
+func Query(goos string, uid int, probe Probe) State {
 	switch goos {
 	case "linux":
-		o, ok := out("systemctl", "is-active", Name)
-		return strings.TrimSpace(o) == "active", ok
+		out, exit, err := probe(systemctlPath(), "is-active", Name)
+		switch state := strings.TrimSpace(out); {
+		case err != nil:
+			return Unknown
+		case exit == 0 || state == "activating" || state == "deactivating" || state == "reloading":
+			return Running
+		case exit == 3 && (state == "inactive" || state == "failed" || state == "unknown"):
+			return Stopped
+		}
+		return Unknown
 	case "darwin":
-		known := false
+		// both the system job and the user's agent; 113: no such job
 		for _, domain := range []string{"system", "gui/" + strconv.Itoa(uid)} {
-			o, ok := out("launchctl", "print", domain+"/"+Name)
-			known = known || ok
-			if strings.Contains(o, "state = running") {
-				return true, true
+			out, exit, err := probe("/bin/launchctl", "print", domain+"/"+Name)
+			switch {
+			case err != nil || (exit != 0 && exit != 113):
+				return Unknown
+			case exit == 0 && strings.Contains(out, "state = running"):
+				return Running
 			}
 		}
-		return false, known
+		return Stopped
 	case "windows":
-		o, ok := out("sc.exe", "query", Name)
-		return strings.Contains(o, "RUNNING"), ok
+		out, exit, err := probe(filepath.Join(cmp.Or(os.Getenv("SystemRoot"), `C:\Windows`), "System32", "sc.exe"), "query", Name)
+		switch {
+		case err != nil:
+			return Unknown
+		case exit == 1060: // the service does not exist
+			return Stopped
+		case exit != 0:
+			return Unknown
+		case strings.Contains(out, "STOPPED"):
+			return Stopped
+		case strings.Contains(out, "RUNNING") || strings.Contains(out, "_PENDING"):
+			return Running
+		}
+		return Unknown
 	}
-	return false, false
+	return Unknown
 }
 
-// CommandOutput runs a command for Running: its output, and whether it
-// ran (an exit code other than 0 still ran).
-func CommandOutput(name string, args ...string) (string, bool) {
-	cmd := exec.Command(name, args...)
-	o, err := cmd.Output()
+// systemctlPath is systemctl where the system keeps it.
+func systemctlPath() string {
+	for _, p := range []string{"/usr/bin/systemctl", "/bin/systemctl"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "/usr/bin/systemctl"
+}
+
+// probeTimeout bounds one manager command; probeMaxOutput what is read of it.
+const (
+	probeTimeout   = 5 * time.Second
+	probeMaxOutput = 64 << 10
+)
+
+// RunProbe is the Probe of this computer: the command by its absolute
+// path, bounded in time and output.
+func RunProbe(name string, args ...string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	var out limitedBuffer
+	cmd.Stdout = &out
+	err := cmd.Run()
 	var ee *exec.ExitError
-	return string(o), err == nil || errors.As(err, &ee)
+	switch {
+	case ctx.Err() != nil:
+		return "", 0, ctx.Err()
+	case err == nil:
+		return out.String(), 0, nil
+	case errors.As(err, &ee) && ee.ExitCode() >= 0:
+		return out.String(), ee.ExitCode(), nil
+	}
+	return "", 0, err
+}
+
+// limitedBuffer keeps the first probeMaxOutput bytes written to it.
+type limitedBuffer struct{ strings.Builder }
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := probeMaxOutput - b.Len(); room > 0 {
+		b.Builder.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
 }

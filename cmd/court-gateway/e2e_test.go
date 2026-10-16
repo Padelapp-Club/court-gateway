@@ -22,6 +22,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/setup"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
@@ -920,7 +921,7 @@ func TestDoctorTrustsNoUnusableStatus(t *testing.T) {
 	}{
 		"ahead of the clock":        {core.HealthStatus{Time: time.Now().Add(24 * time.Hour), CRM: "ok", CRMCheckedAt: time.Now(), Ready: true, Hub: "connected"}, doctor.Warn},
 		"old CRM check, fresh file": {core.HealthStatus{Time: time.Now(), CRM: "ok", CRMCheckedAt: time.Now().Add(-24 * time.Hour), Ready: true, Hub: "connected"}, doctor.Warn},
-		"legacy, CRM failed":        {core.HealthStatus{Time: time.Now(), Ready: false, Reason: "CRM_AUTH_FAILED", Hub: "connected"}, doctor.Fail},
+		"legacy, CRM failed":        {core.HealthStatus{Time: time.Now(), Version: "1.0.0", Ready: false, Reason: "CRM_AUTH_FAILED", Hub: "connected"}, doctor.Fail},
 		"unfinished CRM check":      {core.HealthStatus{Time: time.Now(), Ready: false, Reason: "STARTING", Hub: "connected"}, doctor.Warn},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -936,3 +937,7 @@ func TestDoctorTrustsNoUnusableStatus(t *testing.T) {
 		})
 	}
 }
+
+// In tests no gateway service is installed, whatever this computer has:
+// doctor without a status file checks itself.
+func init() { serviceState = func() service.State { return service.Stopped } }

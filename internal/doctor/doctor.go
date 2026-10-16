@@ -17,6 +17,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/remote"
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 	"github.com/Padelapp-Club/court-gateway/internal/version"
@@ -86,10 +87,10 @@ type Options struct {
 	UpdateClient *http.Client
 	// DriverHook adjusts the driver config before building (tests).
 	DriverHook func(*driver.Config)
-	// ServiceRunning asks the service manager whether the gateway's
-	// service runs (known false: it cannot tell); nil cannot tell.
-	ServiceRunning func() (running, known bool)
-	Timeout        time.Duration
+	// ServiceState asks the service manager about the gateway's service;
+	// nil: it cannot be asked (service.Unknown).
+	ServiceState func() service.State
+	Timeout      time.Duration
 }
 
 // Run performs every check it can; a failed prerequisite turns the
@@ -140,16 +141,17 @@ func Run(ctx context.Context, o Options) Report {
 	// While the service runs, the CRM checks are the service's own, as its
 	// status file reports them: doctor does not log in beside it (a second
 	// session of the same CRM user). Only when no service runs (no status
-	// file of a running one, and the service manager does not say it runs)
-	// does doctor log in itself, and then it ends that session. A running
-	// service whose status gives no usable CRM result is not a success.
+	// file of a running one, and the service manager says it is stopped or
+	// not installed) does doctor log in itself, and then it ends that
+	// session. A service whose state is not known, or whose status gives no
+	// usable CRM result, is not a success.
 	st, present := serviceStatus(ctx, stateDir, o.Timeout)
-	running := false
-	if !present && o.ServiceRunning != nil {
-		running, _ = o.ServiceRunning()
+	state := service.Unknown
+	if !present && o.ServiceState != nil {
+		state = o.ServiceState()
 	}
-	if present || running {
-		svc, why := judgeStatus(st, present, time.Now())
+	if present || state != service.Stopped {
+		svc, why := judgeStatus(st, present, state, time.Now())
 		r.Checks = append(r.Checks, serviceCRMChecks(ctx, o, s, svc, why, &r)...)
 		r.Checks = append(r.Checks, versionCheck(ctx, o, s))
 		r = finish(r)
@@ -204,12 +206,14 @@ func Run(ctx context.Context, o Options) Report {
 }
 
 // statusFresh is how old a running service's status, and its CRM check,
-// may be (as healthcheck counts it); statusSkew how far ahead of this
-// computer's clock they may be.
-const (
-	statusFresh = 3 * core.HealthStatusInterval
-	statusSkew  = 5 * time.Second
-)
+// may be (as healthcheck counts it). Neither may be ahead of this
+// computer's clock at all: the service writes them on this computer.
+const statusFresh = 3 * core.HealthStatusInterval
+
+// crmResults are the results a service's CRM self-check reports: "ok" or
+// a readiness reason of the CRM (core.ReadyReason, tunnel.SelfCheck).
+var crmResults = map[string]bool{"ok": true, "NOT_READY": true, "CRM_AUTH_FAILED": true, "CRM_AUTH_ERROR": true, "CRM_UNREACHABLE": true,
+	"CRM_TIMEOUT": true, "CRM_ERROR": true, "CRM_INVALID_RESPONSE": true, "CRM_REJECTED": true, "CONFIG_MISMATCH": true, "TIMEZONE_MISMATCH": true}
 
 // serviceStatus reads the service's status file; present when a service
 // writes it: not older than statusFresh (or ahead of the clock). A
@@ -234,26 +238,39 @@ func serviceStatus(ctx context.Context, dir string, timeout time.Duration) (core
 }
 
 // judgeStatus is the service's CRM result in st, or why there is none
-// usable. A status of a version before the crm fields that reports a CRM
-// failure (reason CRM_...) is that failure, at the status's time.
-func judgeStatus(st core.HealthStatus, present bool, now time.Time) (core.HealthStatus, string) {
+// usable. Only a complete status of this version counts: its fields
+// present, its CRM result known and agreeing with its readiness (a failed
+// CRM check is the readiness reason), its times not ahead of the clock and
+// fresh. A status of a version before the crm fields that reports a CRM
+// failure as its reason is that failure, at the status's time.
+func judgeStatus(st core.HealthStatus, present bool, state service.State, now time.Time) (core.HealthStatus, string) {
 	at := func(t time.Time) string { return t.Local().Format("15:04") }
+	const stale = "нет свежих данных службы: "
+	legacy := st.CRM == "" && st.CRMCheckedAt.IsZero() && st.CRMClubs == nil && st.CRMNextLogin.IsZero()
 	switch {
+	case !present && state == service.Running:
+		return st, "нет данных службы: служба запущена, но её данных нет"
 	case !present:
-		return st, "служба запущена, но её данных нет"
-	case st.Time.After(now.Add(statusSkew)):
-		return st, "время данных службы впереди часов компьютера (" + at(st.Time) + ")"
-	case st.CRM == "" && strings.HasPrefix(st.Reason, "CRM_"):
-		st.CRM, st.CRMClubs, st.CRMCheckedAt = st.Reason, nil, st.Time
+		return st, "нет данных службы: диспетчер служб не ответил, запущена ли служба"
+	case st.Time.After(now):
+		return st, stale + "время данных службы впереди часов компьютера (" + at(st.Time) + ")"
+	case st.Version == "" || (st.Hub != "connected" && st.Hub != "disconnected"):
+		return st, stale + "данные службы неполные"
+	case legacy && !st.Ready && st.Reason != "ok" && crmResults[st.Reason]:
+		st.CRM, st.CRMCheckedAt = st.Reason, st.Time
 		return st, ""
 	case st.CRM == "":
-		return st, "служба ещё не сообщила результат проверки CRM"
+		return st, stale + "служба ещё не сообщила результат проверки CRM"
+	case !crmResults[st.CRM]:
+		return st, stale + "неизвестный результат проверки CRM"
+	case st.CRM == "ok" && crmResults[st.Reason], st.CRM != "ok" && (st.Ready || st.Reason != st.CRM):
+		return st, stale + "результат проверки CRM расходится с готовностью службы"
 	case st.CRMCheckedAt.IsZero():
-		return st, "нет времени проверки CRM службой"
-	case st.CRMCheckedAt.After(now.Add(statusSkew)):
-		return st, "время проверки CRM службой впереди часов компьютера (" + at(st.CRMCheckedAt) + ")"
+		return st, stale + "нет времени проверки CRM службой"
+	case st.CRMCheckedAt.After(now):
+		return st, stale + "время проверки CRM службой впереди часов компьютера (" + at(st.CRMCheckedAt) + ")"
 	case now.Sub(st.CRMCheckedAt) > statusFresh:
-		return st, "последняя проверка CRM службой была в " + at(st.CRMCheckedAt)
+		return st, stale + "последняя проверка CRM службой была в " + at(st.CRMCheckedAt)
 	}
 	return st, ""
 }
@@ -275,7 +292,7 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 	loginFailed := svc.CRM != "ok" && (loginReasons[svc.CRM] || len(svc.CRMClubs) == 0)
 	switch {
 	case svc.CRM == "":
-		out = append(out, Check{Code: CodeCRMLogin, Status: Warn, Message: "нет свежих данных службы: " + unusable,
+		out = append(out, Check{Code: CodeCRMLogin, Status: Warn, Message: unusable,
 			Hint: "повторите doctor через минуту; если не поможет — перезапустите службу"})
 	case loginFailed && svc.CRM == "CRM_AUTH_FAILED":
 		msg := from + "вход в CRM не удался: " + svc.CRM
