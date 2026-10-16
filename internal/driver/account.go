@@ -1,6 +1,9 @@
 package driver
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // An installation of the gateway is one CRM account. The account may hold
 // several clubs (a club network); each club is configured on the hub and
@@ -21,11 +24,46 @@ type Account interface {
 
 // PasswordSetter is implemented by accounts that take a new CRM password
 // while running (the gateway re-reads .env after set-password): it ends a
-// stop after a rejected login. PasswordRejected reports that stop: the
-// CRM rejected the password, and nothing logs in until it changes.
+// stop after a rejected login at once. PasswordRejected reports that stop:
+// the CRM rejected the login, and it is tried again only rarely, next at
+// NextLogin (zero without a stop).
 type PasswordSetter interface {
 	SetPassword(password string)
 	PasswordRejected() bool
+	NextLogin() time.Time
+}
+
+// SessionEnder is implemented by accounts whose CRM login opens a session
+// on the CRM's side that outlives the process: EndSession ends the session
+// of the last login, and the next call logs in again. The commands that log
+// in only to check the login (setup, set-password, doctor) end their
+// session, so the CRM sees one session of the installation, the service's.
+type SessionEnder interface {
+	EndSession(ctx context.Context) error
+}
+
+// EndSession ends acct's CRM session if it has one to end.
+func EndSession(ctx context.Context, acct Account) error {
+	if se, ok := acct.(SessionEnder); ok {
+		return se.EndSession(ctx)
+	}
+	return nil
+}
+
+// Rejections are an account's logins the CRM rejected in a row. Key tells
+// which credentials they are about (a hash, never the password itself):
+// rejections of other credentials do not count.
+type Rejections struct {
+	Key   string    `json:"key"`
+	Count int       `json:"count"`
+	First time.Time `json:"first"`
+	Last  time.Time `json:"last"`
+}
+
+// RejectionStore keeps Rejections; Load of nothing kept is the zero value.
+type RejectionStore interface {
+	LoadRejections() (Rejections, error)
+	SaveRejections(Rejections) error
 }
 
 // AccountFactory builds an Account. Config carries CRM, Password, Logger,

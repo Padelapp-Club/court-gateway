@@ -656,7 +656,7 @@ func TestDocsKeepTheOperatorFacts(t *testing.T) {
 		{"docs/hub.md", "`504` (любой код)"},                 // a create answered 502/504 has an unknown outcome
 		{"docs/hub.md", "`outdated=1` дольше суток"},         // a self-built gateway does not update itself
 		{"README.md", "Образ выпуска пока не публикуется"},   // Docker is a self-build for now
-		{"README.md", "вернёт версию образа"},                // updates live in the container: recreating drops them
+		{"README.md", "переживает пересоздание контейнера"},  // the state is a volume: rejected CRM logins stay counted
 	} {
 		if !strings.Contains(readDoc(t, c.doc), c.fact) {
 			t.Errorf("%s no longer says %q", c.doc, c.fact)

@@ -21,6 +21,7 @@ type Account struct {
 var (
 	_ driver.Account        = (*Account)(nil)
 	_ driver.PasswordSetter = (*Account)(nil)
+	_ driver.SessionEnder   = (*Account)(nil)
 )
 
 // NewAccount is the driver.AccountFactory for crm.type "viva". It reads
@@ -43,8 +44,15 @@ func NewAccount(cfg driver.Config) (driver.Account, error) {
 // club driver sharing its session.
 func (a *Account) SetPassword(p string) { a.c.setPassword(p) }
 
+// EndSession implements driver.SessionEnder: an OpenID Connect logout of
+// the session the last login opened (see client.endSession).
+func (a *Account) EndSession(ctx context.Context) error { return a.c.endSession(ctx) }
+
 // PasswordRejected implements driver.PasswordSetter.
 func (a *Account) PasswordRejected() bool { return a.c.rejectedPassword() }
+
+// NextLogin implements driver.PasswordSetter.
+func (a *Account) NextLogin() time.Time { return a.c.nextLogin() }
 
 // CheckLogin implements driver.Account: it logs in if needed and makes
 // one cheap call (GET /studios), so a cached token the CRM no longer

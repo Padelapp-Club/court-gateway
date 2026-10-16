@@ -4,7 +4,10 @@
 // leave out exercises of past days, not breaks; reads by id always work.
 //
 // Serve it with httptest.NewServer(stub); then the driver's auth_url is
-// <server>/token and api_url is <server>/api/v1.
+// <server>/token and api_url is <server>/api/v1. Every login opens a
+// session, as Keycloak's does, until a logout at <server>/logout with its
+// refresh token ends it (OpenSessions); the refresh grant renews the access
+// token within the session, with a new refresh token.
 package vivastub
 
 import (
@@ -26,6 +29,9 @@ const APIPrefix = "/api/v1"
 // TokenPath is the token endpoint.
 const TokenPath = "/token"
 
+// LogoutPath is the OpenID Connect logout endpoint.
+const LogoutPath = "/logout"
+
 type override struct {
 	method, prefix string
 	status         int
@@ -39,8 +45,10 @@ type Stub struct {
 	Password string
 	ClientID string
 	Studio   string
-	// TokenTTL is the expires_in returned at login, in seconds.
-	TokenTTL int
+	// TokenTTL is the expires_in returned at login, in seconds;
+	// RefreshTTL the refresh_expires_in (the session's idle time).
+	TokenTTL   int
+	RefreshTTL int
 	// Now is the stub's clock (defaults to time.Now).
 	Now func() time.Time
 	// Zone is the studio's time zone, whose dates the lists select by and
@@ -48,6 +56,9 @@ type Stub struct {
 	Zone *time.Location
 	// OmitCommentOnRead removes "comment" from reads by id.
 	OmitCommentOnRead bool
+	// OmitRefreshToken answers a login without a refresh_token: its
+	// session cannot be ended.
+	OmitRefreshToken bool
 	// StudioName and WorkTime (weekday name -> {from, to} as
 	// "HH:MM+03:00"; nil omits workTime) describe Studio in GET /studios.
 	StudioName string
@@ -57,11 +68,14 @@ type Stub struct {
 	others    []map[string]any  // more studios of the account (listed only)
 	rooms     map[string]string // id -> name
 	tokens    map[string]bool
+	sessions  map[string]string // refresh token (or a key without one) -> access token
 	exercises map[string]map[string]any
 	breaks    map[string]map[string]any
 	pricing   map[string]json.RawMessage
 	overrides []override
 	logins    int
+	logouts   int
+	refreshes int
 	attempts  int
 	calls     []string
 }
@@ -69,16 +83,18 @@ type Stub struct {
 // New returns a stub with the given credentials and studio.
 func New(username, password, studio string) *Stub {
 	return &Stub{
-		Username:  username,
-		Password:  password,
-		ClientID:  "React-auth-dev",
-		Studio:    studio,
-		TokenTTL:  300,
-		rooms:     map[string]string{},
-		tokens:    map[string]bool{},
-		exercises: map[string]map[string]any{},
-		breaks:    map[string]map[string]any{},
-		pricing:   map[string]json.RawMessage{},
+		Username:   username,
+		Password:   password,
+		ClientID:   "React-auth-dev",
+		Studio:     studio,
+		TokenTTL:   300,
+		RefreshTTL: 1800,
+		rooms:      map[string]string{},
+		tokens:     map[string]bool{},
+		sessions:   map[string]string{},
+		exercises:  map[string]map[string]any{},
+		breaks:     map[string]map[string]any{},
+		pricing:    map[string]json.RawMessage{},
 	}
 }
 
@@ -216,7 +232,8 @@ func (s *Stub) RevokeTokens() {
 	s.tokens = map[string]bool{}
 }
 
-// LoginAttempts returns how many logins were tried, failed ones included.
+// LoginAttempts returns how many logins (password grants) were tried,
+// failed ones included; renewals of a session are not logins.
 func (s *Stub) LoginAttempts() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,6 +245,35 @@ func (s *Stub) Logins() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.logins
+}
+
+// OpenSessions returns how many logins have not been ended by a logout.
+func (s *Stub) OpenSessions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sessions)
+}
+
+// ExpireSessions ends every session and its tokens, as Keycloak does when
+// sessions run past their idle time.
+func (s *Stub) ExpireSessions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions, s.tokens = map[string]string{}, map[string]bool{}
+}
+
+// Refreshes returns how many access tokens the refresh grant renewed.
+func (s *Stub) Refreshes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshes
+}
+
+// Logouts returns how many sessions a logout ended.
+func (s *Stub) Logouts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logouts
 }
 
 // Calls returns "METHOD path?query" of every API call so far.
@@ -259,10 +305,14 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	rel := strings.TrimPrefix(path, APIPrefix)
 	s.mu.Lock()
-	if path != TokenPath {
+	switch path {
+	case TokenPath:
+		if r.Method == http.MethodPost && r.ParseForm() == nil && r.PostForm.Get("grant_type") != "refresh_token" {
+			s.attempts++
+		}
+	case LogoutPath:
+	default:
 		s.calls = append(s.calls, r.Method+" "+rel+"?"+r.URL.RawQuery)
-	} else {
-		s.attempts++
 	}
 	for i, o := range s.overrides {
 		if o.method == r.Method && (strings.HasPrefix(rel, o.prefix) || (path == TokenPath && o.prefix == TokenPath)) {
@@ -276,8 +326,12 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	if path == TokenPath {
+	switch path {
+	case TokenPath:
 		s.handleToken(w, r)
+		return
+	case LogoutPath:
+		s.handleLogout(w, r)
 		return
 	}
 	if !strings.HasPrefix(path, APIPrefix+"/") {
@@ -317,23 +371,88 @@ func (s *Stub) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := r.PostForm
-	if f.Get("grant_type") != "password" || f.Get("client_id") != s.ClientID {
+	if f.Get("client_id") != s.ClientID {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client"})
+		return
+	}
+	if f.Get("grant_type") == "refresh_token" {
+		s.handleRefresh(w, f.Get("refresh_token"))
+		return
+	}
+	if f.Get("grant_type") != "password" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported_grant_type"})
 		return
 	}
 	if f.Get("username") != s.Username || f.Get("password") != s.Password {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_grant"})
 		return
 	}
-	tok := "tok-" + NewID()
+	tok, refresh := "tok-"+NewID(), "ref-"+NewID()
 	s.mu.Lock()
 	s.tokens[tok] = true
+	s.sessions[refresh] = tok
 	s.logins++
-	ttl := s.TokenTTL
+	ttl, rttl := s.TokenTTL, s.RefreshTTL
 	s.mu.Unlock()
+	answer := map[string]any{
+		"access_token": tok, "expires_in": ttl, "refresh_expires_in": rttl, "token_type": "Bearer", "scope": "profile",
+	}
+	if !s.OmitRefreshToken {
+		answer["refresh_token"] = refresh
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleRefresh renews the access token of an open session and rotates
+// its refresh token, or answers 400 invalid_grant as Keycloak does for a
+// session that is gone.
+func (s *Stub) handleRefresh(w http.ResponseWriter, refresh string) {
+	s.mu.Lock()
+	_, ok := s.sessions[refresh]
+	tok, next := "tok-"+NewID(), "ref-"+NewID()
+	if ok {
+		delete(s.sessions, refresh)
+		s.sessions[next] = tok
+		s.tokens[tok] = true
+		s.refreshes++
+	}
+	ttl, rttl := s.TokenTTL, s.RefreshTTL
+	s.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "Session not active"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": tok, "expires_in": ttl, "refresh_expires_in": ttl, "token_type": "Bearer", "scope": "profile",
+		"access_token": tok, "expires_in": ttl, "refresh_expires_in": rttl, "refresh_token": next, "token_type": "Bearer", "scope": "profile",
 	})
+}
+
+// handleLogout ends the session of a refresh token, as Keycloak's logout
+// endpoint does for a public client: 204, or 400 invalid_grant for a
+// token of no open session.
+func (s *Stub) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.ParseForm() != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	f := r.PostForm
+	if f.Get("client_id") != s.ClientID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client"})
+		return
+	}
+	s.mu.Lock()
+	tok, ok := s.sessions[f.Get("refresh_token")]
+	if ok {
+		delete(s.sessions, f.Get("refresh_token"))
+		delete(s.tokens, tok)
+		s.logouts++
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Stub) authorized(r *http.Request) bool {

@@ -58,15 +58,20 @@ func TestDotEnv(t *testing.T) {
 	}
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "gateway.yaml")
-	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("X=from-file\nY=from-file\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("X=from-file\nY=from-file\nCRM_PASSWORD=from-file\n"), 0o600)
 	get, err := EnvWithDotEnv(cfg, func(k string) string {
-		if k == "Y" {
+		if k == "Y" || k == PasswordEnv {
 			return "from-process"
 		}
 		return ""
 	})
 	if err != nil || get("X") != "from-file" || get("Y") != "from-process" || get("Z") != "" {
 		t.Fatalf("precedence: %v %q %q", err, get("X"), get("Y"))
+	}
+	// the CRM password is the one set-password checked and wrote, whatever
+	// the machine's environment holds
+	if get(PasswordEnv) != "from-file" {
+		t.Fatalf("CRM password: %q", get(PasswordEnv))
 	}
 }
 

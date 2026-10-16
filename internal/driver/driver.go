@@ -202,6 +202,10 @@ type Config struct {
 	// Account is the installation's CRM account, if any: its clubs' drivers
 	// may share its session, so they all log in once.
 	Account Account
+	// Rejections, when set, keeps the account's rejected logins across
+	// restarts (the service's state directory): the retry budget after a
+	// rejection is the installation's, not one process's.
+	Rejections RejectionStore
 }
 
 // DecisionClock is c.Clock, or c.Now (time.Now) taken as known.

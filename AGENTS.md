@@ -277,7 +277,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | Code | Meaning when failing |
 |---|---|
 | `CONFIG_VALID` | `gateway.yaml` or `.env` is broken — the message lists every problem |
-| `CRM_LOGIN` / `CRM_OCCUPANCY` | the Viva login is wrong, a club's studio/rooms on the hub are wrong, or Viva is unreachable |
+| `CRM_LOGIN` / `CRM_OCCUPANCY` | `warn` «нет свежих данных службы» (then `ok` is false): the service runs but has not reported a usable CRM check — wait a minute and run doctor again; `fail`: the Viva login is wrong, a club's studio/rooms on the hub are wrong, or Viva is unreachable; while the service runs these are the service's own last checks («по данным службы»), and `CRM_AUTH_FAILED` there means: have the human check the Viva password, then run `set-password` |
 | `HUB_REACHABLE` | no outbound HTTPS to the hub, or its certificate failed verification |
 | `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed (the running service restarts by itself on the rewritten files) |
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
@@ -305,7 +305,9 @@ then, in the install folder:
 It logs in to Viva with the new password first and replaces only `CRM_PASSWORD` in `.env`.
 **Expect:** `exit=0`; `CRM_AUTH_FAILED` means the password is wrong — ask again. The running
 service picks the new password up within a minute, no restart (in Docker: recreate the container
-as it prints). After a rejected password the service makes no CRM call at all until this is done.
+as it prints). After a rejected login the service tries again only three times (15 minutes, 1 hour and 4 hours
+later, counted across restarts), then waits for `set-password`, which — even with the same
+password — makes it log in at once.
 Then `unset CRM_PASSWORD` and run step 5.
 
 ## Uninstall

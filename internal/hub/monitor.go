@@ -52,8 +52,9 @@ type installationHealth struct {
 	build     string
 	ready     bool
 	reason    string
-	clubs     []string // the clubs reason is about
-	notReady  int      // heartbeats in a row with ready=false
+	clubs     []string  // the clubs reason is about
+	nextLogin time.Time // gateway clock: when a rejected CRM login is tried again
+	notReady  int       // heartbeats in a row with ready=false
 	beats     int
 	applied   tunnel.AppliedConfig // as reported, cleaned
 	refused   int64                // requests the gateway refused as unsigned
@@ -75,10 +76,13 @@ type Health struct {
 	Version       string
 	Build         string
 	// Checked is true once a heartbeat has arrived since the hub started.
-	Checked      bool
-	Ready        bool
-	Reason       string
-	ReasonClubs  []string
+	Checked     bool
+	Ready       bool
+	Reason      string
+	ReasonClubs []string
+	// NextLogin is when the gateway tries a login the CRM rejected again
+	// (gateway clock); zero without a rejection.
+	NextLogin    time.Time
 	OfflineSince time.Time
 	// DuplicateAt is when a second copy of the gateway, with the same
 	// secret, was last refused; Duplicate is true while that is recent.
@@ -187,10 +191,13 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat, bound bool
 		return
 	}
 	h.beats++
-	h.ready, h.reason, h.clubs = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil
+	h.ready, h.reason, h.clubs, h.nextLogin = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil, time.Time{}
 	if !hb.Ready {
 		h.clubs = cleanClubs(hb.ReasonClubs)
 		h.clubs = h.clubs[:min(len(h.clubs), 20)]
+		if y := hb.NextLogin.Year(); y > 2000 && y < 3000 {
+			h.nextLogin = hb.NextLogin.UTC()
+		}
 	}
 	h.version, h.build = cleanVersion(hb.Version), cleanBuild(hb.Build)
 	fresh := true // a new self-check, not the last one sent again with a new config
@@ -351,7 +358,7 @@ func (m *Monitor) Health(installation string) Health {
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
-		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, ReasonClubs: append([]string(nil), h.clubs...), Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, ReasonClubs: append([]string(nil), h.clubs...), NextLogin: h.nextLogin, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
 		AppliedConfig: tunnel.AppliedConfig{ConfigVersion: h.applied.ConfigVersion, ConfigError: h.applied.ConfigError,
 			ClubErrors: maps.Clone(h.applied.ClubErrors), Clubs: append([]string(nil), h.applied.Clubs...)},
 	}

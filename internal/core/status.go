@@ -6,12 +6,19 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
 // HealthStatusFile is written by `serve` into the state directory and read
 // by `healthcheck` when the gateway has no local port (the normal case with
 // a hub). It holds no secrets and no CRM data.
 const HealthStatusFile = "health.json"
+
+// HealthStatusInterval is how often a running service checks its
+// readiness and rewrites HealthStatusFile at the latest. A file older
+// than three intervals is a service that stopped or hangs.
+const HealthStatusInterval = time.Minute
 
 // HealthStatus is the content of HealthStatusFile.
 type HealthStatus struct {
@@ -21,6 +28,17 @@ type HealthStatus struct {
 	Reason  string    `json:"reason,omitempty"`
 	// Hub is "connected", "disconnected" or empty without a hub.
 	Hub string `json:"hub,omitempty"`
+	// CRM is the result of the service's last CRM self-check: "ok" or its
+	// reason code (CRM_AUTH_FAILED, ...), empty before the first one;
+	// CRMClubs are the clubs the reason is about (none: the account's own
+	// login check) and CRMCheckedAt is when it ran. doctor reports these
+	// instead of logging in to the CRM beside the service.
+	CRM          string    `json:"crm,omitempty"`
+	CRMClubs     []string  `json:"crm_clubs,omitempty"`
+	CRMCheckedAt time.Time `json:"crm_checked_at,omitzero"`
+	// CRMNextLogin is when the service tries a login the CRM rejected
+	// again (set-password: at once); zero without a rejection.
+	CRMNextLogin time.Time `json:"crm_next_login,omitzero"`
 }
 
 // WriteHealthStatus replaces the status file atomically.
@@ -73,4 +91,43 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// RejectionsFile is where the service keeps the CRM logins rejected in a
+// row (driver.Rejections), in the state directory.
+const RejectionsFile = "crm-rejections.json"
+
+// RejectionStore is the driver.RejectionStore in the state directory dir.
+type RejectionStore string
+
+// LoadRejections implements driver.RejectionStore.
+func (d RejectionStore) LoadRejections() (driver.Rejections, error) {
+	var r driver.Rejections
+	data, err := os.ReadFile(filepath.Join(string(d), RejectionsFile))
+	if os.IsNotExist(err) {
+		return r, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &r)
+	}
+	return r, err
+}
+
+// SaveRejections implements driver.RejectionStore; none is no file.
+func (d RejectionStore) SaveRejections(r driver.Rejections) error {
+	p := filepath.Join(string(d), RejectionsFile)
+	if r.Count == 0 {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(string(d), 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(p, data, 0o600)
 }

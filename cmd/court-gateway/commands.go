@@ -87,7 +87,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if !*asJSON {
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
-	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets, Accounts: setupAccounts(getenv)}
+	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets, Accounts: setupAccounts(getenv), Note: noteTo(stderr)}
 	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -110,6 +110,11 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// noteTo prints setup's remarks to w (stderr: stdout may carry JSON).
+func noteTo(w io.Writer) func(string) {
+	return func(s string) { fmt.Fprintln(w, "Примечание: "+s) }
+}
 
 // cmdSetPassword replaces the CRM password in .env after the CRM
 // administrator's password changed; no join code is needed.
@@ -140,7 +145,7 @@ func cmdSetPassword(args []string, stdout, stderr io.Writer, getenv func(string)
 			return 2
 		}
 	}
-	if err := setup.SetPassword(context.Background(), *cfgPath, password, getenv, setup.Deps{ProtectSecrets: protectSecrets}); err != nil {
+	if err := setup.SetPassword(context.Background(), *cfgPath, password, getenv, setup.Deps{ProtectSecrets: protectSecrets, Note: noteTo(stderr)}); err != nil {
 		fmt.Fprintf(stderr, "set-password: %v\n", err)
 		return 1
 	}
@@ -272,6 +277,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	}
 	rep := doctor.Run(context.Background(), doctor.Options{
 		ConfigPath: *cfgPath, Getenv: getenv, Factories: drivers.Factories, Accounts: drivers.Accounts, Version: version, ReleaseKey: releaseKey,
+		ServiceState: serviceState,
 	})
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -301,6 +307,10 @@ func cmdDoctor(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	}
 	return 0
 }
+
+// serviceState asks this computer's service manager about the gateway's
+// service, for doctor; a variable for tests.
+var serviceState = func() service.State { return service.Query(runtime.GOOS, os.Getuid(), service.RunProbe) }
 
 func listOrNone(v []string) string {
 	if len(v) == 0 {

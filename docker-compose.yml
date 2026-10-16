@@ -14,9 +14,15 @@ services:
     env_file: .env
     volumes:
       - ./gateway.yaml:/config/gateway.yaml:ro
+      # the state directory (/home/nonroot/state): the count of rejected
+      # CRM logins and the verified updates outlive a recreated container
+      - state:/home/nonroot
     healthcheck:   # the same check as the image's
       test: ["CMD", "/court-gateway", "healthcheck"]
       interval: 30s
       timeout: 10s
       start_period: 30s
       retries: 3
+
+volumes:
+  state:

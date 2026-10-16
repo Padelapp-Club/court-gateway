@@ -60,6 +60,9 @@ type Deps struct {
 	// new .env after writing; any failure aborts setup, as does a folder
 	// it closed so that this user can no longer write in it.
 	ProtectSecrets func(path string) error
+	// Note, when set, takes a remark that does not change the outcome
+	// (the CRM session of the login check was not ended).
+	Note func(string)
 }
 
 // Warning is something the administrator must look at.
@@ -196,7 +199,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if err != nil {
 		return fail(problem("INVALID_INPUT", "%v", err))
 	}
-	if p := checkLogin(ctx, acct); p != nil {
+	if p := checkLogin(ctx, acct, deps.Note); p != nil {
 		return fail(p)
 	}
 	d.HubKey = placeholderKey
@@ -296,11 +299,19 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	return res, nil
 }
 
-// checkLogin logs in to the CRM and names the failure.
-func checkLogin(ctx context.Context, acct driver.Account) *Problem {
+// checkLogin logs in to the CRM and names the failure. Then it ends the
+// CRM session of that login: the installation's one session is the
+// service's. Not ending it changes nothing else (the session expires by
+// itself); note hears of it.
+func checkLogin(ctx context.Context, acct driver.Account, note func(string)) *Problem {
 	lctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	err := acct.CheckLogin(lctx)
+	ectx, ecancel := context.WithTimeout(ctx, 10*time.Second)
+	defer ecancel()
+	if eerr := driver.EndSession(ectx, acct); eerr != nil && note != nil {
+		note("сеанс проверки входа в CRM не закрыт, CRM закроет его сама по истечении срока: " + eerr.Error())
+	}
 	var ue *driver.UpstreamError
 	switch {
 	case err == nil:

@@ -29,14 +29,15 @@ func SetPassword(ctx context.Context, cfgPath, password string, getenv func(stri
 	if err != nil {
 		return problem("CONFIG_INVALID", "не удалось прочитать %s: %v — сначала выполните court-gateway setup", envPath, err)
 	}
-	env, err := core.EnvWithDotEnv(cfgPath, func(k string) string {
+	dotenv, err := core.EnvWithDotEnv(cfgPath, getenv)
+	if err != nil {
+		return problem("CONFIG_INVALID", "%v", err)
+	}
+	env := func(k string) string {
 		if k == core.PasswordEnv {
 			return password
 		}
-		return getenv(k)
-	})
-	if err != nil {
-		return problem("CONFIG_INVALID", "%v", err)
+		return dotenv(k)
 	}
 	s, err := core.LoadFile(cfgPath, env)
 	if err != nil {
@@ -54,7 +55,7 @@ func SetPassword(ctx context.Context, cfgPath, password string, getenv func(stri
 	if err != nil {
 		return problem("CONFIG_INVALID", "%v", err)
 	}
-	if p := checkLogin(ctx, acct); p != nil {
+	if p := checkLogin(ctx, acct, deps.Note); p != nil {
 		return p
 	}
 	protect := func() error {

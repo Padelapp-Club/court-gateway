@@ -21,6 +21,9 @@ type Heartbeat struct {
 	Reason      string    `json:"reason,omitempty"`
 	ReasonClubs []string  `json:"reason_clubs,omitempty"`
 	CheckedAt   time.Time `json:"checked_at"`
+	// NextLogin is when the gateway tries a login the CRM rejected again
+	// (the club's set-password: at once); zero without a rejection.
+	NextLogin time.Time `json:"next_login,omitzero"`
 	// RefusedRequests counts, since the gateway started, the requests and
 	// configs it refused because the hub had not signed them for it.
 	RefusedRequests int64 `json:"refused_requests,omitempty"`

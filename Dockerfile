@@ -33,8 +33,9 @@ COPY --from=build /out/court-gateway /court-gateway
 # Config is mounted at /config; secrets come as environment variables
 # (compose env_file). /court-gateway is never replaced: it starts the newest
 # verified update kept in the state directory (versions/), or itself. The
-# state directory lives in the container layer on purpose: no volume, no
-# CRM data, and a recreated container simply starts from the image.
+# state directory holds no CRM data; docker-compose.yml keeps it in a
+# volume, so the count of rejected CRM logins outlives a recreated
+# container.
 ENV GATEWAY_CONFIG=/config/gateway.yaml \
     GATEWAY_STATE_DIR=/home/nonroot/state
 USER nonroot:nonroot

@@ -18,6 +18,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
+	"github.com/Padelapp-Club/court-gateway/internal/service"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
@@ -37,6 +38,16 @@ func doctorAgainst(t *testing.T, clubStudio string, who tunnel.Whoami) doctor.Re
 // doctorAgainstHub is doctorAgainst with a hub whose clock is ahead of
 // this computer's by ahead; it signs its time on whoami, as the hub does.
 func doctorAgainstHub(t *testing.T, clubStudio string, who tunnel.Whoami, ahead time.Duration) doctor.Report {
+	rep, _ := doctorWithService(t, clubStudio, who, ahead, nil)
+	return rep
+}
+
+// managerSays is what the service manager answers doctor.
+var managerSays = func() service.State { return service.Stopped }
+
+// doctorWithService is doctorAgainstHub with the status file a running
+// service wrote (svc; nil: no service runs); it returns the CRM too.
+func doctorWithService(t *testing.T, clubStudio string, who tunnel.Whoami, ahead time.Duration, svc *core.HealthStatus) (doctor.Report, *vivastub.Stub) {
 	t.Helper()
 	stub := vivastub.New("review@example.test", "fixture-password", studio)
 	stub.AddRoom(room, "Court")
@@ -72,9 +83,14 @@ func doctorAgainstHub(t *testing.T, clubStudio string, who tunnel.Whoami, ahead 
 	if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if svc != nil {
+		if err := core.WriteHealthStatus(filepath.Join(filepath.Dir(p), "state"), *svc); err != nil {
+			t.Fatal(err)
+		}
+	}
 	env := map[string]string{"CRM_PASSWORD": "fixture-password", "GATEWAY_HUB_SECRET": "fixture-hub-secret"}
 	return doctor.Run(context.Background(), doctor.Options{ConfigPath: p, Getenv: func(k string) string { return env[k] },
-		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", Timeout: 10 * time.Second})
+		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", Timeout: 3 * time.Second, ServiceState: managerSays}), stub
 }
 
 func hubConfig(rep doctor.Report) doctor.Check {
@@ -153,7 +169,7 @@ func TestDoctorOccupancyWithNoClubOnTheHub(t *testing.T) {
 	}
 	env := map[string]string{"GATEWAY_HUB_SECRET": rr.Secret}
 	rep := doctor.Run(context.Background(), doctor.Options{ConfigPath: p, Getenv: func(k string) string { return env[k] },
-		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", HubTransport: h.Transport(), Timeout: 10 * time.Second})
+		Factories: drivers.Factories, Accounts: drivers.Accounts, Version: "1.0.0", HubTransport: h.Transport(), Timeout: 10 * time.Second, ServiceState: managerSays})
 	if c := hubConfig(rep); c.Status != doctor.OK {
 		t.Fatalf("HUB_CONFIG %s (%s)", c.Status, c.Message)
 	}
@@ -165,5 +181,132 @@ func TestDoctorOccupancyWithNoClubOnTheHub(t *testing.T) {
 	}
 	if occupancy.Status != doctor.Skip || !strings.Contains(occupancy.Message, "клубов пока нет") {
 		t.Errorf("occupancy: %s %s", occupancy.Status, occupancy.Message)
+	}
+}
+
+func check(rep doctor.Report, code string) doctor.Check {
+	for _, c := range rep.Checks {
+		if c.Code == code {
+			return c
+		}
+	}
+	return doctor.Check{}
+}
+
+// While the service runs, doctor reports the service's own CRM checks from
+// its status file and logs in to the CRM not at all: the installation holds
+// one CRM session, the service's. A service that cannot log in is a failed
+// CRM_LOGIN with its reason, even when doctor's own login would pass (the
+// CRM may refuse one login and accept the next).
+func TestDoctorReportsTheServicesCRMState(t *testing.T) {
+	served := tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}
+	checked := time.Now().Add(-30 * time.Second)
+	running := func(crm string, clubs ...string) *core.HealthStatus {
+		st := &core.HealthStatus{Time: time.Now(), Version: "1.0.0", Hub: "connected", Ready: crm == "ok", CRM: crm, CRMClubs: clubs, CRMCheckedAt: checked}
+		if crm != "ok" {
+			st.Reason = crm
+		}
+		return st
+	}
+	from := "по данным службы, проверка " + checked.Local().Format("15:04")
+	retryAt := checked.Add(15 * time.Minute)
+	retrying := running("CRM_AUTH_FAILED")
+	retrying.CRMNextLogin = retryAt
+	future, stale, legacy := running("ok"), running("ok"), running("")
+	future.Time = time.Now().Add(24 * time.Hour)
+	stale.CRMCheckedAt = time.Now().Add(-24 * time.Hour)
+	// a status of a version without the crm fields
+	legacy.Reason, legacy.CRMCheckedAt = "CRM_AUTH_FAILED", time.Time{}
+	aheadCheck := running("ok")
+	aheadCheck.CRMCheckedAt = time.Now().Add(time.Hour)
+	// incomplete, unknown or contradicting itself
+	noVersion, unknownResult, contradicting, okButFailed := running("ok"), running("garbage", "club-a"), running("ok"), running("CRM_AUTH_FAILED")
+	noVersion.Version = ""
+	contradicting.Ready, contradicting.Reason = false, "CRM_UNREACHABLE"
+	okButFailed.Ready = true
+	for name, tc := range map[string]struct {
+		svc              *core.HealthStatus
+		login, occupancy doctor.Status
+		message, hint    string
+	}{
+		"ready":                       {running("ok"), doctor.OK, doctor.OK, from, ""},
+		"password rejected":           {running("CRM_AUTH_FAILED"), doctor.Fail, doctor.Skip, from + ": вход в CRM не удался: CRM_AUTH_FAILED; сама служба больше не пробует войти", "set-password"},
+		"rejected with a club":        {running("CRM_AUTH_FAILED", "club-a"), doctor.Fail, doctor.Skip, "CRM_AUTH_FAILED", "set-password"},
+		"rejected, retried later":     {retrying, doctor.Fail, doctor.Skip, "следующая попытка в " + retryAt.Local().Format("15:04"), "set-password"},
+		"CRM unreachable":             {running("CRM_UNREACHABLE"), doctor.Fail, doctor.Skip, "CRM_UNREACHABLE", "интернет"},
+		"a club's answer is rejected": {running("CRM_REJECTED", "club-a"), doctor.OK, doctor.Fail, from, ""},
+		"legacy status, CRM failed":   {legacy, doctor.Fail, doctor.Skip, "CRM_AUTH_FAILED", "set-password"},
+		"no check yet":                {running(""), doctor.Warn, doctor.Skip, "нет свежих данных службы: служба ещё не сообщила", "через минуту"},
+		"status from the future":      {future, doctor.Warn, doctor.Skip, "нет свежих данных службы: время данных службы впереди", "через минуту"},
+		"old CRM check, fresh file":   {stale, doctor.Warn, doctor.Skip, "нет свежих данных службы: последняя проверка CRM", "через минуту"},
+		"CRM check from the future":   {aheadCheck, doctor.Warn, doctor.Skip, "нет свежих данных службы: время проверки CRM", "через минуту"},
+		"status without its version":  {noVersion, doctor.Warn, doctor.Skip, "данные службы неполные", "через минуту"},
+		"unknown CRM result":          {unknownResult, doctor.Warn, doctor.Skip, "неизвестный результат", "через минуту"},
+		"ok CRM, CRM reason":          {contradicting, doctor.Warn, doctor.Skip, "расходится", "через минуту"},
+		"failed CRM, ready":           {okButFailed, doctor.Warn, doctor.Skip, "расходится", "через минуту"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep, stub := doctorWithService(t, studio, served, 0, tc.svc)
+			login := check(rep, doctor.CodeCRMLogin)
+			if login.Status != tc.login || !strings.Contains(login.Message, tc.message) || !strings.Contains(login.Hint, tc.hint) {
+				t.Fatalf("CRM_LOGIN %s %q (%s)", login.Status, login.Message, login.Hint)
+			}
+			if c := check(rep, doctor.CodeOccupancy); c.Status != tc.occupancy {
+				t.Fatalf("CRM_OCCUPANCY %s %q", c.Status, c.Message)
+			}
+			if rep.OK != (tc.login == doctor.OK && tc.occupancy != doctor.Fail) {
+				t.Fatalf("ok=%v", rep.OK)
+			}
+			if n := stub.LoginAttempts(); n != 0 || len(stub.Calls()) != 0 {
+				t.Fatalf("doctor called the CRM beside the service: %d logins, calls %v", n, stub.Calls())
+			}
+		})
+	}
+}
+
+// Without a running service (no status file, or one too old to be a
+// running service's) doctor logs in itself, once for all its checks, and
+// ends that session.
+func TestDoctorWithoutTheServiceEndsItsSession(t *testing.T) {
+	served := tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}
+	stopped := &core.HealthStatus{Time: time.Now().Add(-time.Hour), CRM: "CRM_AUTH_FAILED", CRMCheckedAt: time.Now().Add(-time.Hour)}
+	for name, svc := range map[string]*core.HealthStatus{"no status file": nil, "stopped service": stopped} {
+		t.Run(name, func(t *testing.T) {
+			rep, stub := doctorWithService(t, studio, served, 0, svc)
+			login := check(rep, doctor.CodeCRMLogin)
+			if !rep.OK || login.Status != doctor.OK || !strings.HasPrefix(login.Message, "проверка doctor") || check(rep, doctor.CodeOccupancy).Status != doctor.OK {
+				t.Fatalf("CRM_LOGIN %s %q; ok=%v", login.Status, login.Message, rep.OK)
+			}
+			if stub.Logins() != 1 || stub.OpenSessions() != 0 {
+				t.Fatalf("%d logins, %d sessions left open", stub.Logins(), stub.OpenSessions())
+			}
+		})
+	}
+}
+
+// No status file of a running service: doctor logs in itself only when
+// the service manager says the service is stopped or not installed. When
+// it runs, or the manager cannot tell, doctor does not log in and the
+// report is not a success.
+func TestDoctorAsksTheServiceManager(t *testing.T) {
+	served := tunnel.Whoami{AppliedConfigVersion: 1, ClubsServed: []string{"club-a"}}
+	defer func() { managerSays = func() service.State { return service.Stopped } }()
+	for name, tc := range map[string]struct {
+		says   service.State
+		logins int
+		status doctor.Status
+	}{
+		"running":         {service.Running, 0, doctor.Warn},
+		"stopped":         {service.Stopped, 1, doctor.OK},
+		"cannot be asked": {service.Unknown, 0, doctor.Warn},
+	} {
+		t.Run(name, func(t *testing.T) {
+			managerSays = func() service.State { return tc.says }
+			rep, stub := doctorWithService(t, studio, served, 0, nil)
+			login := check(rep, doctor.CodeCRMLogin)
+			if login.Status != tc.status || stub.LoginAttempts() != tc.logins || rep.OK != (tc.status == doctor.OK) || stub.OpenSessions() != 0 {
+				t.Fatalf("CRM_LOGIN %s %q, ok=%v, %d logins, %d sessions open", login.Status, login.Message, rep.OK, stub.LoginAttempts(), stub.OpenSessions())
+			}
+		})
 	}
 }

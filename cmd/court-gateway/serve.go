@@ -33,7 +33,7 @@ import (
 // statusInterval is how often serve runs its self-check, its one scheduled
 // CRM call: the result feeds the status file (the container healthcheck)
 // and the heartbeat to the hub. A variable for tests.
-var statusInterval = 60 * time.Second
+var statusInterval = core.HealthStatusInterval
 
 // confirmDeadline is how long a freshly updated binary has to become
 // ready (and connected to the hub) before it rolls itself back.
@@ -106,6 +106,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		return fail(err)
 	}
 	s.Driver.Clock = verifier.Now
+	// the retry budget after a rejected CRM login outlives a restart
+	s.Driver.Rejections = core.RejectionStore(s.StateDir)
 	clubs, syncer, err := buildInstallation(s, log)
 	if err != nil {
 		return fail(err)
@@ -202,21 +204,25 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 			// a newly applied config is reported at once, not with the
 			// next self-check a minute later
 			beat := checked && (due || cs.ConfigVersion != sentConfig)
+			next := nextLogin(s.Driver.Account)
 			if beat {
 				hb := crm
-				hb.Ready, hb.Reason, hb.AppliedConfig = ready, reason, cs
+				hb.Ready, hb.Reason, hb.AppliedConfig, hb.NextLogin = ready, reason, cs, next
 				sentConfig = cs.ConfigVersion
 				go sendHeartbeat(ctx, client, hb, log)
 			}
-			next := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String()}
-			if beat || unwritable || next.Ready != st.Ready || next.Reason != st.Reason || next.Hub != st.Hub {
-				next.Time = time.Now().UTC()
-				werr := core.WriteHealthStatus(s.StateDir, next)
+			cur := core.HealthStatus{Version: version, Ready: ready, Reason: reason, Hub: hs.String(), CRMNextLogin: next}
+			if checked {
+				cur.CRM, cur.CRMClubs, cur.CRMCheckedAt = cmp.Or(crm.Reason, "ok"), crm.ReasonClubs, crm.CheckedAt
+			}
+			if beat || unwritable || cur.Ready != st.Ready || cur.Reason != st.Reason || cur.Hub != st.Hub {
+				cur.Time = time.Now().UTC()
+				werr := core.WriteHealthStatus(s.StateDir, cur)
 				if werr != nil && !unwritable {
 					log.Error("the state directory is not writable: the gateway reports STATE_UNWRITABLE", "path", s.StateDir, "error", werr)
 				}
 				if unwritable = werr != nil; !unwritable {
-					st = next
+					st = cur
 				}
 			}
 			select {
@@ -342,6 +348,15 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
 }
 
+// nextLogin is when acct tries a login the CRM rejected again (zero: none
+// rejected).
+func nextLogin(acct driver.Account) time.Time {
+	if ps, ok := acct.(driver.PasswordSetter); ok {
+		return ps.NextLogin()
+	}
+	return time.Time{}
+}
+
 // passwordRejected reports whether the CRM rejected acct's password: then no
 // update is checked, as its self-check would log in with it again.
 func passwordRejected(acct driver.Account) func() bool {
@@ -351,8 +366,10 @@ func passwordRejected(acct driver.Account) func() bool {
 
 // configWatch notices when setup or set-password rewrites gateway.yaml or
 // .env. A new CRM password is taken at once from .env (the redactor learns
-// it first), ending a stop after a rejected login; a changed hub
-// connection (setup --force) restarts the service.
+// it first), ending a stop after a rejected login; so is the same password
+// written again after a rejection (set-password checked it with a login
+// that passed). A changed hub connection (setup --force) restarts the
+// service.
 type configWatch struct {
 	cfgPath string
 	procEnv func(string) string
@@ -401,6 +418,7 @@ func (w *configWatch) check() {
 	if same(st[0], w.seen[0]) && same(st[1], w.seen[1]) {
 		return
 	}
+	envChanged := !same(st[1], w.seen[1])
 	w.seen = st
 	password, hub, err := w.read()
 	switch {
@@ -411,7 +429,7 @@ func (w *configWatch) check() {
 		w.hub = hub
 		w.restart()
 	}
-	if password != "" && password != w.password && w.acct != nil {
+	if password != "" && w.acct != nil && (password != w.password || envChanged && w.acct.PasswordRejected()) {
 		core.AddSecret(w.log, password)
 		w.acct.SetPassword(password)
 		w.log.Info("CRM password re-read from .env: logging in to the CRM again")
@@ -615,7 +633,8 @@ func probeHub(cfgPath string, stdout, stderr io.Writer) int {
 
 // cmdSelfcheck is what a freshly downloaded binary does before the switch:
 // load gateway.yaml and .env, log in to the CRM, reach the hub (not its
-// clubs). Exit 0 ok, 1 this binary cannot work with the config,
+// clubs), and end that CRM session: the installation's one is the
+// service's. Exit 0 ok, 1 this binary cannot work with the config,
 // update.SelfCheckTransientExit the environment failed,
 // update.SelfCheckNotRunExit the CRM rejected the password.
 func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
@@ -638,6 +657,13 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	if err != nil {
 		return fail(err)
 	}
+	defer func() {
+		ectx, ecancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ecancel()
+		if err := driver.EndSession(ectx, s.Driver.Account); err != nil {
+			fmt.Fprintln(stderr, "CRM session not ended (it expires by itself): "+err.Error())
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var alert *driver.ConfigAlert
