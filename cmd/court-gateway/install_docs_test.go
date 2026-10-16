@@ -328,6 +328,7 @@ func TestPosixInstallBlocksSayWhatIsWrong(t *testing.T) {
 		doc, marker, install string
 		msgs                 map[fault]string
 		then, want           string // appended to the block; what the program then runs
+		passed               string // printed once both checks passed, then the build's name
 	}{
 		{"README.md", "### macOS и Linux", "home/court-gateway", map[fault]string{
 			wrongChecksum: "контрольная сумма court-gateway-9.9.9-", notSigned: "подпись SHA256SUMS не сошлась",
@@ -336,13 +337,13 @@ func TestPosixInstallBlocksSayWhatIsWrong(t *testing.T) {
 			noKeygen: "нет ssh-keygen", otherPlatform: "выпуска нет", staleSigner: "подпись SHA256SUMS не сошлась",
 			signerUnwritable: "не удалось записать ключ выпуска", manifestSwap: "контрольная сумма court-gateway-9.9.9-",
 			dirIsLink: "не ваша или это ссылка",
-		}, "", "setup\ninstall-service\ndoctor\n"},
+		}, "", "setup\ninstall-service\ndoctor\n", "Подпись и сумма сошлись: "},
 		{"AGENTS.md", "\nLinux and macOS:\n", "", map[fault]string{
 			wrongChecksum: "CHECKSUM MISMATCH", notSigned: "SIGNATURE MISMATCH", noSums: "DOWNLOAD FAILED: SHA256SUMS",
 			twoBuilds: "NOT ONE BUILD", noBuild: "DOWNLOAD FAILED: court-gateway-", oldKeygen: "SSH-KEYGEN TOO OLD",
 			noKeygen: "NO SSH-KEYGEN", otherPlatform: "UNSUPPORTED PLATFORM", staleSigner: "SIGNATURE MISMATCH",
 			signerUnwritable: "CANNOT WRITE THE RELEASE KEY", manifestSwap: "CHECKSUM MISMATCH",
-		}, "[ -x court-gateway ] && ./court-gateway version\n", "version\n"},
+		}, "[ -x court-gateway ] && ./court-gateway version\n", "version\n", "checksum-ok "},
 	} {
 		block := fencedBlock(t, d.doc, d.marker, "sh")
 		if regexp.MustCompile(`<\pL+>`).MatchString(block) {
@@ -369,7 +370,7 @@ func TestPosixInstallBlocksSayWhatIsWrong(t *testing.T) {
 					}
 					w := newInstallWorldAt(t, "court-gateway-9.9.9-linux-amd64", f, d.install)
 					rc, out := w.run(t, shell, w.dir, block+d.then)
-					if rc == 0 || w.ran() != "" || strings.Contains(out, "checksum-ok") || !slices.Equal(said(out), []string{d.msgs[f]}) {
+					if rc == 0 || w.ran() != "" || strings.Contains(out, d.passed) || !slices.Equal(said(out), []string{d.msgs[f]}) {
 						t.Errorf("fault %d (%q): exit %d, program ran %q, messages %q\n%s", f, d.msgs[f], rc, w.ran(), said(out), out)
 					}
 				}
@@ -379,7 +380,7 @@ func TestPosixInstallBlocksSayWhatIsWrong(t *testing.T) {
 				}{{"linux-amd64", noFault}, {"linux-arm64", noFault}, {"darwin-arm64", noFault}, {"darwin-amd64", noFault}, {"linux-amd64", binarySwap}} {
 					w := newInstallWorldAt(t, "court-gateway-9.9.9-"+c.platform, c.f, d.install)
 					rc, out := w.run(t, shell, w.dir, block+d.then)
-					if rc != 0 || w.ran() != d.want || len(said(out)) != 0 {
+					if rc != 0 || w.ran() != d.want || len(said(out)) != 0 || !strings.Contains(out, d.passed+"court-gateway-9.9.9-"+c.platform+"\n") {
 						t.Errorf("%s fault %d: exit %d, program ran %q\n%s", c.platform, c.f, rc, w.ran(), out)
 						continue
 					}
@@ -509,8 +510,8 @@ func TestWindowsInstallBlocksCheckBeforeRunning(t *testing.T) {
 		"try { Move-Item -LiteralPath $f -Destination court-gateway.exe -Force -ErrorAction Stop } catch { throw \"",
 	}
 	for doc, c := range map[string]struct{ marker, fallback, last string }{
-		"README.md": {"### Windows", "Copy-Item -LiteralPath $src -Destination \"$n.part\" -ErrorAction Stop\n", ".\\court-gateway.exe setup --install-service\n"},
-		"AGENTS.md": {"\nWindows: run in PowerShell", "catch { throw \"DOWNLOAD FAILED: $n", "'checksum-ok'\n"},
+		"README.md": {"### Windows", "Copy-Item -LiteralPath $src -Destination \"$n.part\" -ErrorAction Stop\n      Write-Host \"Не удалось скачать $n ($e) — ", "Write-Host \"Подпись и сумма сошлись: $f\"\n  .\\court-gateway.exe setup --install-service\n"},
+		"AGENTS.md": {"\nWindows: run in PowerShell", "catch { throw \"DOWNLOAD FAILED: $n", "\"checksum-ok $f\"\n"},
 	} {
 		block := strings.TrimSpace(fencedBlock(t, doc, c.marker, "powershell"))
 		body := block[strings.Index(block, "& {"):]

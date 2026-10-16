@@ -134,7 +134,7 @@ Linux and macOS:
   printf '%s  court-gateway\n' "${L%% *}" | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi ||
     fail "CHECKSUM MISMATCH: $F"
   chmod 755 court-gateway && mv -f court-gateway "$D/court-gateway" || fail "CANNOT INSTALL THE BINARY INTO $D"
-  echo checksum-ok
+  echo "checksum-ok $F"
 )
 ```
 
@@ -189,7 +189,7 @@ PowerShell as Administrator and run it again. Verified on Windows 10 Pro 19045 x
   & $get $f
   if ((Get-FileHash -LiteralPath $f -Algorithm SHA256 -ErrorAction Stop).Hash -ne $want) { throw "CHECKSUM MISMATCH: $f" }
   try { Move-Item -LiteralPath $f -Destination court-gateway.exe -Force -ErrorAction Stop } catch { throw "CANNOT REPLACE court-gateway.exe: $($_.Exception.Message)" }
-  'checksum-ok'
+  "checksum-ok $f"
 }
 ```
 

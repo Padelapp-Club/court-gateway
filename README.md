@@ -81,7 +81,7 @@
       $src = @($n, "$n.txt") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
       if (-not $src) { throw "Не удалось скачать $n ($e), и в папке C:\court-gateway его нет. Ничего не запущено" }
       Copy-Item -LiteralPath $src -Destination "$n.part" -ErrorAction Stop
-      Write-Host "Не удалось скачать $n — проверяю копию файла $src из папки"
+      Write-Host "Не удалось скачать $n ($e) — проверяю копию файла $src из папки"
     }
     Move-Item -LiteralPath "$n.part" -Destination $n -Force -ErrorAction Stop
   }
@@ -99,6 +99,7 @@
   & $get $f
   if ((Get-FileHash -LiteralPath $f -Algorithm SHA256 -ErrorAction Stop).Hash -ne $want) { throw "Контрольная сумма $f не совпала: файл повреждён или подменён. Ничего не запущено; удалите его из папки и повторите" }
   try { Move-Item -LiteralPath $f -Destination court-gateway.exe -Force -ErrorAction Stop } catch { throw "Не удалось заменить court-gateway.exe ($($_.Exception.Message)). Если служба уже установлена, сначала выполните .\court-gateway.exe uninstall-service. Ничего не запущено" }
+  Write-Host "Подпись и сумма сошлись: $f"
   .\court-gateway.exe setup --install-service
   .\court-gateway.exe doctor
 }
@@ -165,6 +166,7 @@ FileVault, после отключения питания Mac ждёт паро�
   printf '%s  court-gateway\n' "${L%% *}" | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi ||
     fail "контрольная сумма $F не совпала: файл повреждён или подменён, ничего не запущено"
   chmod 755 court-gateway && mv -f court-gateway "$D/court-gateway" || fail "не удалось положить программу в $D"
+  echo "Подпись и сумма сошлись: $F"
   cd "$D" && ./court-gateway setup && sudo ./court-gateway install-service && ./court-gateway doctor
 )
 ```
