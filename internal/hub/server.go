@@ -304,11 +304,12 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, g GatewayRec
 // signTime sets the config version on an answer and, when the gateway
 // sent a nonce, the hub's time signed with it (tunnel.SignTime).
 func (s *Server) signTime(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
-	version := strconv.FormatInt(s.store.ConfigVersion(g.Installation), 10)
+	v, epoch := s.store.announced(g.Installation)
+	version := strconv.FormatInt(v, 10)
 	w.Header().Set(tunnel.HeaderConfigVersion, version)
-	w.Header().Set(tunnel.HeaderConfigEpoch, s.store.epoch)
+	w.Header().Set(tunnel.HeaderConfigEpoch, epoch)
 	if nonce := r.Header.Get(tunnel.HeaderNonce); nonce != "" && len(nonce) <= 64 {
-		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version+" "+s.store.epoch, s.now()))
+		w.Header().Set(tunnel.HeaderHubTime, tunnel.SignTime(s.store.key, g.Installation, g.registration(), nonce, version+" "+epoch, s.now()))
 	}
 }
 
@@ -352,14 +353,14 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 // handleConfig gives a gateway its installation's club configuration;
 // none while the hub's memory may differ from its state.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
-	in, ok, err := s.store.served(g.Installation)
+	in, ok, epoch, err := s.store.served(g.Installation)
 	if err != nil {
 		s.log.Error("config not served", "installation", g.Installation, "error", err)
 		w.Header().Set("Retry-After", "10")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "HUB_UNAVAILABLE", "the hub cannot give the config right now, retry")
 		return
 	}
-	out := tunnel.RemoteConfig{Epoch: s.store.epoch, Clubs: []json.RawMessage{}}
+	out := tunnel.RemoteConfig{Epoch: epoch, Clubs: []json.RawMessage{}}
 	if ok {
 		out.Version = in.Version
 		for _, c := range in.ClubList() {

@@ -1,12 +1,14 @@
 package hub
 
 import (
+	"bytes"
 	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -106,12 +108,16 @@ func (in Installation) ClubList() []core.ClubSpec {
 // Store is the hub's state: what State keeps, held in memory by the
 // running hub.
 type Store struct {
-	st    State
-	now   func() time.Time
-	key   ed25519.PrivateKey
-	epoch string // tunnel.HeaderConfigEpoch
+	st  State
+	now func() time.Time
+	key ed25519.PrivateKey
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// epoch is tunnel.HeaderConfigEpoch: new at every start, and again
+	// when a reload finds a config other than the one announced under
+	// its version (lower, gone, or other clubs), so that no version
+	// number is announced twice in one epoch with different clubs.
+	epoch    string
 	gateways map[string]*GatewayRecord
 	installs map[string]*Installation
 	clubs    map[string]string // club id -> installation id
@@ -123,11 +129,15 @@ type Store struct {
 	// or the state refused one over a change the hub had not seen; the
 	// memory is not known to match the state until it is read again
 	// (reload). Meanwhile no config is served and nothing is changed.
-	stale bool
-	// writes counts the writes begun on the state, under s.mu: a reload
-	// that read the state while one ran reads it again.
-	writes   uint64
+	// Every change checks it under s.mu, so none runs while a reload
+	// reads the state.
+	stale    bool
 	reloadMu sync.Mutex // one reload at a time
+	// deleted numbers the installations this hub deleted, by the count
+	// of deletions (deletions) at that moment: a redemption that took
+	// its code before the deletion does not bring the installation back.
+	deleted   map[string]uint64
+	deletions uint64
 }
 
 // OpenStore opens the state kept as files in dir, with the signing key
@@ -178,7 +188,7 @@ func NewStore(st State, key ed25519.PrivateKey, now func() time.Time) (*Store, e
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{st: st, now: now, key: key, epoch: rand.Text(), gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
+	s := &Store{st: st, now: now, key: key, epoch: rand.Text(), gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}, deleted: map[string]uint64{}}
 	if err := s.apply(installs, gateways); err != nil {
 		return nil, err
 	}
@@ -187,7 +197,9 @@ func NewStore(st State, key ed25519.PrivateKey, now func() time.Time) (*Store, e
 
 // apply puts what was read from the state in the memory; s.mu must be
 // held. A registration with the same secret keeps its generation; a
-// replaced or removed one is retired.
+// replaced or removed one is retired. An installation gone from the
+// state, or holding a lower version or other clubs under the same one
+// (the database lost acknowledged commits), starts a new epoch.
 func (s *Store) apply(installs []*Installation, gateways []GatewayRecord) error {
 	byID := make(map[string]*Installation, len(installs))
 	clubs := map[string]string{}
@@ -218,8 +230,21 @@ func (s *Store) apply(installs []*Installation, gateways []GatewayRecord) error 
 			s.gateways[g.Installation] = &g
 		}
 	}
+	for id, old := range s.installs {
+		if in, ok := byID[id]; !ok || in.Version < old.Version || in.Version == old.Version && !sameClubs(in, old) {
+			s.epoch = rand.Text()
+			break
+		}
+	}
 	s.installs, s.clubs, s.stale = byID, clubs, false
 	return nil
+}
+
+// sameClubs reports whether a and b configure the same clubs.
+func sameClubs(a, b *Installation) bool {
+	ja, erra := json.Marshal(a.ClubList())
+	jb, errb := json.Marshal(b.ClubList())
+	return erra == nil && errb == nil && bytes.Equal(ja, jb)
 }
 
 // fresh reads the state again when the memory is stale; an error is
@@ -235,33 +260,26 @@ func (s *Store) fresh() error {
 }
 
 // reload reads the state again while the memory is stale, without s.mu
-// held, and puts it in the memory when no write began meanwhile.
+// held: no change runs meanwhile, as every one refuses a stale memory.
 func (s *Store) reload() error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
-	for range 3 {
-		s.mu.Lock()
-		stale, writes := s.stale, s.writes
-		s.mu.Unlock()
-		if !stale {
-			return nil
-		}
-		installs, gateways, err := s.st.load()
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
-		}
-		s.mu.Lock()
-		if s.writes == writes {
-			err = s.apply(installs, gateways)
-			s.mu.Unlock()
-			if err != nil {
-				return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
-			}
-			return nil
-		}
-		s.mu.Unlock()
+	s.mu.Lock()
+	stale := s.stale
+	s.mu.Unlock()
+	if !stale {
+		return nil
 	}
-	return ErrStateUnavailable
+	installs, gateways, err := s.st.load()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.apply(installs, gateways); err != nil {
+		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+	}
+	return nil
 }
 
 // wrote notes the outcome of a write to the state begun with s.mu held:
@@ -286,17 +304,14 @@ func (s *Store) settle(err error) error {
 }
 
 func (s *Store) putInstallation(in *Installation, prev int64) error {
-	s.writes++
 	return s.wrote(s.st.putInstallation(in, prev))
 }
 
 func (s *Store) deleteInstallation(id string, prev int64) error {
-	s.writes++
 	return s.wrote(s.st.deleteInstallation(id, prev))
 }
 
 func (s *Store) putGateway(g *GatewayRecord) error {
-	s.writes++
 	return s.wrote(s.st.putGateway(g))
 }
 
@@ -579,6 +594,9 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 	if len(norm) != 16 || strings.Trim(norm, joinAlphabet) != "" {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
+	s.mu.Lock()
+	since := s.deletions
+	s.mu.Unlock()
 	rec, err := s.st.takeCode(codeHash(norm))
 	if err != nil {
 		return GatewayRecord{}, "", err
@@ -589,12 +607,15 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 	if !s.now().Before(rec.Expires) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
-	g, secret, err := s.register(rec)
+	if err := s.fresh(); err != nil {
+		return GatewayRecord{}, "", err
+	}
+	g, secret, err := s.register(rec, since)
 	if errors.Is(err, ErrConflict) {
-		// the installation was made meanwhile behind this hub: the one
-		// read again gets the gateway
+		// the installation was made or deleted meanwhile behind this
+		// hub: register with the state read again
 		if err = s.reload(); err == nil {
-			g, secret, err = s.register(rec)
+			g, secret, err = s.register(rec, since)
 		}
 	}
 	if errors.Is(err, ErrConflict) {
@@ -604,17 +625,19 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 }
 
 // register issues a new secret for the installation of the taken code
-// rec, making the installation a CLI code names.
-func (s *Store) register(rec joinCodeRecord) (GatewayRecord, string, error) {
-	if err := s.fresh(); err != nil {
-		return GatewayRecord{}, "", err
-	}
+// rec, making the installation a CLI code names. An installation this hub
+// deleted after deletions was since (the redemption began before; its
+// code was taken before the deletion removed it) is not made again.
+func (s *Store) register(rec joinCodeRecord, since uint64) (GatewayRecord, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stale {
 		return GatewayRecord{}, "", ErrStateUnavailable
 	}
 	id := rec.Installation
+	if s.deleted[id] > since {
+		return GatewayRecord{}, "", ErrJoinCode
+	}
 	in, ok := s.installs[id]
 	if !ok {
 		in = &Installation{ID: id, Name: cmp.Or(rec.Name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
@@ -840,6 +863,8 @@ func (s *Store) deleteInstallationLocked(id string) error {
 	if err := s.deleteInstallation(id, in.Version); err != nil {
 		return err
 	}
+	s.deletions++
+	s.deleted[id] = s.deletions
 	delete(s.gateways, id)
 	s.nextGen(id)
 	for club := range in.Clubs {
@@ -955,18 +980,30 @@ func (s *Store) deleteClub(installation, club string) (int64, error) {
 }
 
 // served returns the installation whose config the hub signs for its
-// gateway: ErrStateUnavailable while the memory is stale.
-func (s *Store) served(id string) (Installation, bool, error) {
+// gateway, with the epoch it is announced in: ErrStateUnavailable while
+// the memory is stale.
+func (s *Store) served(id string) (Installation, bool, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stale {
-		return Installation{}, false, ErrStateUnavailable
+		return Installation{}, false, "", ErrStateUnavailable
 	}
 	in, ok := s.installs[id]
 	if !ok {
-		return Installation{}, false, nil
+		return Installation{}, false, s.epoch, nil
 	}
-	return in.clone(), true, nil
+	return in.clone(), true, s.epoch, nil
+}
+
+// announced is an installation's config version (0 when unknown) and the
+// epoch it belongs to.
+func (s *Store) announced(id string) (int64, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if in, ok := s.installs[id]; ok {
+		return in.Version, s.epoch
+	}
+	return 0, s.epoch
 }
 
 // ConfigVersion is an installation's config version (0 when unknown).

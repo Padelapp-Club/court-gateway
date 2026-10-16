@@ -520,6 +520,81 @@ func TestNewerSchemaIsRefused(t *testing.T) {
 	}
 }
 
+// A database that lost acknowledged commits behind a running hub (a
+// restore, an asynchronous replica) holds a lower version, or no longer
+// the installation: once the hub reads it again it announces a new epoch,
+// so the number it reuses next is not taken for the config the gateway
+// already has. A version that went up behind it keeps the epoch.
+func TestLostCommitsBehindTheHubStartANewEpoch(t *testing.T) {
+	url := testkit.TestDatabase(t)
+	if url == "" {
+		t.Skip("set " + testkit.TestDatabaseEnv + " to run on Postgres")
+	}
+	cfg := postgresSettings(t, url)
+	s := openStore(t, cfg)
+	secret := registered(t, s, "net-e")
+	for _, c := range []string{"club-1", "club-2"} {
+		if _, _, err := s.PutClub("net-e", demoClub(c, "studio-"+c, "Корт 1")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CreateInstallation("net-g", ""); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := hub.NewServer(&hub.Settings{PollWait: time.Second, RequestTimeout: time.Second, OfflineAfter: time.Minute}, s, hub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := func() tunnel.RemoteConfig {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, tunnel.PathConfig, nil)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		var out tunnel.RemoteConfig
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); rec.Code != http.StatusOK || err != nil {
+			t.Fatalf("config: %d %s", rec.Code, rec.Body)
+		}
+		return out
+	}
+	before := config()
+
+	// another hub's change: the version goes up, the epoch stays
+	other := openStore(t, cfg)
+	if _, _, err := other.PutClub("net-e", demoClub("club-3", "studio-club-3", "Корт 1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutClub("net-e", demoClub("club-4", "studio-club-4", "Корт 1")); !errors.Is(err, hub.ErrConflict) {
+		t.Fatalf("a change over another hub's: %v", err)
+	}
+	if got := config(); got.Version != 3 || got.Epoch != before.Epoch {
+		t.Fatalf("after a change behind the hub: version %d epoch %s, want 3 in epoch %s", got.Version, got.Epoch, before.Epoch)
+	}
+
+	// the database loses its last commits: version 3 goes back to 1
+	dbQuery(t, url, `WITH c AS (DELETE FROM court_gateway_hub.clubs WHERE id IN ('club-2', 'club-3') RETURNING id)
+		UPDATE court_gateway_hub.installations SET version = 1 WHERE id = 'net-e' RETURNING id`, new(string))
+	if _, _, err := s.PutClub("net-e", demoClub("club-4", "studio-club-4", "Корт 1")); !errors.Is(err, hub.ErrConflict) {
+		t.Fatalf("a change over lost commits: %v", err)
+	}
+	lowered := config()
+	if lowered.Version != 1 || lowered.Epoch == before.Epoch {
+		t.Fatalf("after lost commits: version %d epoch %s, want 1 in a new epoch", lowered.Version, lowered.Epoch)
+	}
+	if _, v, err := s.PutClub("net-e", demoClub("club-4", "studio-club-4", "Корт 1")); err != nil || v != 2 {
+		t.Fatalf("the next change: %d %v", v, err)
+	}
+
+	// an installation gone behind the hub
+	dbQuery(t, url, `DELETE FROM court_gateway_hub.installations WHERE id = 'net-g' RETURNING id`, new(string))
+	if _, _, err := s.PutClub("net-g", demoClub("club-g", "studio-g", "Корт 1")); !errors.Is(err, hub.ErrConflict) {
+		t.Fatalf("a change of an installation gone: %v", err)
+	}
+	if got := config(); got.Epoch == lowered.Epoch {
+		t.Fatalf("an installation gone behind the hub kept epoch %s", got.Epoch)
+	}
+}
+
 // A code of an installation another hub deleted meanwhile: the
 // registration's reference to it is refused by the database, the hub
 // reads its state again and makes the installation anew for the code,
@@ -556,5 +631,35 @@ func TestRedemptionForAnInstallationDeletedBehindTheHub(t *testing.T) {
 	}
 	if err := a.Ready(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A hub that has not seen a change of an installation does not delete
+// it: the deletion is refused, and the installation stays with its
+// clubs.
+func TestStaleHubDoesNotDelete(t *testing.T) {
+	url := testkit.TestDatabase(t)
+	if url == "" {
+		t.Skip("set " + testkit.TestDatabaseEnv + " to run on Postgres")
+	}
+	cfg := postgresSettings(t, url)
+	a := openStore(t, cfg)
+	if _, err := a.CreateInstallation("net-k", ""); err != nil {
+		t.Fatal(err)
+	}
+	b := openStore(t, cfg)
+	if _, _, err := b.PutClub("net-k", demoClub("club-k", "studio-k", "Корт 1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DeleteInstallation("net-k"); !errors.Is(err, hub.ErrConflict) {
+		t.Fatalf("a deletion over a change not seen: %v, want ErrConflict", err)
+	}
+	var version int64
+	dbQuery(t, url, `SELECT version FROM court_gateway_hub.installations WHERE id = 'net-k'`, &version)
+	if version != 1 {
+		t.Fatalf("version %d", version)
+	}
+	if in, ok := a.Installation("net-k"); !ok || in.Version != 1 || len(in.Clubs) != 1 {
+		t.Fatalf("the refused hub then knows %+v %v", in, ok)
 	}
 }
