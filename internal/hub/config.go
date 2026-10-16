@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
@@ -160,10 +161,10 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 			add("database_url_env: строка подключения к Postgres в %s не задана", env)
 		} else {
 			s.Secrets = append(s.Secrets, s.DatabaseURL)
-			if u, err := url.Parse(s.DatabaseURL); err == nil {
-				if pw, ok := u.User.Password(); ok && pw != "" {
-					s.Secrets = append(s.Secrets, pw)
-				}
+			// the password alone too, as a URL or keyword=value string
+			// names it: an error may quote it without the rest
+			if pc, err := pgconn.ParseConfig(s.DatabaseURL); err == nil && pc.Password != "" {
+				s.Secrets = append(s.Secrets, pc.Password)
 			}
 		}
 		if s.SigningKeyFile == "" {

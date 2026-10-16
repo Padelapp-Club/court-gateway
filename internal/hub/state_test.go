@@ -1,7 +1,9 @@
 package hub_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/hub"
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
@@ -299,8 +302,23 @@ func TestDatabaseConfig(t *testing.T) {
 	if err != nil || s.DatabaseURL != env["HUB_DATABASE_URL"] || s.StateDir != "" || s.SigningKeyFile != "/etc/hub/signing.key" {
 		t.Fatalf("%+v %v", s, err)
 	}
-	if !strings.Contains(strings.Join(s.Secrets, " "), "secret-pw") {
-		t.Fatal("the database password is not hidden from the log")
+	// the password alone is hidden too, in every form a connection string
+	// may give it: an error may quote it without the rest of the string
+	for _, dsn := range []string{
+		"postgres://hub:secret-pw@db.example.test/hub",
+		"host=db.example.test user=hub password=secret-pw dbname=hub",
+		"postgres://db.example.test/hub?user=hub&password=secret-pw",
+	} {
+		env["HUB_DATABASE_URL"] = dsn
+		s, err := hub.Load([]byte("database_url_env: HUB_DATABASE_URL\nsigning_key_file: /etc/hub/signing.key\n"), getenv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		core.NewLogger(&logs, slog.LevelInfo, s.Secrets).Error("database", "error", "password authentication failed: secret-pw")
+		if strings.Contains(logs.String(), "secret-pw") {
+			t.Errorf("%s: the password is in the log: %s", dsn, logs.String())
+		}
 	}
 	for yaml, want := range map[string]string{
 		"database_url_env: HUB_DATABASE_URL\n":                                      "signing_key_file",
