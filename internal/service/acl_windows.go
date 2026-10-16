@@ -83,3 +83,28 @@ func ReadACL(path string) (protected, nullDACL bool, aces []ACE, err error) {
 	}
 	return control&windows.SE_DACL_PROTECTED != 0, false, aces, nil
 }
+
+// secretFileSDDL is the DACL of ProtectSecrets for a file: protected, full
+// control for Administrators (BA) and SYSTEM (SY), nothing else.
+const secretFileSDDL = "D:P(A;;FA;;;BA)(A;;FA;;;SY)"
+
+// CreateSecretFile makes the new file path, which must not exist, with
+// the DACL ProtectSecrets sets, given at its creation: no other user can
+// open it at any moment, and nobody while it is being written (no
+// sharing). It returns the file open for writing.
+func CreateSecretFile(path string) (*os.File, error) {
+	sd, err := windows.SecurityDescriptorFromString(secretFileSDDL)
+	if err != nil {
+		return nil, err
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	h, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "create", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(h), path), nil
+}

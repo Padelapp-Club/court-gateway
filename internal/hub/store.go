@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -26,9 +27,9 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-// Layout of the state directory. Every record is its own small file
-// written atomically; codes and gateway secrets are kept only as hashes,
-// the signing key is the one secret in it:
+// Layout of the state directory (FileState); codes and gateway secrets
+// are kept only as hashes, the signing key is the one secret in it unless
+// signing_key_file names another place:
 //
 //	codes/<sha256 of the code>.json      pending join codes
 //	gateways/<installation>.json         registered gateways (secret hash)
@@ -36,9 +37,9 @@ import (
 //	hub-signing.key                      the hub's ed25519 signing key (seed, hex)
 //
 // Codes are created by `hub join-code create` (possibly while the hub
-// runs) or the operator API, so they are read from disk at redemption.
-// Gateways and installations are written only by the running hub (`hub
-// gateway revoke` only removes a gateway file).
+// runs) or the operator API, so they are read from the state at
+// redemption. Gateways and installations are written only by the running
+// hub (`hub gateway revoke` only removes a gateway registration).
 const (
 	codesDir         = "codes"
 	gatewaysDir      = "gateways"
@@ -104,14 +105,19 @@ func (in Installation) ClubList() []core.ClubSpec {
 	return out
 }
 
-// Store is the hub's state.
+// Store is the hub's state: what State keeps, held in memory by the
+// running hub.
 type Store struct {
-	dir   string
-	now   func() time.Time
-	key   ed25519.PrivateKey
-	epoch string // tunnel.HeaderConfigEpoch
+	st  State
+	now func() time.Time
+	key ed25519.PrivateKey
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// epoch is tunnel.HeaderConfigEpoch: new at every start, and again
+	// when a reload finds a config other than the one announced under
+	// its version (lower, gone, or other clubs), so that no version
+	// number is announced twice in one epoch with different clubs.
+	epoch    string
 	gateways map[string]*GatewayRecord
 	installs map[string]*Installation
 	clubs    map[string]string // club id -> installation id
@@ -119,22 +125,24 @@ type Store struct {
 	// retire, when set, ends a replaced or removed registration's polls
 	// (Broker.Retire); it is called with s.mu held.
 	retire func(installation string, below uint64)
+	// stale: a write may have taken effect without the hub learning it,
+	// or the state refused one over a change the hub had not seen; the
+	// memory is not known to match the state until it is read again
+	// (reload). Meanwhile no config is served and nothing is changed.
+	// Every change checks it under s.mu, so none runs while a reload
+	// reads the state.
+	stale    bool
+	reloadMu sync.Mutex // one reload at a time
+	// deleted numbers the installations this hub deleted, by the count
+	// of deletions (deletions) at that moment: a redemption that took
+	// its code before the deletion does not bring the installation back.
+	deleted   map[string]uint64
+	deletions uint64
 }
 
-func ensureDirs(dir string) error {
-	for _, d := range []string{dir, filepath.Join(dir, codesDir), filepath.Join(dir, gatewaysDir), filepath.Join(dir, installationsDir)} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// OpenStore loads the registered gateways from dir.
+// OpenStore opens the state kept as files in dir, with the signing key
+// in it.
 func OpenStore(dir string, now func() time.Time) (*Store, error) {
-	if now == nil {
-		now = time.Now
-	}
 	if err := ensureDirs(dir); err != nil {
 		return nil, fmt.Errorf("state_dir: %w", err)
 	}
@@ -142,31 +150,181 @@ func OpenStore(dir string, now func() time.Time) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, now: now, key: key, epoch: rand.Text(), gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}}
-	if err := s.loadInstallations(); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(filepath.Join(dir, gatewaysDir))
+	return NewStore(FileState(dir), key, now)
+}
+
+// Open opens the state and the signing key cfg names.
+func Open(cfg *Settings, now func() time.Time) (*Store, error) {
+	key, err := SigningKey(cfg)
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		var g GatewayRecord
-		data, err := os.ReadFile(filepath.Join(dir, gatewaysDir, e.Name()))
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &g); err != nil || !core.ValidID(g.Installation) || len(g.SecretSHA256) != 64 {
-			return nil, fmt.Errorf("state_dir: повреждённая запись шлюза %s", e.Name())
-		}
-		s.seq++
-		g.gen = s.seq
-		s.gateways[g.Installation] = &g
+	st, err := OpenState(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s, err := NewStore(st, key, now)
+	if err != nil {
+		st.Close()
+	}
+	return s, err
+}
+
+// OpenState opens the state cfg names: state_dir or the database.
+func OpenState(cfg *Settings) (State, error) {
+	if cfg.DatabaseURL != "" {
+		return openPostgres(cfg.DatabaseURL)
+	}
+	return FileState(cfg.StateDir), nil
+}
+
+// NewStore loads the installations and the registered gateways of st,
+// signing with key.
+func NewStore(st State, key ed25519.PrivateKey, now func() time.Time) (*Store, error) {
+	if now == nil {
+		now = time.Now
+	}
+	installs, gateways, err := st.load()
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{st: st, now: now, key: key, epoch: rand.Text(), gateways: map[string]*GatewayRecord{}, installs: map[string]*Installation{}, clubs: map[string]string{}, deleted: map[string]uint64{}}
+	if err := s.apply(installs, gateways); err != nil {
+		return nil, err
 	}
 	return s, nil
+}
+
+// apply puts what was read from the state in the memory; s.mu must be
+// held. A registration with the same secret keeps its generation; a
+// replaced or removed one is retired. An installation gone from the
+// state, or holding a lower version or other clubs under the same one
+// (the database lost acknowledged commits), starts a new epoch.
+func (s *Store) apply(installs []*Installation, gateways []GatewayRecord) error {
+	byID := make(map[string]*Installation, len(installs))
+	clubs := map[string]string{}
+	for _, in := range installs {
+		if in.Clubs == nil {
+			in.Clubs = map[string]core.ClubSpec{}
+		}
+		for id := range in.Clubs {
+			if other, dup := clubs[id]; dup {
+				return fmt.Errorf("state_dir: клуб %s записан в установках %s и %s", id, other, in.ID)
+			}
+			clubs[id] = in.ID
+		}
+		byID[in.ID] = in
+	}
+	stored := make(map[string]GatewayRecord, len(gateways))
+	for _, g := range gateways {
+		stored[g.Installation] = g
+	}
+	for id, cur := range s.gateways {
+		if g, ok := stored[id]; !ok || g.SecretSHA256 != cur.SecretSHA256 {
+			s.forget(id, cur.gen)
+		}
+	}
+	for _, g := range gateways {
+		if _, ok := s.gateways[g.Installation]; !ok {
+			g.gen = s.nextGen(g.Installation)
+			s.gateways[g.Installation] = &g
+		}
+	}
+	for id, old := range s.installs {
+		if in, ok := byID[id]; !ok || in.Version < old.Version || in.Version == old.Version && !sameClubs(in, old) {
+			s.epoch = rand.Text()
+			break
+		}
+	}
+	s.installs, s.clubs, s.stale = byID, clubs, false
+	return nil
+}
+
+// sameClubs reports whether a and b configure the same clubs.
+func sameClubs(a, b *Installation) bool {
+	ja, erra := json.Marshal(a.ClubList())
+	jb, errb := json.Marshal(b.ClubList())
+	return erra == nil && errb == nil && bytes.Equal(ja, jb)
+}
+
+// fresh reads the state again when the memory is stale; an error is
+// ErrStateUnavailable and leaves it stale.
+func (s *Store) fresh() error {
+	s.mu.Lock()
+	stale := s.stale
+	s.mu.Unlock()
+	if !stale {
+		return nil
+	}
+	return s.reload()
+}
+
+// reload reads the state again while the memory is stale, without s.mu
+// held: no change runs meanwhile, as every one refuses a stale memory.
+func (s *Store) reload() error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	s.mu.Lock()
+	stale := s.stale
+	s.mu.Unlock()
+	if !stale {
+		return nil
+	}
+	installs, gateways, err := s.st.load()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.apply(installs, gateways); err != nil {
+		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+	}
+	return nil
+}
+
+// wrote notes the outcome of a write to the state begun with s.mu held:
+// one that may have taken effect unseen, or that the state refused over a
+// change this hub has not seen (ErrConflict, a club it knows elsewhere),
+// makes the memory stale.
+func (s *Store) wrote(err error) error {
+	if errors.Is(err, errOutcomeUnknown) || errors.Is(err, ErrConflict) || errors.Is(err, ErrClubTaken) {
+		s.stale = true
+	}
+	return err
+}
+
+// settle reads the state again after it refused a write over a change
+// this hub had not seen, so that the next call works on the state as it
+// is; this one fails all the same.
+func (s *Store) settle(err error) error {
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrClubTaken) {
+		_ = s.reload()
+	}
+	return err
+}
+
+func (s *Store) putInstallation(in *Installation, prev int64) error {
+	return s.wrote(s.st.putInstallation(in, prev))
+}
+
+func (s *Store) deleteInstallation(id string, prev int64) error {
+	return s.wrote(s.st.deleteInstallation(id, prev))
+}
+
+func (s *Store) putGateway(g *GatewayRecord) error {
+	return s.wrote(s.st.putGateway(g))
+}
+
+// Close releases the state's connections.
+func (s *Store) Close() { s.st.Close() }
+
+// Ready reports whether the state can be read and written now and the
+// memory matches it (a stale one is read again first).
+func (s *Store) Ready() error {
+	if err := s.fresh(); err != nil {
+		return err
+	}
+	return s.st.ready()
 }
 
 // loadSigningKey reads the hub's signing key, making it on the first start.
@@ -204,16 +362,81 @@ func loadSigningKey(dir string) (ed25519.PrivateKey, error) {
 	return ed25519.NewKeyFromSeed(seed), nil
 }
 
+// SigningKey reads the hub's signing key: signing_key_file, which the hub
+// only reads, or the key in state_dir, made on the first start.
+func SigningKey(cfg *Settings) (ed25519.PrivateKey, error) {
+	if cfg.SigningKeyFile == "" {
+		if err := ensureDirs(cfg.StateDir); err != nil {
+			return nil, fmt.Errorf("state_dir: %w", err)
+		}
+		return loadSigningKey(cfg.StateDir)
+	}
+	p := cfg.SigningKeyFile
+	fi, err := os.Stat(p)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("signing_key_file: файла %s нет — создайте ключ один раз: court-gateway hub keygen -out %s", p, p)
+	case err != nil:
+		return nil, fmt.Errorf("signing_key_file: %w", err)
+	case !fi.Mode().IsRegular():
+		return nil, fmt.Errorf("signing_key_file: %s — не обычный файл", p)
+	}
+	if msg := keyFileExposure(p, fi); msg != "" {
+		return nil, fmt.Errorf("signing_key_file: %s: %s", p, msg)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("signing_key_file: %w", err)
+	}
+	seed, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("signing_key_file: повреждён ключ подписи хаба %s", p)
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// WriteSigningKey makes a new signing key in the file p, which must not
+// exist (`hub keygen`), in the format of state_dir/hub-signing.key, closed
+// to others as SigningKey requires (createKeyFile) and checked so.
+func WriteSigningKey(p string) (ed25519.PublicKey, error) {
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, err
+	}
+	f, err := createKeyFile(p)
+	if err != nil {
+		return nil, err
+	}
+	_, err = f.WriteString(hex.EncodeToString(seed) + "\n")
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		var fi os.FileInfo
+		if fi, err = os.Stat(p); err == nil {
+			if msg := keyFileExposure(p, fi); msg != "" {
+				err = fmt.Errorf("%s: %s", p, msg)
+			}
+		}
+	}
+	if err != nil {
+		_ = os.Remove(p)
+		return nil, err
+	}
+	return ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey), nil
+}
+
 // HubKey is the public half of the hub's signing key.
 func (s *Store) HubKey() ed25519.PublicKey { return s.key.Public().(ed25519.PublicKey) }
 
-// PublicKey reads the public half of the signing key kept in dir, making
-// the key as the hub's first start would (for the command line).
-func PublicKey(dir string) (ed25519.PublicKey, error) {
-	if err := ensureDirs(dir); err != nil {
-		return nil, err
-	}
-	k, err := loadSigningKey(dir)
+// PublicKey reads the public half of the signing key cfg names, making
+// the key in state_dir as the hub's first start would (for the command
+// line).
+func PublicKey(cfg *Settings) (ed25519.PublicKey, error) {
+	k, err := SigningKey(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -280,9 +503,19 @@ var (
 	ErrStudioTaken         = errors.New("the club's CRM studio is already served by another installation")
 	ErrRoomTaken           = errors.New("a court's CRM room is already served by another club")
 	ErrNotRegistered       = errors.New("no gateway is registered for this installation")
-	// ErrStateUnavailable: the state directory cannot be read right now;
-	// nothing is forgotten because of it.
-	ErrStateUnavailable = errors.New("the hub's state directory is unavailable")
+	// ErrStateUnavailable: the state (its directory or its database)
+	// cannot be read or written right now; nothing is forgotten because of
+	// it. A change that failed so may have been written all the same: the
+	// hub reads the state again before it serves or changes anything.
+	ErrStateUnavailable = errors.New("the hub's state is unavailable")
+	// ErrConflict: the state was changed meanwhile behind this hub (by
+	// another hub, or by a write whose answer it lost); nothing was
+	// written, the hub has read the state again and the request may be
+	// sent again.
+	ErrConflict = errors.New("the installation was changed meanwhile, retry")
+	// errOutcomeUnknown: a write went to the state and no answer came
+	// back; it may have taken effect.
+	errOutcomeUnknown = errors.New("the write may have taken effect")
 )
 
 func validName(name string) bool {
@@ -300,7 +533,7 @@ type JoinCode struct {
 // CLI and the operator API); ttl 0 is DefaultJoinCodeTTL. name names the
 // installation a CLI code creates at redemption. Redeeming a code of an
 // installation that has a gateway replaces its secret (a reinstall).
-func CreateJoinCode(dir, installation, name string, ttl time.Duration, now time.Time) (JoinCode, error) {
+func CreateJoinCode(st State, installation, name string, ttl time.Duration, now time.Time) (JoinCode, error) {
 	if !core.ValidID(installation) {
 		return JoinCode{}, ErrInvalidID
 	}
@@ -314,16 +547,12 @@ func CreateJoinCode(dir, installation, name string, ttl time.Duration, now time.
 	if ttl < 0 || ttl > MaxJoinCodeTTL {
 		return JoinCode{}, ErrInvalidTTL
 	}
-	if err := ensureDirs(dir); err != nil {
-		return JoinCode{}, err
-	}
 	code, err := newJoinCode()
 	if err != nil {
 		return JoinCode{}, err
 	}
 	rec := joinCodeRecord{Installation: installation, Name: name, Created: now.UTC(), Expires: now.Add(ttl).UTC()}
-	data, _ := json.Marshal(rec)
-	if err := core.WriteFileAtomic(filepath.Join(dir, codesDir, codeHash(code)+".json"), data, 0o600); err != nil {
+	if err := st.putCode(codeHash(code), rec); err != nil {
 		return JoinCode{}, err
 	}
 	return JoinCode{Code: code, Installation: installation, Expires: rec.Expires}, nil
@@ -331,6 +560,9 @@ func CreateJoinCode(dir, installation, name string, ttl time.Duration, now time.
 
 // CreateJoinCode is CreateJoinCode for the running hub (the installation exists).
 func (s *Store) CreateJoinCode(installation string, ttl time.Duration) (JoinCode, error) {
+	if err := s.fresh(); err != nil {
+		return JoinCode{}, err
+	}
 	s.mu.Lock()
 	in, ok := s.installs[installation]
 	var name string
@@ -341,7 +573,7 @@ func (s *Store) CreateJoinCode(installation string, ttl time.Duration) (JoinCode
 	if !ok {
 		return JoinCode{}, ErrUnknownInstallation
 	}
-	return CreateJoinCode(s.dir, installation, name, ttl, s.now())
+	return CreateJoinCode(s.st, installation, name, ttl, s.now())
 }
 
 func newSecret() (string, error) {
@@ -354,34 +586,62 @@ func newSecret() (string, error) {
 
 // Redeem consumes a join code and registers the gateway of its
 // installation (creating one a CLI code names), retiring the previous
-// secret. The code file goes before the secret is issued: never used twice.
+// secret. The code goes before the secret is issued: never used twice.
+// It is taken without s.mu held (the state takes it atomically), so a
+// slow state holds up only this call.
 func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	norm := NormalizeJoinCode(code)
 	if len(norm) != 16 || strings.Trim(norm, joinAlphabet) != "" {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
-	p := filepath.Join(s.dir, codesDir, codeHash(norm)+".json")
-	data, err := os.ReadFile(p)
+	s.mu.Lock()
+	since := s.deletions
+	s.mu.Unlock()
+	rec, err := s.st.takeCode(codeHash(norm))
 	if err != nil {
-		return GatewayRecord{}, "", ErrJoinCode
+		return GatewayRecord{}, "", err
 	}
-	if err := os.Remove(p); err != nil {
-		return GatewayRecord{}, "", ErrJoinCode
-	}
-	var rec joinCodeRecord
-	if err := json.Unmarshal(data, &rec); err != nil || !core.ValidID(rec.Installation) {
+	if !core.ValidID(rec.Installation) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
 	if !s.now().Before(rec.Expires) {
 		return GatewayRecord{}, "", ErrJoinCode
 	}
+	if err := s.fresh(); err != nil {
+		return GatewayRecord{}, "", err
+	}
+	g, secret, err := s.register(rec, since)
+	if errors.Is(err, ErrConflict) {
+		// the installation was made or deleted meanwhile behind this
+		// hub: register with the state read again
+		if err = s.reload(); err == nil {
+			g, secret, err = s.register(rec, since)
+		}
+	}
+	if errors.Is(err, ErrConflict) {
+		err = fmt.Errorf("%w: %w", ErrStateUnavailable, err)
+	}
+	return g, secret, err
+}
+
+// register issues a new secret for the installation of the taken code
+// rec, making the installation a CLI code names. An installation this hub
+// deleted after deletions was since (the redemption began before; its
+// code was taken before the deletion removed it) is not made again.
+func (s *Store) register(rec joinCodeRecord, since uint64) (GatewayRecord, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stale {
+		return GatewayRecord{}, "", ErrStateUnavailable
+	}
 	id := rec.Installation
+	if s.deleted[id] > since {
+		return GatewayRecord{}, "", ErrJoinCode
+	}
 	in, ok := s.installs[id]
 	if !ok {
 		in = &Installation{ID: id, Name: cmp.Or(rec.Name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
-		if err := s.saveInstallation(in); err != nil {
+		if err := s.putInstallation(in, -1); err != nil {
 			return GatewayRecord{}, "", err
 		}
 		s.installs[id] = in
@@ -391,8 +651,7 @@ func (s *Store) Redeem(code string) (GatewayRecord, string, error) {
 		return GatewayRecord{}, "", err
 	}
 	g := &GatewayRecord{Installation: id, Name: in.Name, SecretSHA256: tunnel.SecretSHA256(secret), RegisteredAt: s.now().UTC()}
-	out, _ := json.Marshal(g)
-	if err := core.WriteFileAtomic(filepath.Join(s.dir, gatewaysDir, id+".json"), out, 0o600); err != nil {
+	if err := s.putGateway(g); err != nil {
 		return GatewayRecord{}, "", err
 	}
 	g.gen = s.nextGen(id)
@@ -437,106 +696,103 @@ func (s *Store) Authenticate(secret string) (GatewayRecord, error) {
 	return g, err
 }
 
-// Gateway returns the registered gateway of an installation; a revoked one
-// is forgotten and its polls retired (ErrNotRegistered). A failed check is
-// ErrStateUnavailable and forgets nothing.
+// Gateway returns the registered gateway of an installation as the state
+// holds it: a revoked one is forgotten and its polls retired
+// (ErrNotRegistered); one whose secret was replaced behind this hub (by
+// another hub, or by a write whose answer it lost) takes the place of the
+// one in memory, whose polls are retired. A failed check is
+// ErrStateUnavailable and forgets nothing. The state is asked without
+// s.mu held: a slow database holds up only this call.
 func (s *Store) Gateway(installation string) (GatewayRecord, error) {
+	if err := s.fresh(); err != nil {
+		return GatewayRecord{}, err
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	g, ok := s.gateways[installation]
+	s.mu.Unlock()
 	if !ok {
 		return GatewayRecord{}, ErrNotRegistered
 	}
-	if err := s.onDisk(installation); err != nil {
+	stored, err := s.st.gateway(installation)
+	if err != nil {
 		return GatewayRecord{}, err
 	}
-	return *g, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case stored == nil:
+		s.forget(installation, g.gen)
+	case stored.SecretSHA256 != g.SecretSHA256:
+		s.replace(installation, g.gen, *stored)
+	}
+	if cur, ok := s.gateways[installation]; ok {
+		return *cur, nil // the same, the stored one, or registered meanwhile by this hub
+	}
+	return GatewayRecord{}, ErrNotRegistered
 }
 
-// onDisk checks that the registration file of installation is still
-// there, forgetting it when it is not; s.mu must be held.
-func (s *Store) onDisk(installation string) error {
-	_, err := os.Stat(filepath.Join(s.dir, gatewaysDir, installation+".json"))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
+// replace puts the stored registration g in place of the registration gen
+// of installation and retires its polls, unless a newer one replaced it
+// meanwhile; s.mu must be held.
+func (s *Store) replace(installation string, gen uint64, g GatewayRecord) {
+	if cur, ok := s.gateways[installation]; ok && cur.gen == gen {
+		g.gen = s.nextGen(installation)
+		s.gateways[installation] = &g
+	}
+}
+
+// forget drops the registration gen of installation, found revoked, and
+// retires its polls, unless a newer one replaced it meanwhile; s.mu must
+// be held.
+func (s *Store) forget(installation string, gen uint64) {
+	if cur, ok := s.gateways[installation]; ok && cur.gen == gen {
 		delete(s.gateways, installation)
 		s.nextGen(installation)
-		return ErrNotRegistered
-	case err != nil:
-		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
-	return nil
 }
 
 // Gateways returns the registered gateways sorted by installation id,
-// forgetting the revoked ones as Gateway does.
+// forgetting the revoked ones and taking the replaced ones from the state
+// as Gateway does; when the state cannot be read, none is forgotten.
 func (s *Store) Gateways() []GatewayRecord {
 	s.mu.Lock()
+	known := make([]GatewayRecord, 0, len(s.gateways))
+	for _, g := range s.gateways {
+		known = append(known, *g)
+	}
+	s.mu.Unlock()
+	there, err := s.st.gateways()
+	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]GatewayRecord, 0, len(s.gateways))
-	for inst, g := range s.gateways {
-		if !errors.Is(s.onDisk(inst), ErrNotRegistered) {
-			out = append(out, *g)
+	out := make([]GatewayRecord, 0, len(known))
+	for _, g := range known {
+		if err == nil {
+			switch stored, ok := there[g.Installation]; {
+			case !ok:
+				s.forget(g.Installation, g.gen)
+				continue
+			case stored.SecretSHA256 != g.SecretSHA256:
+				s.replace(g.Installation, g.gen, stored)
+			}
+		}
+		if cur, ok := s.gateways[g.Installation]; ok {
+			out = append(out, *cur)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Installation < out[j].Installation })
 	return out
 }
 
-// RevokeGateway removes an installation's gateway registration on disk (the
-// CLI); the installation and its clubs stay for a new join code.
-func RevokeGateway(dir, installation string) error {
+// RevokeGateway removes an installation's gateway registration from the
+// state (the CLI); the installation and its clubs stay for a new join code.
+func RevokeGateway(st State, installation string) error {
 	if !core.ValidID(installation) {
 		return ErrNotRegistered
 	}
-	err := os.Remove(filepath.Join(dir, gatewaysDir, installation+".json"))
-	if os.IsNotExist(err) {
-		return ErrNotRegistered
-	}
-	return err
+	return st.deleteGateway(installation)
 }
 
 // ---- installations ----
-
-func (s *Store) loadInstallations() error {
-	entries, err := os.ReadDir(filepath.Join(s.dir, installationsDir))
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(s.dir, installationsDir, e.Name()))
-		if err != nil {
-			return err
-		}
-		var in Installation
-		if err := json.Unmarshal(data, &in); err != nil || !core.ValidID(in.ID) {
-			return fmt.Errorf("state_dir: повреждённая запись установки %s", e.Name())
-		}
-		if in.Clubs == nil {
-			in.Clubs = map[string]core.ClubSpec{}
-		}
-		for id := range in.Clubs {
-			if other, dup := s.clubs[id]; dup {
-				return fmt.Errorf("state_dir: клуб %s записан в установках %s и %s", id, other, in.ID)
-			}
-			s.clubs[id] = in.ID
-		}
-		s.installs[in.ID] = &in
-	}
-	return nil
-}
-
-// saveInstallation writes in; s.mu must be held.
-func (s *Store) saveInstallation(in *Installation) error {
-	data, err := json.Marshal(in)
-	if err != nil {
-		return err
-	}
-	return core.WriteFileAtomic(filepath.Join(s.dir, installationsDir, in.ID+".json"), data, 0o600)
-}
 
 // CreateInstallation adds an installation with no clubs.
 func (s *Store) CreateInstallation(id, name string) (Installation, error) {
@@ -547,13 +803,27 @@ func (s *Store) CreateInstallation(id, name string) (Installation, error) {
 	case !validName(name):
 		return Installation{}, ErrInvalidName
 	}
+	if err := s.fresh(); err != nil {
+		return Installation{}, err
+	}
+	in, err := s.createInstallation(id, name)
+	if errors.Is(s.settle(err), ErrConflict) {
+		err = ErrInstallationExists // made meanwhile behind this hub
+	}
+	return in, err
+}
+
+func (s *Store) createInstallation(id, name string) (Installation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stale {
+		return Installation{}, ErrStateUnavailable
+	}
 	if _, ok := s.installs[id]; ok {
 		return Installation{}, ErrInstallationExists
 	}
 	in := &Installation{ID: id, Name: cmp.Or(name, id), Created: s.now().UTC(), Clubs: map[string]core.ClubSpec{}}
-	if err := s.saveInstallation(in); err != nil {
+	if err := s.putInstallation(in, -1); err != nil {
 		return Installation{}, err
 	}
 	s.installs[id] = in
@@ -574,29 +844,35 @@ func (s *Store) Installation(id string) (Installation, bool) {
 // DeleteInstallation removes an installation with its clubs, gateway
 // registration (401 at the next request) and pending join codes.
 func (s *Store) DeleteInstallation(id string) error {
+	if err := s.fresh(); err != nil {
+		return err
+	}
+	return s.settle(s.deleteInstallationLocked(id))
+}
+
+func (s *Store) deleteInstallationLocked(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stale {
+		return ErrStateUnavailable
+	}
 	in, ok := s.installs[id]
 	if !ok {
 		return ErrUnknownInstallation
 	}
-	if err := os.Remove(filepath.Join(s.dir, gatewaysDir, id+".json")); err != nil && !os.IsNotExist(err) {
+	err := s.deleteInstallation(id, in.Version)
+	if err == nil || errors.Is(err, errOutcomeUnknown) {
+		// a deletion that may have taken effect counts as one for the
+		// redemptions begun before it (at worst one is refused while the
+		// installation stays)
+		s.deletions++
+		s.deleted[id] = s.deletions
+	}
+	if err != nil {
 		return err
 	}
 	delete(s.gateways, id)
 	s.nextGen(id)
-	if entries, err := os.ReadDir(filepath.Join(s.dir, codesDir)); err == nil {
-		for _, e := range entries {
-			p := filepath.Join(s.dir, codesDir, e.Name())
-			var rec joinCodeRecord
-			if data, err := os.ReadFile(p); err == nil && json.Unmarshal(data, &rec) == nil && rec.Installation == id {
-				_ = os.Remove(p)
-			}
-		}
-	}
-	if err := os.Remove(filepath.Join(s.dir, installationsDir, id+".json")); err != nil && !os.IsNotExist(err) {
-		return err
-	}
 	for club := range in.Clubs {
 		delete(s.clubs, club)
 	}
@@ -610,8 +886,19 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	if !core.ValidID(spec.ID) {
 		return false, 0, ErrInvalidID
 	}
+	if err := s.fresh(); err != nil {
+		return false, 0, err
+	}
+	created, v, err := s.putClub(installation, spec)
+	return created, v, s.settle(err)
+}
+
+func (s *Store) putClub(installation string, spec core.ClubSpec) (bool, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stale {
+		return false, 0, ErrStateUnavailable
+	}
 	in, ok := s.installs[installation]
 	if !ok {
 		return false, 0, ErrUnknownInstallation
@@ -639,7 +926,7 @@ func (s *Store) PutClub(installation string, spec core.ClubSpec) (bool, int64, e
 	next := in.clone()
 	next.Clubs[spec.ID] = spec
 	next.Version++
-	if err := s.saveInstallation(&next); err != nil {
+	if err := s.putInstallation(&next, in.Version); err != nil {
 		return false, 0, err
 	}
 	*in = next
@@ -667,8 +954,19 @@ func clubResources(c core.ClubSpec) (studios, rooms []string) {
 
 // DeleteClub removes a club and returns the new config version.
 func (s *Store) DeleteClub(installation, club string) (int64, error) {
+	if err := s.fresh(); err != nil {
+		return 0, err
+	}
+	v, err := s.deleteClub(installation, club)
+	return v, s.settle(err)
+}
+
+func (s *Store) deleteClub(installation, club string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stale {
+		return 0, ErrStateUnavailable
+	}
 	in, ok := s.installs[installation]
 	if !ok {
 		return 0, ErrUnknownInstallation
@@ -679,12 +977,39 @@ func (s *Store) DeleteClub(installation, club string) (int64, error) {
 	next := in.clone()
 	delete(next.Clubs, club)
 	next.Version++
-	if err := s.saveInstallation(&next); err != nil {
+	if err := s.putInstallation(&next, in.Version); err != nil {
 		return 0, err
 	}
 	*in = next
 	delete(s.clubs, club)
 	return in.Version, nil
+}
+
+// served returns the installation whose config the hub signs for its
+// gateway, with the epoch it is announced in: ErrStateUnavailable while
+// the memory is stale.
+func (s *Store) served(id string) (Installation, bool, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stale {
+		return Installation{}, false, "", ErrStateUnavailable
+	}
+	in, ok := s.installs[id]
+	if !ok {
+		return Installation{}, false, s.epoch, nil
+	}
+	return in.clone(), true, s.epoch, nil
+}
+
+// announced is an installation's config version (0 when unknown) and the
+// epoch it belongs to.
+func (s *Store) announced(id string) (int64, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if in, ok := s.installs[id]; ok {
+		return in.Version, s.epoch
+	}
+	return 0, s.epoch
 }
 
 // ConfigVersion is an installation's config version (0 when unknown).

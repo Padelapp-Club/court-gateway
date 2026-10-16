@@ -194,7 +194,7 @@ func TestUnreadableStateIsNotDeregistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, err := hub.CreateJoinCode(dir, "perm-net", "", time.Hour, time.Now())
+	code, err := hub.CreateJoinCode(hub.FileState(dir), "perm-net", "", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

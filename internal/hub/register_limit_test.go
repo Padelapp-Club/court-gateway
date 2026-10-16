@@ -55,7 +55,7 @@ func TestRegistrationLimitIsPerClient(t *testing.T) {
 		t.Fatalf("X-Forwarded-For from an untrusted peer was believed: %d", c)
 	}
 	code := func(id string) string {
-		jc, err := hub.CreateJoinCode(s.StateDir, id, "X", time.Hour, time.Now())
+		jc, err := hub.CreateJoinCode(hub.FileState(s.StateDir), id, "X", time.Hour, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}

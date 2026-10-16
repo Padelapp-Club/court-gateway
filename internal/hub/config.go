@@ -1,7 +1,8 @@
 // Package hub is the public side of the system: partners call it, gateways
 // connect to it from the clubs (outbound only), and it watches every
-// gateway with a heartbeat. The hub keeps a little state on disk — the
-// gateways it has registered and the pending join codes — and nothing
+// gateway with a heartbeat. The hub keeps a little state on disk or in
+// Postgres — the gateways it has registered, the installations with their
+// clubs' config and the pending join codes — and nothing
 // about any club's bookings. Gateways report their own health with a
 // heartbeat; the hub turns that into status files for an external checker.
 package hub
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
@@ -45,6 +47,8 @@ type fileConfig struct {
 		KeyFile  string `yaml:"key_file"`
 	} `yaml:"tls"`
 	StateDir       string   `yaml:"state_dir"`
+	DatabaseURLEnv string   `yaml:"database_url_env"`
+	SigningKeyFile string   `yaml:"signing_key_file"`
 	StatusDir      string   `yaml:"status_dir"`
 	TrustedProxies []string `yaml:"trusted_proxies"`
 	OperatorKeyEnv string   `yaml:"operator_key_env"`
@@ -68,7 +72,13 @@ type Settings struct {
 	PublicURL   string
 	TLSCertFile string
 	TLSKeyFile  string
+	// The state is kept in StateDir or, when DatabaseURL is set, in that
+	// Postgres database (one of them).
 	StateDir    string
+	DatabaseURL string
+	// SigningKeyFile is the hub's signing key, which the hub only reads;
+	// empty: state_dir/hub-signing.key, made on the first start.
+	SigningKeyFile string
 	// StatusDir receives status.json and metrics for an external checker;
 	// empty means the files are not written.
 	StatusDir   string
@@ -140,8 +150,26 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("tls: укажите и cert_file, и key_file (или ни одного — тогда TLS снимает прокси перед хабом)")
 	}
 	s.StateDir = strings.TrimSpace(fc.StateDir)
-	if s.StateDir == "" {
-		add("state_dir: параметр обязателен (каталог, где хаб хранит зарегистрированные шлюзы и коды подключения)")
+	s.SigningKeyFile = strings.TrimSpace(fc.SigningKeyFile)
+	switch env := strings.TrimSpace(fc.DatabaseURLEnv); {
+	case env == "" && s.StateDir == "":
+		add("state_dir: параметр обязателен (каталог, где хаб хранит зарегистрированные шлюзы и коды подключения), или database_url_env — состояние в Postgres")
+	case env != "" && s.StateDir != "":
+		add("state_dir и database_url_env: укажите что-то одно — состояние хаба хранится либо в каталоге, либо в Postgres")
+	case env != "":
+		if s.DatabaseURL = strings.TrimSpace(getenv(env)); s.DatabaseURL == "" {
+			add("database_url_env: строка подключения к Postgres в %s не задана", env)
+		} else {
+			s.Secrets = append(s.Secrets, s.DatabaseURL)
+			// the password alone too, as a URL or keyword=value string
+			// names it: an error may quote it without the rest
+			if pc, err := pgconn.ParseConfig(s.DatabaseURL); err == nil && pc.Password != "" {
+				s.Secrets = append(s.Secrets, pc.Password)
+			}
+		}
+		if s.SigningKeyFile == "" {
+			add("signing_key_file: параметр обязателен с database_url_env (ключ подписи хаба в базу не кладётся; создать: court-gateway hub keygen -out <файл>)")
+		}
 	}
 	s.StatusDir = strings.TrimSpace(fc.StatusDir)
 	if s.StatusDir != "" && s.StateDir != "" && filepath.Clean(s.StatusDir) == filepath.Clean(s.StateDir) {

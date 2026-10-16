@@ -153,7 +153,7 @@ func TestHubBehindPathPrefix(t *testing.T) {
 	rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer rcancel()
 
-	jc, err := hub.CreateJoinCode(settings.StateDir, "demo-club", "Демо-клуб", time.Hour, time.Now())
+	jc, err := hub.CreateJoinCode(hub.FileState(settings.StateDir), "demo-club", "Демо-клуб", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -204,6 +204,9 @@ func TestReplacedHubRunIsNotTakenAgain(t *testing.T) {
 // lower config version: the gateway follows it back to that version.
 func TestRestoredHubIsFollowedToItsLowerVersion(t *testing.T) {
 	h := startOperatorHub(t, hub.Options{})
+	if h.StateDir == "" {
+		t.Skip("restores a file of state_dir")
+	}
 	club := demoClub("club-r", "demo-north", "Корт 1")
 	in := demoInstallation(t, h, "net-r", club)
 	file := filepath.Join(h.StateDir, "installations", "net-r.json")

@@ -30,7 +30,7 @@ func TestMonitorForgetsDeletedInstallations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, err := CreateJoinCode(dir, "gone-net", "", time.Hour, time.Now())
+	code, err := CreateJoinCode(FileState(dir), "gone-net", "", time.Hour, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

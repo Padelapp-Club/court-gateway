@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,32 +37,57 @@ import (
 type Hub struct {
 	t        *testing.T
 	Settings *hub.Settings
+	// StateDir is the hub's state_dir; empty when its state is in Postgres
+	// (TestDatabaseEnv).
 	StateDir string
-	Opts     hub.Options
-	Logs     *contract.LogBuffer
+	// State is the hub's state as the command line opens it.
+	State hub.State
+	Opts  hub.Options
+	Logs  *contract.LogBuffer
 
 	mu     sync.Mutex
 	addr   string
 	srv    *httptest.Server
 	server *hub.Server
+	store  *hub.Store
 	// CAFile is a PEM file with the test server certificate.
 	CAFile string
 	Roots  *x509.CertPool
 }
 
-// StartHub starts a hub with settings parsed from hubYAML (state_dir is
-// filled in) and env.
+// StartHub starts a hub with settings parsed from hubYAML (the state is
+// filled in: a state_dir, or with TestDatabaseEnv set a database of its
+// own and a signing_key_file) and env.
 func StartHub(t *testing.T, hubYAML string, env map[string]string, opts hub.Options) *Hub {
 	t.Helper()
 	dir := t.TempDir()
-	settings, err := hub.Load([]byte("state_dir: "+filepath.Join(dir, "state")+"\n"+hubYAML), func(k string) string { return env[k] })
+	state := "state_dir: " + filepath.Join(dir, "state") + "\n"
+	if url := TestDatabase(t); url != "" {
+		key := filepath.Join(dir, "hub-signing.key")
+		if _, err := hub.WriteSigningKey(key); err != nil {
+			t.Fatal(err)
+		}
+		env = maps.Clone(env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["TEST_HUB_DATABASE_URL"] = url
+		state = "database_url_env: TEST_HUB_DATABASE_URL\nsigning_key_file: " + key + "\n"
+	}
+	settings, err := hub.Load([]byte(state+hubYAML), func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatalf("hub config: %v", err)
 	}
-	h := &Hub{t: t, Settings: settings, StateDir: settings.StateDir, Opts: opts, Logs: &contract.LogBuffer{}}
+	st, err := hub.OpenState(settings)
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	t.Cleanup(st.Close)
+	h := &Hub{t: t, Settings: settings, StateDir: settings.StateDir, State: st, Opts: opts, Logs: &contract.LogBuffer{}}
 	if h.Opts.Logger == nil {
 		h.Opts.Logger = core.NewLogger(h.Logs, slog.LevelDebug, settings.Secrets)
 	}
+	h.CAFile = filepath.Join(dir, "hub-ca.pem")
 	h.start("127.0.0.1:0")
 	t.Cleanup(h.Stop)
 	return h
@@ -69,7 +95,7 @@ func StartHub(t *testing.T, hubYAML string, env map[string]string, opts hub.Opti
 
 func (h *Hub) start(addr string) {
 	h.t.Helper()
-	store, err := hub.OpenStore(h.StateDir, h.Opts.Now)
+	store, err := hub.Open(h.Settings, h.Opts.Now)
 	if err != nil {
 		h.t.Fatalf("store: %v", err)
 	}
@@ -93,11 +119,10 @@ func (h *Hub) start(addr string) {
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	h.mu.Lock()
-	h.srv, h.server, h.addr = srv, server, ln.Addr().String()
+	h.srv, h.server, h.store, h.addr = srv, server, store, ln.Addr().String()
 	h.mu.Unlock()
-	if h.CAFile == "" {
+	if h.Roots == nil {
 		cert := srv.Certificate()
-		h.CAFile = filepath.Join(filepath.Dir(h.StateDir), "hub-ca.pem")
 		if err := os.WriteFile(h.CAFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), 0o600); err != nil {
 			h.t.Fatal(err)
 		}
@@ -130,17 +155,20 @@ func (h *Hub) Server() *hub.Server {
 // Stop stops the hub (idempotent).
 func (h *Hub) Stop() {
 	h.mu.Lock()
-	srv := h.srv
-	h.srv = nil
+	srv, store := h.srv, h.store
+	h.srv, h.store = nil, nil
 	h.mu.Unlock()
 	if srv != nil {
 		srv.CloseClientConnections()
 		srv.Close()
 	}
+	if store != nil {
+		store.Close()
+	}
 }
 
 // Restart stops the hub and starts a new process-equivalent on the same
-// address from the same state directory.
+// address from the same state.
 func (h *Hub) Restart() {
 	h.t.Helper()
 	addr := h.Addr()
@@ -155,7 +183,7 @@ func (h *Hub) JoinCode(club, name string) string {
 	if h.Opts.Now != nil {
 		now = h.Opts.Now()
 	}
-	jc, err := hub.CreateJoinCode(h.StateDir, club, name, time.Hour, now)
+	jc, err := hub.CreateJoinCode(h.State, club, name, time.Hour, now)
 	if err != nil {
 		h.t.Fatal(err)
 	}
