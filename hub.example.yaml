@@ -5,6 +5,9 @@ tls:                                       # или без tls — тогда TL
   cert_file: /etc/court-gateway-hub/tls.crt
   key_file: /etc/court-gateway-hub/tls.key
 state_dir: /var/lib/court-gateway-hub      # зарегистрированные шлюзы (хеши секретов) и коды подключения
+# или состояние в Postgres (вместо state_dir; см. docs/hub.md, «Состояние в Postgres»):
+# database_url_env: HUB_DATABASE_URL       # имя переменной со строкой подключения, не сама строка
+# signing_key_file: /etc/court-gateway-hub/signing.key  # с базой обязателен: court-gateway hub keygen -out <файл>
 status_dir: /var/lib/court-gateway-hub-status  # status.json и metrics для внешней проверки; отдельный каталог
 operator_key_env: HUB_OPERATOR_KEY         # ключ операторского API: /hub/status, /hub/installations…
 # latest_version: 0.1.0                    # хаб подсказывает шлюзам обновиться и помечает устаревшие
