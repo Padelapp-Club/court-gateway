@@ -474,3 +474,26 @@ func TestSlowRedemptionDoesNotHoldUpGateways(t *testing.T) {
 		t.Fatalf("the redemption: %v", err)
 	}
 }
+
+// A database whose tables a newer hub made is refused, by the hub and the
+// command line alike, rather than misread.
+func TestNewerSchemaIsRefused(t *testing.T) {
+	url := testkit.TestDatabase(t)
+	if url == "" {
+		t.Skip("set " + testkit.TestDatabaseEnv + " to run on Postgres")
+	}
+	cfg := postgresSettings(t, url)
+	openStore(t, cfg).Close()
+	var version int
+	dbQuery(t, url, `SELECT version FROM court_gateway_hub.schema_version`, &version)
+	if version != 1 {
+		t.Fatalf("schema version %d", version)
+	}
+	dbQuery(t, url, `UPDATE court_gateway_hub.schema_version SET version = 2 RETURNING version`, &version)
+	if _, err := hub.Open(cfg, nil); err == nil || !strings.Contains(err.Error(), "обновите хаб") {
+		t.Fatalf("the hub on a newer schema: %v", err)
+	}
+	if _, err := hub.OpenState(cfg); err == nil || !strings.Contains(err.Error(), "обновите хаб") {
+		t.Fatalf("the command line on a newer schema: %v", err)
+	}
+}

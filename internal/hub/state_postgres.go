@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,8 +24,12 @@ const dbTimeout = 5 * time.Second
 // missing, at every start, and never drops or changes one.
 const pgSchema = "court_gateway_hub"
 
+// pgSchemaVersion is the version of the tables below, kept in the one row
+// of schema_version. A hub refuses a database whose tables a newer hub
+// made: it would misread them.
+const pgSchemaVersion = 1
+
 var pgTables = []string{
-	`CREATE SCHEMA IF NOT EXISTS ` + pgSchema,
 	`CREATE TABLE IF NOT EXISTS ` + pgSchema + `.installations (
 		id      text PRIMARY KEY,
 		name    text NOT NULL,
@@ -76,6 +81,25 @@ func openPostgres(url string) (State, error) {
 		// tables one after the other
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('`+pgSchema+`'))`); err != nil {
 			return err
+		}
+		for _, q := range []string{
+			`CREATE SCHEMA IF NOT EXISTS ` + pgSchema,
+			`CREATE TABLE IF NOT EXISTS ` + pgSchema + `.schema_version (
+				single  boolean PRIMARY KEY DEFAULT true CHECK (single),
+				version integer NOT NULL
+			)`,
+			`INSERT INTO ` + pgSchema + `.schema_version (version) VALUES (` + strconv.Itoa(pgSchemaVersion) + `) ON CONFLICT DO NOTHING`,
+		} {
+			if _, err := tx.Exec(ctx, q); err != nil {
+				return err
+			}
+		}
+		var version int
+		if err := tx.QueryRow(ctx, `SELECT version FROM `+pgSchema+`.schema_version`).Scan(&version); err != nil {
+			return err
+		}
+		if version > pgSchemaVersion {
+			return fmt.Errorf("таблицы версии %d сделал более новый хаб, этот знает версию %d — обновите хаб", version, pgSchemaVersion)
 		}
 		for _, q := range pgTables {
 			if _, err := tx.Exec(ctx, q); err != nil {
