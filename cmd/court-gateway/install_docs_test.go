@@ -25,7 +25,7 @@ import (
 // never run; with both right it must.
 
 // docSigner is the release key the install docs publish (allowed_signers).
-const docSigner = "court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET"
+const docSigner = "court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y"
 
 // The install docs publish one release key.
 func TestInstallDocsPublishOneReleaseKey(t *testing.T) {

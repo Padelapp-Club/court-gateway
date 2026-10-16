@@ -447,9 +447,8 @@ go run ./tools/release manifest -version 0.2.0 -dist dist -key ~/keys/release.ke
 
 Первую установку клуб сверяет по подписи `SHA256SUMS.sig` (`ssh-keygen -Y verify`) с ключом выпусков,
 вписанным в команды установки, а не взятым со страницы выпуска. Строку ключа `court-gateway
-ssh-ed25519 …` печатает `keygen`; до первого выпуска впишите её в README.md, AGENTS.md и
-deploy/cloud-init.yaml вместо `RELEASE-KEY-NOT-PUBLISHED-YET` (тест проверяет, что во всех трёх она
-одна и та же). До этого установка по документации останавливается на сверке подписи.
+ssh-ed25519 …` печатает `keygen`; она вписана в README.md, AGENTS.md и deploy/cloud-init.yaml (тест
+проверяет, что во всех трёх она одна и та же). Новый ключ выпусков — новая строка во всех трёх и в тесте.
 
 Шлюз ищет `https://github.com/Padelapp-Club/court-gateway/releases/latest/download/manifest.json`
 (или `update.manifest_url`) и ставит версию новее своей, с совпавшей суммой, прошедшую самопроверку

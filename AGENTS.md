@@ -101,7 +101,7 @@ Linux and macOS:
 F=court-gateway-<v>-linux-amd64
 B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
 curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" && curl -fLO "$B/$F" &&
-  echo 'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' > allowed_signers &&
+  echo 'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' > allowed_signers &&
   ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS &&
   grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi &&
   mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
@@ -122,7 +122,7 @@ install there. Then:
   Invoke-WebRequest "$b/SHA256SUMS" -OutFile SHA256SUMS -ErrorAction Stop
   Invoke-WebRequest "$b/SHA256SUMS.sig" -OutFile SHA256SUMS.sig -ErrorAction Stop
   Invoke-WebRequest "$b/$f" -OutFile $f -ErrorAction Stop
-  'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' | Set-Content allowed_signers -Encoding ascii
+  'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' | Set-Content allowed_signers -Encoding ascii
   cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS'
   if ($LASTEXITCODE -ne 0) { throw "SIGNATURE MISMATCH: do not run $f" }
   $want = (Select-String -Path SHA256SUMS -Pattern ('[ *]' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
