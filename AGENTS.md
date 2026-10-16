@@ -71,70 +71,101 @@ variables of the `setup` command in step 3 and nowhere else; never repeat them b
 
 ## Step 1 — platform and folder
 
-| OS | Folder | Release file |
+| OS | Folder | Platform |
 |---|---|---|
-| Linux x86-64 | `~/court-gateway` | `court-gateway-<v>-linux-amd64` |
-| Linux ARM64 | `~/court-gateway` | `court-gateway-<v>-linux-arm64` |
-| macOS Apple Silicon | `~/court-gateway` | `court-gateway-<v>-darwin-arm64` |
-| macOS Intel | `~/court-gateway` | `court-gateway-<v>-darwin-amd64` |
-| Windows x64 | `C:\court-gateway` | `court-gateway-<v>-windows-amd64.exe` |
-| Windows ARM64 | `C:\court-gateway` | `court-gateway-<v>-windows-arm64.exe` (the x64 build also runs under emulation on Windows 11 ARM; prefer arm64) |
+| Linux x86-64 | `~/court-gateway` | `linux-amd64` |
+| Linux ARM64 | `~/court-gateway` | `linux-arm64` |
+| macOS Apple Silicon | `~/court-gateway` | `darwin-arm64` |
+| macOS Intel | `~/court-gateway` | `darwin-amd64` |
+| Windows x64 | `C:\court-gateway` | `windows-amd64` |
+| Windows ARM64 | `C:\court-gateway` | `windows-arm64` |
 
-Detect: `uname -s -m` (Linux/macOS) or `$env:PROCESSOR_ARCHITECTURE` (Windows). Create the folder
-and `cd` into it. (On Windows `setup` closes the folder and `.env` to everyone but Administrators and SYSTEM
-itself, and stops before writing any secret if it cannot.)
+Always install the latest release; never ask the human for a version. The commands in step 2
+detect the platform themselves (`uname -s`, `uname -m`; Windows `$env:PROCESSOR_ARCHITECTURE`).
+Create the folder and `cd` into it. (On Windows `setup` closes the folder and `.env` to everyone but
+Administrators and SYSTEM itself, and stops before writing any secret if it cannot.)
 
 **Verify:** `pwd` / `Get-Location`. **Expect:** the folder from the table.
 
 ## Step 2 — download and verify
 
-Release page: `https://github.com/Padelapp-Club/court-gateway/releases/latest/download/<file>`.
-Set `F` to the release file name for the platform and run the one command for the OS: it downloads
-`SHA256SUMS`, its signature `SHA256SUMS.sig` and the file, checks the signature with `ssh-keygen`
-against the release key written in the command (never take the key from the release page), and
-renames the file (so it can be run) **only** if the signature and the checksum match — each step
-runs only if the previous one succeeded.
+Run the one command for the OS as written, without editing it. It downloads `SHA256SUMS` and its
+signature `SHA256SUMS.sig` from
+`https://github.com/Padelapp-Club/court-gateway/releases/latest/download/`, checks the signature
+with `ssh-keygen` against the release key written in the command (never take the key from the
+release page), takes the file name for the platform from the verified `SHA256SUMS`, downloads that
+file and renames it (so it can be run) **only** if its checksum matches. Every failure stops the
+command with its own message, and nothing is renamed or run.
 
 Linux and macOS:
 
 ```sh
-F=court-gateway-<v>-linux-amd64
-B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
-curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" && curl -fLO "$B/$F" &&
-  echo 'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' > allowed_signers &&
-  ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS &&
-  grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi &&
+(
+  fail() { printf '%s\n' "$*" >&2; exit 1; }
+  B=https://github.com/Padelapp-Club/court-gateway/releases/latest/download
+  case "$(uname -s) $(uname -m)" in
+    'Linux x86_64') P=linux-amd64 ;;
+    'Linux aarch64' | 'Linux arm64') P=linux-arm64 ;;
+    'Darwin arm64') P=darwin-arm64 ;;
+    'Darwin x86_64') P=darwin-amd64 ;;
+    *) fail "UNSUPPORTED PLATFORM: $(uname -s) $(uname -m)" ;;
+  esac
+  curl -fLO "$B/SHA256SUMS" && curl -fLO "$B/SHA256SUMS.sig" || fail "DOWNLOAD FAILED: SHA256SUMS, SHA256SUMS.sig"
+  command -v ssh-keygen >/dev/null || fail "NO SSH-KEYGEN: install OpenSSH 8.1 or newer"
+  echo 'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' > allowed_signers
+  V="$(ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS 2>&1)" || {
+    case "$V" in *'illegal option'* | *'unknown option'* | *usage:*) fail "SSH-KEYGEN TOO OLD: OpenSSH 8.1 or newer is needed" ;; esac
+    fail "SIGNATURE MISMATCH: $V"
+  }
+  F="$(awk '$2 ~ /^court-gateway-.*-'"$P"'$/ { n++; f = $2 } END { if (n == 1) print f }' SHA256SUMS)"
+  [ -n "$F" ] || fail "NOT ONE BUILD FOR $P IN SHA256SUMS"
+  curl -fLO "$B/$F" || fail "DOWNLOAD FAILED: $F"
+  grep " $F\$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi ||
+    fail "CHECKSUM MISMATCH: $F"
   mv "$F" court-gateway && chmod +x court-gateway && echo checksum-ok
+)
 ```
 
-On Windows ARM64 put `windows-arm64.exe` in `$f`.
-
-Windows: first run `ssh -V`. It must show `OpenSSH_for_Windows_8.1` or newer (`ssh-keygen -Y`
-needs 8.1; Windows 10 may have an older one or none). If older or missing: tell the human, run
-`winget install Microsoft.OpenSSH.Beta`, open a new PowerShell as Administrator and check again.
-Verified on Windows 10 Pro 19045 x64: its built-in `OpenSSH_for_Windows_9.5` is enough, nothing to
-install there. Then:
+Windows: run in PowerShell as Administrator, in the folder from step 1 (it forces TLS 1.2, which
+Windows PowerShell 5.1 does not use by default). `ssh-keygen -Y` needs OpenSSH 8.1 or newer; Windows
+10 may have an older one or none, and the command then stops with `NO SSH-KEYGEN` or
+`SSH-KEYGEN TOO OLD`: tell the human, run `winget install Microsoft.OpenSSH.Beta`, open a new
+PowerShell as Administrator and run it again. Verified on Windows 10 Pro 19045 x64: its built-in
+`OpenSSH_for_Windows_9.5` is enough, nothing to install there.
 
 ```powershell
 & {
-  $f = 'court-gateway-<v>-windows-amd64.exe'
+  $ProgressPreference = 'SilentlyContinue'
+  [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
   $b = 'https://github.com/Padelapp-Club/court-gateway/releases/latest/download'
-  Invoke-WebRequest "$b/SHA256SUMS" -OutFile SHA256SUMS -ErrorAction Stop
-  Invoke-WebRequest "$b/SHA256SUMS.sig" -OutFile SHA256SUMS.sig -ErrorAction Stop
-  Invoke-WebRequest "$b/$f" -OutFile $f -ErrorAction Stop
+  $cpu = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+  $a = @{ AMD64 = 'amd64'; ARM64 = 'arm64' }[$cpu]
+  if (-not $a) { throw "UNSUPPORTED PLATFORM: $cpu" }
+  $get = {
+    param($n)
+    try { Invoke-WebRequest "$b/$n" -OutFile $n -UseBasicParsing -ErrorAction Stop } catch { throw "DOWNLOAD FAILED: $n ($($_.Exception.Message))" }
+  }
+  & $get SHA256SUMS
+  & $get SHA256SUMS.sig
+  if (-not (Get-Command ssh-keygen -ErrorAction SilentlyContinue)) { throw "NO SSH-KEYGEN: install OpenSSH 8.1 or newer" }
   'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' | Set-Content allowed_signers -Encoding ascii
-  cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS'
-  if ($LASTEXITCODE -ne 0) { throw "SIGNATURE MISMATCH: do not run $f" }
-  $want = (Select-String -Path SHA256SUMS -Pattern ('[ *]' + [regex]::Escape($f) + '$')).Line -split '\s+' | Select-Object -First 1
-  if (-not $want -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $want) { throw "CHECKSUM MISMATCH: do not run $f" }
+  $out = cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS 2>&1'
+  if ($LASTEXITCODE -ne 0 -and "$out" -match 'unknown option|illegal option|usage:') { throw "SSH-KEYGEN TOO OLD: OpenSSH 8.1 or newer is needed" }
+  if ($LASTEXITCODE -ne 0) { throw "SIGNATURE MISMATCH: $out" }
+  $m = @(Select-String -LiteralPath SHA256SUMS -Pattern "^([0-9a-f]{64})  (court-gateway-\S+-windows-$a\.exe)$")
+  if ($m.Count -ne 1) { throw "NOT ONE BUILD FOR windows-$a IN SHA256SUMS" }
+  $want, $f = $m[0].Matches[0].Groups[1].Value, $m[0].Matches[0].Groups[2].Value
+  & $get $f
+  if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash -ne $want) { throw "CHECKSUM MISMATCH: $f" }
   Move-Item -Force $f court-gateway.exe
   'checksum-ok'
 }
 ```
 
-Anything but `checksum-ok` (`Could not verify signature`, `SIGNATURE MISMATCH`, a `FAILED` line,
-`CHECKSUM MISMATCH`, no output): **stop**, delete the
-downloaded file, never run it, and report to the human.
+Anything but `checksum-ok` (`UNSUPPORTED PLATFORM`, `DOWNLOAD FAILED`, `NO SSH-KEYGEN`,
+`SSH-KEYGEN TOO OLD`, `SIGNATURE MISMATCH`, `NOT ONE BUILD`, `CHECKSUM MISMATCH`, a `FAILED` line,
+no output): **stop**, delete the downloaded files, never run them, and report the message to the
+human.
 
 On macOS, if the binary is quarantined: `xattr -d com.apple.quarantine court-gateway`.
 
