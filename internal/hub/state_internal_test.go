@@ -44,3 +44,27 @@ func TestUnavailableRegistrationsAreLimited(t *testing.T) {
 		t.Fatalf("after 20 refused registrations: %d, want 429", c)
 	}
 }
+
+// No config is signed while the memory is stale, also for a request that
+// passed authentication before it became so.
+func TestNoConfigFromAStaleMemory(t *testing.T) {
+	store, err := NewStore(FileState(t.TempDir()), ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateInstallation("net-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(&Settings{PollWait: time.Second, RequestTimeout: time.Second, OfflineAfter: time.Minute}, store, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.stale = true
+	store.mu.Unlock()
+	w := httptest.NewRecorder()
+	srv.handleConfig(w, httptest.NewRequest(http.MethodGet, "/", nil), GatewayRecord{Installation: "net-a"})
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("config from a stale memory: %d %s, want 503", w.Code, w.Body)
+	}
+}
