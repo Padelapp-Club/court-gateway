@@ -765,6 +765,10 @@ func TestSelfcheckWithARejectedPasswordIsNotRun(t *testing.T) {
 	if rc := run([]string{"selfcheck", "-config", cfg}, &out, &errb, env{}.get); rc != 0 || !strings.HasSuffix(out.String(), "ok\n") {
 		t.Fatalf("selfcheck: rc=%d %s %s", rc, out.String(), errb.String())
 	}
+	// and ends its session, as setup did
+	if s.stub.OpenSessions() != 0 || s.stub.Logouts() != 2 {
+		t.Fatalf("after selfcheck: %d sessions open, %d logouts", s.stub.OpenSessions(), s.stub.Logouts())
+	}
 }
 
 // setup --force while the service runs (a new join code: a new secret)

@@ -631,7 +631,8 @@ func probeHub(cfgPath string, stdout, stderr io.Writer) int {
 
 // cmdSelfcheck is what a freshly downloaded binary does before the switch:
 // load gateway.yaml and .env, log in to the CRM, reach the hub (not its
-// clubs). Exit 0 ok, 1 this binary cannot work with the config,
+// clubs), and end that CRM session: the installation's one is the
+// service's. Exit 0 ok, 1 this binary cannot work with the config,
 // update.SelfCheckTransientExit the environment failed,
 // update.SelfCheckNotRunExit the CRM rejected the password.
 func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) string, defaultConfig string) int {
@@ -654,6 +655,13 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 	if err != nil {
 		return fail(err)
 	}
+	defer func() {
+		ectx, ecancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ecancel()
+		if err := driver.EndSession(ectx, s.Driver.Account); err != nil {
+			fmt.Fprintln(stderr, "CRM session not ended (it expires by itself): "+err.Error())
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var alert *driver.ConfigAlert

@@ -271,7 +271,9 @@ func TestOnlyInvalidGrantStopsLogins(t *testing.T) {
 		if err := acct.CheckLogin(context.Background()); err != nil || stub.LoginAttempts() != before+2 {
 			t.Fatalf("HTTP %d: not logged in again after the wait: %v", refusal.status, err)
 		}
-		stub.RevokeTokens()
+		if err := driver.EndSession(context.Background(), acct); err != nil { // the next call logs in
+			t.Fatal(err)
+		}
 	}
 	ps.SetPassword("wrong-password-0000") // the stub answers invalid_grant
 	if err := acct.CheckLogin(context.Background()); core.ReadyReason(err) != "CRM_AUTH_FAILED" || !ps.PasswordRejected() {
@@ -405,5 +407,65 @@ func TestSharedStudioReadIsBounded(t *testing.T) {
 		}
 	case <-time.After(core.ReadyTimeout + 3*time.Second):
 		t.Fatal("the readiness round waits for a hanging studio list")
+	}
+}
+
+// An expired access token is renewed within the session (the refresh
+// grant), not with a new login: the installation keeps one session. A
+// renewal the CRM refuses (the session expired or was ended) is no word on
+// the password: what is left of the session is ended and one password
+// login opens the next, still one session. Only a refused password login
+// stops logins, with the rare retry.
+func TestExpiredTokenIsRenewedInTheSession(t *testing.T) {
+	stub := vivastub.New(stubUser, stubPass, studio)
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+	clk := &clock{t: time.Date(2030, 3, 4, 12, 0, 0, 0, time.UTC)}
+	acct, err := viva.NewAccount(driver.Config{
+		CRM:      driver.Params{"username": stubUser, "auth_url": srv.URL + "/token", "api_url": srv.URL + "/api/v1"},
+		Password: stubPass, HTTPClient: srv.Client(), Now: clk.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := acct.(driver.PasswordSetter)
+	ctx := context.Background()
+	for range 10 { // fifty minutes: the token expires ten times
+		if err := acct.CheckLogin(ctx); err != nil {
+			t.Fatal(err)
+		}
+		clk.add(5 * time.Minute)
+	}
+	if stub.LoginAttempts() != 1 || stub.Refreshes() != 9 || stub.OpenSessions() != 1 {
+		t.Fatalf("%d logins, %d renewals, %d sessions open", stub.LoginAttempts(), stub.Refreshes(), stub.OpenSessions())
+	}
+
+	// the session is gone (Keycloak's idle time): one login, one session
+	stub.ExpireSessions()
+	if err := acct.CheckLogin(ctx); err != nil || stub.LoginAttempts() != 2 || stub.OpenSessions() != 1 || ps.PasswordRejected() {
+		t.Fatalf("after the session expired: %v, %d logins, %d sessions open", err, stub.LoginAttempts(), stub.OpenSessions())
+	}
+	// the renewal refused while the session is still open: it is ended first
+	clk.add(5 * time.Minute)
+	stub.FailNext(http.MethodPost, "/token", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Token is not active"}`)
+	if err := acct.CheckLogin(ctx); err != nil || stub.LoginAttempts() != 3 || stub.Logouts() != 1 || stub.OpenSessions() != 1 || ps.PasswordRejected() {
+		t.Fatalf("after a refused renewal: %v, %d logins, %d logouts, %d sessions open", err, stub.LoginAttempts(), stub.Logouts(), stub.OpenSessions())
+	}
+	// a renewal that does not reach the CRM keeps the session for later
+	clk.add(5 * time.Minute)
+	stub.FailNext(http.MethodPost, "/token", http.StatusServiceUnavailable, `{}`)
+	if err := acct.CheckLogin(ctx); core.ReadyReason(err) != "CRM_UNREACHABLE" || stub.LoginAttempts() != 3 {
+		t.Fatalf("an outage at renewal: %v, %d logins", err, stub.LoginAttempts())
+	}
+	clk.add(time.Minute)
+	if err := acct.CheckLogin(ctx); err != nil || stub.LoginAttempts() != 3 || stub.OpenSessions() != 1 {
+		t.Fatalf("renewed after the outage: %v, %d logins, %d sessions open", err, stub.LoginAttempts(), stub.OpenSessions())
+	}
+	// renewal refused and then the password: the rare retry, as ever
+	clk.add(5 * time.Minute)
+	stub.FailNext(http.MethodPost, "/token", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Session not active"}`)
+	stub.FailNext(http.MethodPost, "/token", http.StatusUnauthorized, `{"error":"invalid_grant","error_description":"Invalid user credentials"}`)
+	if err := acct.CheckLogin(ctx); core.ReadyReason(err) != "CRM_AUTH_FAILED" || !ps.PasswordRejected() || !ps.NextLogin().Equal(clk.now().Add(15*time.Minute)) {
+		t.Fatalf("a refused password after a refused renewal: %v, next login %v", err, ps.NextLogin())
 	}
 }

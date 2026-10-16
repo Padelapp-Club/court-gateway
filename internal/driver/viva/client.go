@@ -43,8 +43,11 @@ const maxBody = 8 << 20
 
 // client talks HTTP to VivaCRM. One client serves the installation's
 // account and all its clubs. It keeps only the access token (in memory,
-// until shortly before it expires), the refresh token of the same login
-// (only to end its session, endSession) and how its last login failed.
+// until shortly before it expires), the refresh token of the same session
+// (to renew the access token within the session, and to end it) and how
+// its last login failed. The installation holds one Keycloak session: an
+// expired access token is renewed with the refresh token, and only when
+// the CRM refuses that is the session ended and a password login made.
 type client struct {
 	authURL   string
 	logoutURL string // empty: no logout endpoint known (logoutURLOf)
@@ -58,7 +61,8 @@ type client struct {
 	mu         sync.Mutex
 	token      string
 	expires    time.Time
-	refresh    string    // of the last login, which opened a session
+	refresh    string    // of the session the last login opened
+	refreshEnd time.Time // when refresh expires (zero: not said)
 	session    bool      // a login succeeded since the last endSession
 	rejected   error     // the CRM rejected the login: no login before retryAt
 	rejections int       // logins rejected in a row
@@ -77,9 +81,10 @@ type studioRead struct {
 }
 
 type tokenResponse struct {
-	AccessToken  string   `json:"access_token"`
-	ExpiresIn    *float64 `json:"expires_in"`
-	RefreshToken string   `json:"refresh_token"`
+	AccessToken      string   `json:"access_token"`
+	ExpiresIn        *float64 `json:"expires_in"`
+	RefreshToken     string   `json:"refresh_token"`
+	RefreshExpiresIn float64  `json:"refresh_expires_in"`
 }
 
 // accessToken returns a cached token or logs in, but not before retryAt
@@ -98,6 +103,27 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 	case now.Before(c.retryAt):
 		return "", c.loginErr
 	}
+	if c.refresh != "" && (c.refreshEnd.IsZero() || now.Before(c.refreshEnd)) {
+		tok, err := c.renewLocked(ctx)
+		var ue *driver.UpstreamError
+		switch {
+		case err == nil:
+			c.loginErr, c.failures, c.retryAt = nil, 0, time.Time{}
+			return tok, nil
+		case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ue) && ue.Kind == driver.UpstreamUnavailable:
+			// the CRM not reached: the session may well be there, renew later
+			if ctx.Err() == nil {
+				c.failures++
+				c.loginErr, c.retryAt = err, now.Add(min(loginRetry<<min(c.failures-1, 10), loginRetryMax))
+			}
+			return "", err
+		}
+		// refused (the session expired or was ended): no word on the
+		// password; end what may be left of the session, then log in
+		_ = c.logout(ctx, c.refresh)
+		c.log.Info("the CRM did not renew the session: logging in again", "error", err.Error())
+	}
+	c.refresh, c.refreshEnd = "", time.Time{}
 	tok, err := c.loginLocked(ctx)
 	var ue *driver.UpstreamError
 	switch {
@@ -125,7 +151,8 @@ func (c *client) accessToken(ctx context.Context) (string, error) {
 }
 
 // setPassword replaces the password, as set-password writes it to .env,
-// and ends the wait after any failed login: the next call logs in.
+// and ends the wait after any failed login: the next call logs in, or
+// renews the session it still has.
 func (c *client) setPassword(p string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -190,27 +217,43 @@ func (c *client) invalidate(tok string) {
 }
 
 func (c *client) loginLocked(ctx context.Context) (string, error) {
-	form := url.Values{
+	return c.tokenLocked(ctx, "login", url.Values{
 		"grant_type": {"password"},
 		"client_id":  {ClientID},
 		"username":   {c.username},
 		"password":   {c.password},
-	}
+	})
+}
+
+// renewLocked renews the access token within the session (the refresh
+// grant). Its refusal says nothing about the password: an invalid_grant
+// here is an expired or ended session.
+func (c *client) renewLocked(ctx context.Context) (string, error) {
+	return c.tokenLocked(ctx, "session renewal", url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {ClientID},
+		"refresh_token": {c.refresh},
+	})
+}
+
+// tokenLocked asks the token endpoint (op names the grant in errors) and
+// keeps the tokens of the answer.
+func (c *client) tokenLocked(ctx context.Context, op string, form url.Values) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.authURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", driver.Upstream(driver.UpstreamUnavailable, "build login request")
+		return "", driver.Upstream(driver.UpstreamUnavailable, "build "+op+" request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", networkError("login", err)
+		return "", networkError(op, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	switch {
 	case resp.StatusCode == http.StatusOK:
 	case core.IsRedirect(resp.StatusCode):
-		return "", redirected("login", resp.StatusCode)
+		return "", redirected(op, resp.StatusCode)
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		var kc struct {
 			Error       string `json:"error"`
@@ -219,18 +262,25 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 		if json.Unmarshal(body, &kc) == nil && kc.Error == "invalid_grant" {
 			// Keycloak's reason (wrong credentials, a disabled or locked
 			// account) is no secret and tells a wrong password from a lock
-			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("login rejected with HTTP %d (invalid_grant%s)", resp.StatusCode, describe(kc.Description)))
+			return "", driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s rejected with HTTP %d (invalid_grant%s)", op, resp.StatusCode, describe(kc.Description)))
 		}
-		return "", driver.Upstream(driver.UpstreamLogin, fmt.Sprintf("login refused with HTTP %d", resp.StatusCode))
+		return "", driver.Upstream(driver.UpstreamLogin, fmt.Sprintf("%s refused with HTTP %d", op, resp.StatusCode))
 	default:
-		return "", driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("login answered HTTP %d", resp.StatusCode))
+		return "", driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("%s answered HTTP %d", op, resp.StatusCode))
 	}
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil || tr.AccessToken == "" || tr.ExpiresIn == nil {
-		return "", driver.Upstream(driver.UpstreamInvalid, "login response has no access_token/expires_in")
+		return "", driver.Upstream(driver.UpstreamInvalid, op+" response has no access_token/expires_in")
 	}
-	c.token, c.refresh, c.session = tr.AccessToken, tr.RefreshToken, true
-	c.expires = c.now().Add(time.Duration(*tr.ExpiresIn*float64(time.Second)) - tokenSafety)
+	now := c.now()
+	c.token, c.session = tr.AccessToken, true
+	c.expires = now.Add(time.Duration(*tr.ExpiresIn*float64(time.Second)) - tokenSafety)
+	if tr.RefreshToken != "" || form.Get("grant_type") == "password" {
+		c.refresh, c.refreshEnd = tr.RefreshToken, time.Time{}
+		if tr.RefreshExpiresIn > 0 {
+			c.refreshEnd = now.Add(time.Duration(tr.RefreshExpiresIn*float64(time.Second)) - tokenSafety)
+		}
+	}
 	return c.token, nil
 }
 
@@ -254,6 +304,14 @@ func (c *client) endSession(ctx context.Context) error {
 		return errors.New("the login answer had no refresh_token, so the session cannot be ended and expires by itself")
 	case c.logoutURL == "":
 		return errors.New("auth_url does not end in /token, so no logout endpoint is known and the session expires by itself")
+	}
+	return c.logout(ctx, refresh)
+}
+
+// logout ends the session of refresh (see endSession).
+func (c *client) logout(ctx context.Context, refresh string) error {
+	if c.logoutURL == "" {
+		return errors.New("no logout endpoint known")
 	}
 	form := url.Values{"client_id": {ClientID}, "refresh_token": {refresh}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.logoutURL, strings.NewReader(form.Encode()))

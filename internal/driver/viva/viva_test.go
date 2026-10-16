@@ -243,22 +243,22 @@ func TestReloginOnceOn401(t *testing.T) {
 	if f.stub.Logins() != 1 {
 		t.Fatalf("logins = %d", f.stub.Logins())
 	}
-	f.stub.RevokeTokens()
+	f.stub.RevokeTokens() // the session stays: its token is renewed, no login
 	if st, _, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(time.Hour)), contract.ReadKey, ""); st != 200 {
 		t.Fatalf("after revoke: %d %s", st, raw)
 	}
-	if f.stub.Logins() != 2 {
-		t.Fatalf("logins after revoke = %d, want 2", f.stub.Logins())
+	if f.stub.Logins() != 1 || f.stub.Refreshes() != 1 {
+		t.Fatalf("after revoke: %d logins, %d renewals; want 1, 1", f.stub.Logins(), f.stub.Refreshes())
 	}
-	// 401 even after a fresh login: give up after one retry
+	// 401 even with a fresh token: give up after one retry
 	f.stub.FailNext(http.MethodGet, "/exercises", http.StatusUnauthorized, `{}`)
 	f.stub.FailNext(http.MethodGet, "/exercises", http.StatusUnauthorized, `{}`)
 	st, m, raw := call(t, f, http.MethodGet, occupancyPath(d, d.Add(time.Hour)), contract.ReadKey, "")
 	if st != http.StatusBadGateway || m["code"] != "UPSTREAM_AUTH" {
 		t.Fatalf("double 401: %d %s", st, raw)
 	}
-	if f.stub.Logins() != 3 {
-		t.Fatalf("logins = %d, want exactly one re-login (3)", f.stub.Logins())
+	if f.stub.Logins() != 1 || f.stub.Refreshes() != 2 {
+		t.Fatalf("%d logins, %d renewals; want exactly one more renewal", f.stub.Logins(), f.stub.Refreshes())
 	}
 }
 
@@ -298,8 +298,8 @@ func TestTokenCachedUntilExpiryMinus30s(t *testing.T) {
 	if _, err := f.drv.Occupancy(ctx, q); err != nil {
 		t.Fatal(err)
 	}
-	if f.stub.Logins() != 2 {
-		t.Fatalf("no re-login after expiry-30s: %d", f.stub.Logins())
+	if f.stub.Logins() != 1 || f.stub.Refreshes() != 1 {
+		t.Fatalf("not renewed after expiry-30s: %d logins, %d renewals", f.stub.Logins(), f.stub.Refreshes())
 	}
 }
 
