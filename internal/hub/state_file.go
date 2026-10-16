@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 )
@@ -29,21 +30,24 @@ type State interface {
 	// putGateway stores the gateway registration of its installation,
 	// replacing the previous one.
 	putGateway(g *GatewayRecord) error
-	// hasGateway reports whether installation has a registration; an error
-	// is ErrStateUnavailable and says nothing about it.
-	hasGateway(installation string) (bool, error)
-	// gateways returns the installations that have a registration.
-	gateways() (map[string]bool, error)
+	// gateway returns the stored registration of installation, nil when
+	// there is none; an error is ErrStateUnavailable and says nothing
+	// about it.
+	gateway(installation string) (*GatewayRecord, error)
+	// gateways returns every stored registration, by installation.
+	gateways() (map[string]GatewayRecord, error)
 	// deleteGateway removes the registration of installation
 	// (ErrNotRegistered when there is none).
 	deleteGateway(installation string) error
-	// putInstallation stores in with its clubs, replacing the previous
-	// version of it; it may raise in.Version to keep it above the stored
-	// one.
-	putInstallation(in *Installation) error
-	// deleteInstallation removes an installation with its clubs, its
-	// gateway registration and its pending join codes.
-	deleteInstallation(id string) error
+	// putInstallation stores in with its clubs, replacing the stored
+	// version prev of it (prev < 0: there is none). A state shared by
+	// several hubs refuses it with ErrConflict when the stored one is not
+	// prev; a state_dir serves one hub and does not check.
+	putInstallation(in *Installation, prev int64) error
+	// deleteInstallation removes an installation of the stored version
+	// prev with its clubs, its gateway registration and its pending join
+	// codes (ErrConflict as putInstallation).
+	deleteInstallation(id string, prev int64) error
 	// ready reports whether the state can be read and written now.
 	ready() error
 	// Close releases the state's connections.
@@ -56,9 +60,14 @@ type State interface {
 //	codes/<sha256 of the code>.json      pending join codes
 //	gateways/<installation>.json         registered gateways (secret hash)
 //	installations/<installation>.json    installations and their clubs' config
-func FileState(dir string) State { return fileState{dir: dir} }
+func FileState(dir string) State { return fileState{dir: dir, take: &sync.Mutex{}} }
 
-type fileState struct{ dir string }
+type fileState struct {
+	dir string
+	// take serializes the takes of codes: two removals of one file may
+	// both succeed (as on macOS APFS).
+	take *sync.Mutex
+}
 
 func ensureDirs(dir string) error {
 	for _, d := range []string{dir, filepath.Join(dir, codesDir), filepath.Join(dir, gatewaysDir), filepath.Join(dir, installationsDir)} {
@@ -130,9 +139,11 @@ func (f fileState) putCode(hash string, rec joinCodeRecord) error {
 	return core.WriteFileAtomic(filepath.Join(f.dir, codesDir, hash+".json"), data, 0o600)
 }
 
-// takeCode: the code file goes before the secret is issued, and of two
-// removals of one file only one succeeds.
+// takeCode: the code file goes before the secret is issued, one take at
+// a time.
 func (f fileState) takeCode(hash string) (joinCodeRecord, error) {
+	f.take.Lock()
+	defer f.take.Unlock()
 	p := filepath.Join(f.dir, codesDir, hash+".json")
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -153,26 +164,36 @@ func (f fileState) putGateway(g *GatewayRecord) error {
 	return core.WriteFileAtomic(filepath.Join(f.dir, gatewaysDir, g.Installation+".json"), out, 0o600)
 }
 
-func (f fileState) hasGateway(installation string) (bool, error) {
-	_, err := os.Stat(filepath.Join(f.dir, gatewaysDir, installation+".json"))
+func (f fileState) gateway(installation string) (*GatewayRecord, error) {
+	data, err := os.ReadFile(filepath.Join(f.dir, gatewaysDir, installation+".json"))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return false, nil
+		return nil, nil
 	case err != nil:
-		return false, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
-	return true, nil
+	var g GatewayRecord
+	if err := json.Unmarshal(data, &g); err != nil || g.Installation != installation {
+		return nil, fmt.Errorf("%w: повреждённая запись шлюза %s", ErrStateUnavailable, installation)
+	}
+	return &g, nil
 }
 
-func (f fileState) gateways() (map[string]bool, error) {
+func (f fileState) gateways() (map[string]GatewayRecord, error) {
 	entries, err := os.ReadDir(filepath.Join(f.dir, gatewaysDir))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
-	out := map[string]bool{}
+	out := map[string]GatewayRecord{}
 	for _, e := range entries {
 		if id, ok := strings.CutSuffix(e.Name(), ".json"); ok && !e.IsDir() {
-			out[id] = true
+			g, err := f.gateway(id)
+			if err != nil {
+				return nil, err
+			}
+			if g != nil {
+				out[id] = *g
+			}
 		}
 	}
 	return out, nil
@@ -186,7 +207,7 @@ func (f fileState) deleteGateway(installation string) error {
 	return err
 }
 
-func (f fileState) putInstallation(in *Installation) error {
+func (f fileState) putInstallation(in *Installation, _ int64) error {
 	data, err := json.Marshal(in)
 	if err != nil {
 		return err
@@ -194,7 +215,7 @@ func (f fileState) putInstallation(in *Installation) error {
 	return core.WriteFileAtomic(filepath.Join(f.dir, installationsDir, in.ID+".json"), data, 0o600)
 }
 
-func (f fileState) deleteInstallation(id string) error {
+func (f fileState) deleteInstallation(id string, _ int64) error {
 	if err := f.deleteGateway(id); err != nil && !errors.Is(err, ErrNotRegistered) {
 		return err
 	}

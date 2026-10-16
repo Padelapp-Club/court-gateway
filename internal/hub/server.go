@@ -181,8 +181,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	g, secret, err := s.store.Redeem(req.Code)
 	if errors.Is(err, ErrStateUnavailable) {
-		// not a verdict on the code, nor the client's failure (the code may
-		// be spent already if the state failed after taking it)
+		// not a verdict on the code (it may be spent already if the state
+		// failed after taking it), but counted all the same: junk codes
+		// sent while the state is slow are limited as any others
+		s.regLim.fail(client, s.now())
 		s.log.Error("registration failed", "error", err)
 		w.Header().Set("Retry-After", "10")
 		core.WriteError(w, r, http.StatusServiceUnavailable, "HUB_UNAVAILABLE", "the hub cannot register a gateway right now, retry")
@@ -347,10 +349,18 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request, g Gatew
 	}
 }
 
-// handleConfig gives a gateway its installation's club configuration.
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request, g GatewayRecord) {
+// handleConfig gives a gateway its installation's club configuration;
+// none while the hub's memory may differ from its state.
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request, g GatewayRecord) {
+	in, ok, err := s.store.served(g.Installation)
+	if err != nil {
+		s.log.Error("config not served", "installation", g.Installation, "error", err)
+		w.Header().Set("Retry-After", "10")
+		core.WriteError(w, r, http.StatusServiceUnavailable, "HUB_UNAVAILABLE", "the hub cannot give the config right now, retry")
+		return
+	}
 	out := tunnel.RemoteConfig{Epoch: s.store.epoch, Clubs: []json.RawMessage{}}
-	if in, ok := s.store.Installation(g.Installation); ok {
+	if ok {
 		out.Version = in.Version
 		for _, c := range in.ClubList() {
 			raw, _ := json.Marshal(c)

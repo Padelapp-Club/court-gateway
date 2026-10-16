@@ -92,25 +92,54 @@ func openPostgres(url string) (State, error) {
 }
 
 // failed is a database error as the store reports it: a refusal of the
-// data (a broken constraint, ErrClubTaken) as it is, any
+// data (a broken constraint, ErrClubTaken, ErrConflict) as it is, any
 // other — no connection, a timeout, a server going down — as
 // ErrStateUnavailable.
 func failed(err error) error {
 	var pe *pgconn.PgError
 	switch {
-	case err == nil, errors.Is(err, ErrClubTaken):
+	case err == nil, errors.Is(err, ErrClubTaken), errors.Is(err, ErrConflict):
 		return err
 	case errors.As(err, &pe) && (strings.HasPrefix(pe.Code, "22") || strings.HasPrefix(pe.Code, "23")):
 		return err
 	}
-	return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+	return fmt.Errorf("%w: %w", ErrStateUnavailable, err)
+}
+
+// unanswered marks the error of a write whose last statement (a single
+// one, or COMMIT) may have reached the server without its answer coming
+// back: the write may have taken effect (errOutcomeUnknown). Only the
+// server's own refusal, or no connection at all, means it did not; pgconn
+// reports even a COMMIT whose answer was lost as "conn closed", safe to
+// retry, so that is not trusted.
+func unanswered(err error) error {
+	var pe *pgconn.PgError
+	var ce *pgconn.ConnectError
+	if err == nil || errors.As(err, &pe) || errors.As(err, &ce) || errors.Is(err, pgx.ErrTxCommitRollback) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errOutcomeUnknown, err)
 }
 
 // tx runs f in a transaction within dbTimeout.
 func (p pgState) tx(f func(context.Context, pgx.Tx) error) error {
+	return p.txWith(pgx.TxOptions{}, f)
+}
+
+// txWith runs f in a transaction of opts within dbTimeout. Until COMMIT
+// is sent nothing is written; a COMMIT left unanswered is errOutcomeUnknown.
+func (p pgState) txWith(opts pgx.TxOptions, f func(context.Context, pgx.Tx) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
-	return pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error { return f(ctx, tx) })
+	tx, err := p.pool.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if err := f(ctx, tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return unanswered(tx.Commit(ctx))
 }
 
 // exec runs one statement within dbTimeout.
@@ -118,13 +147,15 @@ func (p pgState) exec(q string, args ...any) (pgconn.CommandTag, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 	tag, err := p.pool.Exec(ctx, q, args...)
-	return tag, failed(err)
+	return tag, failed(unanswered(err))
 }
 
+// load reads everything in one snapshot: a hub writing meanwhile cannot
+// show it a club of an installation it has not read.
 func (p pgState) load() ([]*Installation, []GatewayRecord, error) {
 	var installs []*Installation
 	var gateways []GatewayRecord
-	err := p.tx(func(ctx context.Context, tx pgx.Tx) error {
+	err := p.txWith(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		byID := map[string]*Installation{}
 		rows, _ := tx.Query(ctx, `SELECT id, name, created, version FROM `+pgSchema+`.installations ORDER BY id`)
 		for rows.Next() {
@@ -150,10 +181,11 @@ func (p pgState) load() ([]*Installation, []GatewayRecord, error) {
 				return err
 			}
 			var c core.ClubSpec
-			if err := json.Unmarshal(spec, &c); err != nil || c.ID != id {
+			in, ok := byID[inst]
+			if err := json.Unmarshal(spec, &c); err != nil || c.ID != id || !ok {
 				return fmt.Errorf("повреждённая запись клуба %q", id)
 			}
-			byID[inst].Clubs[id] = c
+			in.Clubs[id] = c
 		}
 		if err := rows.Err(); err != nil {
 			return err
@@ -192,7 +224,7 @@ func (p pgState) takeCode(hash string) (joinCodeRecord, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return joinCodeRecord{}, ErrJoinCode
 	}
-	return rec, failed(err)
+	return rec, failed(unanswered(err))
 }
 
 func (p pgState) putGateway(g *GatewayRecord) error {
@@ -202,28 +234,35 @@ func (p pgState) putGateway(g *GatewayRecord) error {
 	return err
 }
 
-func (p pgState) hasGateway(installation string) (bool, error) {
+func (p pgState) gateway(installation string) (*GatewayRecord, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
-	var there bool
-	err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+pgSchema+`.gateways WHERE installation = $1)`, installation).Scan(&there)
-	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
-	}
-	return there, nil
-}
-
-func (p pgState) gateways() (map[string]bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
-	defer cancel()
-	rows, _ := p.pool.Query(ctx, `SELECT installation FROM `+pgSchema+`.gateways`)
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
+	g := GatewayRecord{Installation: installation}
+	err := p.pool.QueryRow(ctx, `SELECT name, secret_sha256, registered_at FROM `+pgSchema+`.gateways WHERE installation = $1`, installation).
+		Scan(&g.Name, &g.SecretSHA256, &g.RegisteredAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	case err != nil:
 		return nil, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
-	out := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		out[id] = true
+	g.RegisteredAt = g.RegisteredAt.UTC()
+	return &g, nil
+}
+
+func (p pgState) gateways() (map[string]GatewayRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+	rows, _ := p.pool.Query(ctx, `SELECT installation, name, secret_sha256, registered_at FROM `+pgSchema+`.gateways`)
+	out := map[string]GatewayRecord{}
+	var g GatewayRecord
+	_, err := pgx.ForEachRow(rows, []any{&g.Installation, &g.Name, &g.SecretSHA256, &g.RegisteredAt}, func() error {
+		g.RegisteredAt = g.RegisteredAt.UTC()
+		out[g.Installation] = g
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStateUnavailable, err)
 	}
 	return out, nil
 }
@@ -236,17 +275,26 @@ func (p pgState) deleteGateway(installation string) error {
 	return err
 }
 
-// putInstallation writes in and its clubs at once. The version only
-// grows: when the row already holds in.Version or more (a commit whose
-// answer was lost, so the hub did not learn of it), in.Version is raised
-// above it.
-func (p pgState) putInstallation(in *Installation) error {
+// putInstallation writes in and its clubs at once, over the stored
+// version prev only: a hub that has not seen a change made since (by
+// another hub, or by a commit whose answer it lost) gets ErrConflict
+// rather than writing over it.
+func (p pgState) putInstallation(in *Installation, prev int64) error {
 	return failed(p.tx(func(ctx context.Context, tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `INSERT INTO `+pgSchema+`.installations (id, name, created, version) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (id) DO UPDATE SET name = excluded.name, version = GREATEST(installations.version + 1, excluded.version)
-			RETURNING version`, in.ID, in.Name, in.Created, in.Version).Scan(&in.Version)
+		var tag pgconn.CommandTag
+		var err error
+		if prev < 0 {
+			tag, err = tx.Exec(ctx, `INSERT INTO `+pgSchema+`.installations (id, name, created, version) VALUES ($1, $2, $3, $4)
+				ON CONFLICT (id) DO NOTHING`, in.ID, in.Name, in.Created, in.Version)
+		} else {
+			tag, err = tx.Exec(ctx, `UPDATE `+pgSchema+`.installations SET name = $2, version = $3 WHERE id = $1 AND version = $4`,
+				in.ID, in.Name, in.Version, prev)
+		}
 		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrConflict
 		}
 		ids := make([]string, 0, len(in.Clubs))
 		for id := range in.Clubs {
@@ -273,13 +321,16 @@ func (p pgState) putInstallation(in *Installation) error {
 	}))
 }
 
-func (p pgState) deleteInstallation(id string) error {
+func (p pgState) deleteInstallation(id string, prev int64) error {
 	return failed(p.tx(func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM `+pgSchema+`.join_codes WHERE installation = $1`, id); err != nil {
 			return err
 		}
 		// its clubs and gateway go with it (ON DELETE CASCADE)
-		_, err := tx.Exec(ctx, `DELETE FROM `+pgSchema+`.installations WHERE id = $1`, id)
+		tag, err := tx.Exec(ctx, `DELETE FROM `+pgSchema+`.installations WHERE id = $1 AND version = $2`, id, prev)
+		if err == nil && tag.RowsAffected() == 0 {
+			err = ErrConflict
+		}
 		return err
 	}))
 }
