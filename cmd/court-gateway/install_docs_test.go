@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -25,14 +26,25 @@ import (
 // never run; with both right it must.
 
 // docSigner is the release key the install docs publish (allowed_signers).
-const docSigner = "court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET"
+const docSigner = "court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y"
+
+// signerLine is a whole allowed_signers line of the release key: the key
+// ends where the quoted string does, so a key with anything appended to it
+// is a different key.
+var signerLine = regexp.MustCompile(`court-gateway ssh-ed25519 [A-Za-z0-9+/=]+`)
 
 // The install docs publish one release key.
 func TestInstallDocsPublishOneReleaseKey(t *testing.T) {
 	for _, doc := range []string{"README.md", "AGENTS.md", "deploy/cloud-init.yaml"} {
 		text := readDoc(t, doc)
-		if n := strings.Count(text, "ssh-ed25519 "); n == 0 || n != strings.Count(text, docSigner) {
-			t.Errorf("%s: %d release keys, %d of them %q", doc, n, strings.Count(text, docSigner), docSigner)
+		keys := signerLine.FindAllString(text, -1)
+		if len(keys) == 0 || len(keys) != strings.Count(text, "ssh-ed25519 ") {
+			t.Errorf("%s: %d whole release keys among %d ssh-ed25519 lines", doc, len(keys), strings.Count(text, "ssh-ed25519 "))
+		}
+		for _, k := range keys {
+			if k != docSigner {
+				t.Errorf("%s: release key %q, want %q", doc, k, docSigner)
+			}
 		}
 	}
 }

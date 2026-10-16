@@ -59,7 +59,7 @@ runcmd:
       # key written here and the checksum matches (set -e)
       curl -fsSL --retry 5 -o SHA256SUMS "$BASE/SHA256SUMS"
       curl -fsSL --retry 5 -o SHA256SUMS.sig "$BASE/SHA256SUMS.sig"
-      echo 'court-gateway ssh-ed25519 RELEASE-KEY-NOT-PUBLISHED-YET' > allowed_signers
+      echo 'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' > allowed_signers
       ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS
       FILE="$(awk '/-linux-'"$ARCH"'$/ {print $2}' SHA256SUMS)"
       curl -fsSL --retry 5 -o "$FILE" "$BASE/$FILE"
