@@ -11,6 +11,7 @@ import (
 	_ "github.com/Padelapp-Club/court-gateway/internal/driver/fitness1c"
 	_ "github.com/Padelapp-Club/court-gateway/internal/driver/lunda"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
+	_ "github.com/Padelapp-Club/court-gateway/internal/driver/yclients"
 )
 
 // DefaultCRM is the crm.type setup takes when none is given: the CRM of
