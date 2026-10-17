@@ -870,13 +870,13 @@ func (s *Stub) visitorList(w http.ResponseWriter, p map[string]any) {
 // bookingJSON is a booking as booking-load answers it (with the
 // customer's data, which the driver must never pass on).
 func (s *Stub) bookingJSON(b *Booking) map[string]any {
-	// as Lunda: no top-level price — each court of the booking carries its
-	// own (rubles), and a price adjustment is a further entry of its own,
-	// the "Court discount", the court's price left as it was. [UNVERIFIED]
-	// the discount entry's fields beyond its title and its negative price.
-	courts := []map[string]any{{"courtUid": b.Court, "price": b.Price}}
+	// as Lunda (seen live 2026-10-18): no top-level price — each court of
+	// the booking carries its own (rubles); a price adjustment is a further
+	// entry of its own, the court's price left as it was: no courtUid,
+	// description "Court discount", the discount's size as a POSITIVE price
+	courts := []map[string]any{{"id": b.ID + "-c", "courtUid": b.Court, "courtPinned": false, "price": b.Price, "description": ""}}
 	if b.Adjustment != 0 {
-		courts = append(courts, map[string]any{"title": "Court discount", "price": b.Adjustment})
+		courts = append(courts, map[string]any{"id": b.ID + "-d", "price": -b.Adjustment, "description": "Court discount"})
 	}
 	m := map[string]any{"id": b.ID, "bookingType": "COURT", "placeholder": false, "status": b.Status, "courts": courts,
 		"datasource": "CLUB_APP", "goal": b.Goal, "customerUid": b.Customer, "payments": b.Payments, "financialItems": []any{},

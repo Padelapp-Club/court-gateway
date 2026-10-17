@@ -59,13 +59,16 @@ func row(court string, price any) map[string]any {
 	return map[string]any{"courtUid": court, "price": price}
 }
 
+// discountRow is the entry a price adjustment adds to courts[], as live
+// (Kosmos, 2026-10-18): no courtUid, a positive price, the description.
 func discountRow(price any) map[string]any {
-	return map[string]any{"title": "Court discount", "price": price}
+	return map[string]any{"id": "d1", "price": price, "description": "Court discount"}
 }
 
 // The create's price is the booked court's: a price that does not read
-// (negative, a string, null, absent), an entry on another court, or none
-// on ours is no price — the booking is rolled back, never adjusted.
+// (negative, a string, null, absent), an entry on another court, a
+// discount already, or no entry on ours is no price — the booking is
+// rolled back, never adjusted.
 func TestCreatePriceIsTheBookedCourtsOnly(t *testing.T) {
 	for name, courts := range map[string][]any{
 		"negative":           {row(court1, -1500)},
@@ -76,7 +79,7 @@ func TestCreatePriceIsTheBookedCourtsOnly(t *testing.T) {
 		"another court too":  {row(court1, 1500), row(court2, 0)},
 		"another court only": {row(court2, 1500)},
 		"no court entry":     {},
-		"a discount already": {row(court1, 1500), discountRow(-300)},
+		"a discount already": {row(court1, 1500), discountRow(300)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
@@ -90,19 +93,27 @@ func TestCreatePriceIsTheBookedCourtsOnly(t *testing.T) {
 	}
 }
 
-// Read back, the booking's courts[] — the court's price and the separate
-// "Court discount" entry the adjustment adds, as live — must sum to 0:
-// over- or under-adjusted, or with prices that do not read, it is rolled
-// back even though Lunda calls it PAID.
+// Read back, the booked court's price less the "Court discount" entries
+// (live: no courtUid, a positive price) must be 0. Over- or
+// under-adjusted, a negative price anywhere, an entry without courtUid
+// that is not the discount, an entry on another court, or prices that do
+// not read: it is rolled back even though Lunda calls it PAID.
 func TestCreateReadsBackANetPriceOfZero(t *testing.T) {
 	for name, courts := range map[string][]any{
-		"over-adjusted":    {row(court1, 1500), discountRow(-3000)},
-		"under-adjusted":   {row(court1, 1500), discountRow(-1499.99)},
-		"discount missing": {row(court1, 1500)},
-		"net folded wrong": {row(court1, -1500)},
-		"unreadable":       {row(court1, "1500"), discountRow(-1500)},
-		"null discount":    {row(court1, 1500), discountRow(nil)},
-		"no courts":        {},
+		"over-adjusted":             {row(court1, 1500), discountRow(3000)},
+		"under-adjusted":            {row(court1, 1500), discountRow(1499)},
+		"discount missing":          {row(court1, 1500)},
+		"negative discount":         {row(court1, 1500), discountRow(-1500)},
+		"negative court":            {row(court1, -1500), discountRow(0)},
+		"both negative":             {row(court1, -1500), discountRow(-1500)},
+		"discount on the court":     {row(court1, 1500), map[string]any{"courtUid": court1, "price": 1500, "description": "Court discount"}},
+		"no courtUid, not discount": {row(court1, 1500), map[string]any{"price": 1500, "description": "Bonus"}},
+		"no courtUid, no desc":      {row(court1, 1500), map[string]any{"price": 1500}},
+		"another court":             {row(court1, 1500), row(court2, 0), discountRow(1500)},
+		"only a discount":           {discountRow(0)},
+		"unreadable":                {row(court1, "1500"), discountRow(1500)},
+		"null discount":             {row(court1, 1500), discountRow(nil)},
+		"no courts":                 {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
@@ -113,7 +124,7 @@ func TestCreateReadsBackANetPriceOfZero(t *testing.T) {
 	}
 	// the cancel failing too: the booking stays, said and logged at ERROR
 	f, d := loggedIn(t)
-	rewriteCourts(t, f, "/club/booking/booking-load", []any{row(court1, 1500), discountRow(-3000)})
+	rewriteCourts(t, f, "/club/booking/booking-load", []any{row(court1, 1500), discountRow(3000)})
 	f.stub.FailNext(http.MethodDelete, "/club/booking/booking-cancel", http.StatusInternalServerError, `{}`)
 	_, err := d.Create(context.Background(), createReq(futureDay(), 10))
 	bs := f.stub.Bookings()
@@ -122,8 +133,32 @@ func TestCreateReadsBackANetPriceOfZero(t *testing.T) {
 	}
 }
 
+// The live shapes that read as net 0 pass: the court's price and one
+// discount of the same size, the court split in rows, or several
+// discounts adding up to it.
+func TestCreatePassesAtANetPriceOfZero(t *testing.T) {
+	for name, courts := range map[string][]any{
+		"one row, one discount": {row(court1, 1500), discountRow(1500)},
+		"court in two rows":     {row(court1, 750), row(court1, 750), discountRow(1500)},
+		"two discounts":         {row(court1, 2000), discountRow(1500), discountRow(500)},
+		"kopecks":               {row(court1, 1500.5), discountRow(1500.5)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, d := loggedIn(t)
+			rewriteCourts(t, f, "/club/booking/booking-load", courts)
+			if _, err := d.Create(context.Background(), createReq(futureDay(), 10)); err != nil {
+				t.Fatal(err)
+			}
+			if f.stub.CallsTo("/club/booking/booking-cancel") != 0 {
+				t.Fatal("rolled back")
+			}
+		})
+	}
+}
+
 // As live, the stub answers the adjusted booking with the court's own
-// price and a separate negative discount entry; that reads as net 0.
+// price and a separate discount entry — no courtUid, a positive price,
+// "Court discount" — and that reads as net 0.
 func TestCreatePassesWithTheSeparateDiscountRow(t *testing.T) {
 	f, d := loggedIn(t)
 	var last []byte
@@ -133,18 +168,18 @@ func TestCreatePassesWithTheSeparateDiscountRow(t *testing.T) {
 	}
 	var env struct {
 		Result struct {
-			Status string `json:"status"`
-			Courts []struct {
-				CourtUID string  `json:"courtUid"`
-				Price    float64 `json:"price"`
-			} `json:"courts"`
+			Status string           `json:"status"`
+			Courts []map[string]any `json:"courts"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(last, &env); err != nil {
 		t.Fatal(err)
 	}
 	c := env.Result.Courts
-	if env.Result.Status != "PAID" || len(c) != 2 || c[0].CourtUID != court1 || c[0].Price != 1500 || c[1].Price != -1500 {
+	if env.Result.Status != "PAID" || len(c) != 2 || c[0]["courtUid"] != court1 || c[0]["price"] != 1500.0 {
 		t.Fatalf("read back: %s", last)
+	}
+	if _, has := c[1]["courtUid"]; has || c[1]["price"] != 1500.0 || c[1]["description"] != "Court discount" {
+		t.Fatalf("discount entry: %v", c[1])
 	}
 }
