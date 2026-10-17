@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -33,13 +34,19 @@ const (
 // of one booking, in order); a stretch without working time is "yh-...".
 var (
 	bookingIDRe = regexp.MustCompile(`^y-[0-9]{1,18}(-[0-9]{1,18}){0,7}$`)
-	setTagRe    = regexp.MustCompile(`^\[cg-set:([0-9a-f]{8})/([2-8])\]`)
+	setTagRe    = regexp.MustCompile(`^\[cg-set:([0-9a-f]{8})/([1-8])\]`)
 )
+
+// maxRecords is the most records one booking may take: its id names them
+// all and stays within the API's 100 characters.
+const maxRecords = 8
 
 func marker(partner string) string { return markerPrefix + partner + "]" }
 
-// setTag joins the records of one booking made of several: it follows the
-// marker in each of them, so occupancy shows them as one booking.
+// setTag follows the marker in every record of a booking: a key of its own
+// and how many records it has. Occupancy shows the records of one booking
+// as one; a create that went wrong finds by it every record it made, named
+// in the answer or not.
 func setTag(key string, n int) string { return fmt.Sprintf("[cg-set:%s/%d]", key, n) }
 
 // buildComment is the marker, the set tag (if any) and the note, cut so
@@ -118,7 +125,7 @@ func (d *Driver) catalog(ctx context.Context, staff string, at *time.Time) ([]se
 		return nil, err
 	}
 	if r.status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /book_services: HTTP %d: %s", r.status, r.message()))
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /book_services: HTTP %d", r.status))
 	}
 	var data struct {
 		Services []service `json:"services"`
@@ -169,10 +176,10 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, err.Error())
 	}
 	plans := planAppointments(pieces)
-	tag := ""
-	if len(plans) > 1 {
-		tag = setTag(newSetKey(), len(plans))
+	if len(plans) > maxRecords {
+		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("the booking needs %d records of the court's services, at most %d", len(plans), maxRecords))
 	}
+	tag := setTag(newSetKey(), len(plans))
 	staffN, _ := strconv.ParseInt(staff, 10, 64)
 	body := bookRecordBody{
 		Phone: d.client.phone, Fullname: d.client.name, Email: d.client.email,
@@ -186,6 +193,11 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}
 	r, err := d.c.do(ctx, http.MethodPost, "/book_record/"+d.company, nil, body, partnerAuth)
 	if err != nil {
+		// no answer, or a 5xx: the records may exist all the same
+		var ue *driver.UpstreamError
+		if errors.As(err, &ue) && ue.Kind == driver.UpstreamUnavailable || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			d.undo(ctx, staff, tag, req, nil)
+		}
 		return driver.Booking{}, err
 	}
 	switch {
@@ -194,7 +206,7 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		// YCLIENTS refuses a busy time with 422 (D11 R-9, probe)
 		return driver.Booking{}, fmt.Errorf("POST /book_record: %w", driver.ErrSlotUnavailable)
 	default:
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /book_record: HTTP %d: %s", r.status, r.message()))
+		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /book_record: HTTP %d", r.status))
 	}
 	var created []struct {
 		RecordID json.Number `json:"record_id"`
@@ -207,16 +219,53 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		}
 	}
 	if len(ids) != len(plans) {
-		for _, id := range ids {
-			if err := d.deleteRecord(ctx, id); err != nil {
-				d.log.Error("yclients: a record of a failed create is left", "record", id, "err", err)
-			}
-		}
+		d.undo(ctx, staff, tag, req, ids)
 		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /book_record: %d record ids for %d records", len(ids), len(plans)))
 	}
 	d.log.Info("record created", "court", req.Court, "records", len(ids))
 	return driver.Booking{ID: "y-" + strings.Join(ids, "-"), Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
 }
+
+// undo deletes what a create that went wrong made: the records it named
+// and every live record of the court around the booking that carries its
+// set tag and the partner's marker (YCLIENTS may have made records it did
+// not name, or answered nothing). It works on after the caller's context
+// ends, within its own limit. What it cannot delete it logs.
+func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, named []string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
+	defer cancel()
+	left := 0
+	done := map[string]bool{}
+	for _, id := range named {
+		if err := d.deleteRecord(ctx, id); err != nil {
+			left++
+			d.log.Error("yclients: a record of a failed create is left", "record", id, "err", err)
+		}
+		done[id] = true
+	}
+	records, err := d.fetchRecords(ctx, localDay(req.Start, d.loc).AddDate(0, 0, -1), localDay(req.End, d.loc))
+	if err != nil {
+		d.log.Error("yclients: a failed create could not look for its records: some may be left", "court", req.Court, "err", err)
+		return
+	}
+	key := strings.TrimSuffix(strings.TrimPrefix(tag, "[cg-set:"), "]") // "<key>/<n>", as setOf reads it
+	for _, r := range records {
+		k, _, ok := setOf(r.Comment)
+		if r.Deleted || !ok || k != key || r.StaffID.String() != staff || !hasMarker(*r.Comment, req.Partner) || done[r.ID.String()] {
+			continue
+		}
+		if err := d.deleteRecord(ctx, r.ID.String()); err != nil {
+			left++
+			d.log.Error("yclients: a record of a failed create is left", "record", r.ID.String(), "err", err)
+		}
+	}
+	if left == 0 {
+		d.log.Warn("yclients: a failed create was undone", "court", req.Court)
+	}
+}
+
+// undoTimeout bounds undo after the request that needed it.
+const undoTimeout = 30 * time.Second
 
 // details is GET /record: what reading, cancelling and the payment mark
 // need. The client's phone comes masked ("+7900XXXXX00").
@@ -256,7 +305,7 @@ func (d *Driver) read(ctx context.Context, rid string) (*details, bool, error) {
 	case http.StatusNotFound:
 		return nil, false, nil
 	default:
-		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /record: HTTP %d: %s", r.status, r.message()))
+		return nil, false, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /record: HTTP %d", r.status))
 	}
 	var rec details
 	if json.Unmarshal(r.data, &rec) != nil || json.Unmarshal(r.data, &rec.raw) != nil || rec.raw == nil {
@@ -422,7 +471,7 @@ func (d *Driver) deleteRecord(ctx context.Context, rid string) error {
 	case r.status >= 200 && r.status < 300, r.status == http.StatusNotFound:
 		return nil
 	default:
-		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /record: HTTP %d: %s", r.status, r.message()))
+		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("DELETE /record: HTTP %d", r.status))
 	}
 }
 
@@ -447,12 +496,17 @@ func (d *Driver) MarkPaid(ctx context.Context, id, partner string) error {
 	if !ok {
 		return driver.ErrNotFound
 	}
-	live, _, err := d.readParts(ctx, ids)
+	live, gone, err := d.readParts(ctx, ids)
 	if err != nil {
 		return err
 	}
-	if len(live) == 0 {
+	switch {
+	case len(live) == 0:
 		return driver.ErrNotFound
+	case gone > 0:
+		// D11: a deleted record has nothing to mark, and the payment must
+		// not read as marked
+		return driver.Upstream(driver.UpstreamRejected, "a record of the booking is deleted in the journal: the paid mark is not written")
 	}
 	for _, p := range live {
 		if !d.owned(p.rec, partner) {
@@ -482,7 +536,7 @@ func (d *Driver) markRecord(ctx context.Context, p part) error {
 		return err
 	}
 	if r.status < 200 || r.status >= 300 {
-		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("PUT /record: HTTP %d: %s", r.status, r.message()))
+		return driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("PUT /record: HTTP %d", r.status))
 	}
 	after, found, err := d.read(ctx, p.id)
 	switch {

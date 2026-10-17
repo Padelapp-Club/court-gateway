@@ -126,17 +126,8 @@ type envelope struct {
 	Meta    json.RawMessage `json:"meta"`
 }
 
-// message is meta.message of an error answer, for the log: YCLIENTS
-// writes there what it refused, never the caller's data.
-func (r response) message() string {
-	var m struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(r.meta, &m) == nil && m.Message != "" {
-		return m.Message
-	}
-	return "без текста"
-}
+// The text YCLIENTS puts in meta.message is never carried into an error
+// (they are logged): it may echo what was sent, a client's name or phone.
 
 // do sends one request. 2xx answers come back decoded (success=false is a
 // rejection); 404 and other 4xx except 401/403/429 come back as they are,
@@ -171,9 +162,9 @@ func (c *client) do(ctx context.Context, method, path string, q url.Values, body
 			if relogin && c.dropToken(used) {
 				continue
 			}
-			return r, driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s %s: HTTP 401 (key not recognized): %s", method, path, r.message()))
+			return r, driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s %s: HTTP 401 (key not recognized)", method, path))
 		case http.StatusForbidden:
-			return r, driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s %s: HTTP 403 (the application has no rights): %s", method, path, r.message()))
+			return r, driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s %s: HTTP 403 (the application has no rights)", method, path))
 		}
 		return r, nil
 	}
@@ -239,7 +230,7 @@ func (c *client) send(ctx context.Context, method, path string, q url.Values, pa
 				return r, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("%s %s: answer is not a YCLIENTS envelope", method, path))
 			}
 			if r.success != nil && !*r.success {
-				return r, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("%s %s: success=false: %s", method, path, r.message()))
+				return r, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("%s %s: success=false", method, path))
 			}
 		}
 		return r, nil
@@ -309,7 +300,7 @@ func (c *client) loginLocked(ctx context.Context) (string, error) {
 		// factor: an answer without a token is taken as that.
 		return "", c.refuse(driver.Upstream(driver.UpstreamAuth, "POST /auth: no user_token in the answer (a second factor? set "+UserTokenEnv+")"))
 	case err == nil && (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden || r.status == http.StatusUnprocessableEntity || r.status == http.StatusBadRequest):
-		return "", c.refuse(driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("POST /auth: HTTP %d: the login was refused: %s", r.status, r.message())))
+		return "", c.refuse(driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("POST /auth: HTTP %d: the login was refused", r.status)))
 	case err == nil:
 		err = driver.Upstream(driver.UpstreamLogin, fmt.Sprintf("POST /auth: HTTP %d", r.status))
 	case errors.As(err, &ue) && ue.Kind == driver.UpstreamRejected:

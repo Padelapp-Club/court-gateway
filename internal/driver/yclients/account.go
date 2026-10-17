@@ -64,7 +64,7 @@ func (a *Account) companies(ctx context.Context) ([]companyItem, error) {
 		return nil, err
 	}
 	if r.status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /companies: HTTP %d: %s", r.status, r.message()))
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /companies: HTTP %d", r.status))
 	}
 	var list []companyItem
 	if len(r.data) == 0 || r.data[0] != '[' || json.Unmarshal(r.data, &list) != nil {

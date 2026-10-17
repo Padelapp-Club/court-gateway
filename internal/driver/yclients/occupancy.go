@@ -97,7 +97,7 @@ func (d *Driver) fetchRecords(ctx context.Context, first, last time.Time) ([]rec
 			return nil, err
 		}
 		if r.status != http.StatusOK {
-			return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /records: HTTP %d: %s", r.status, r.message()))
+			return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /records: HTTP %d", r.status))
 		}
 		var data []record
 		if len(r.data) == 0 || r.data[0] != '[' || json.Unmarshal(r.data, &data) != nil {
@@ -135,7 +135,7 @@ func (d *Driver) working(ctx context.Context, staff string, ds []time.Time) ([][
 		return nil, err
 	}
 	if r.status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /schedule: HTTP %d: %s", r.status, r.message()))
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /schedule: HTTP %d", r.status))
 	}
 	var sched []scheduleDay
 	if len(r.data) == 0 || r.data[0] != '[' || json.Unmarshal(r.data, &sched) != nil {

@@ -58,7 +58,7 @@ func (d *Driver) readCompany(ctx context.Context) (*company, error) {
 	case http.StatusNotFound:
 		return nil, &driver.MisconfigError{Problems: []string{fmt.Sprintf("crm.company_id: филиала %s в YCLIENTS нет", d.company)}}
 	default:
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /company: HTTP %d: %s", r.status, r.message()))
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /company: HTTP %d", r.status))
 	}
 	var c company
 	if json.Unmarshal(r.data, &c) != nil || c.ID.String() != d.company {
@@ -73,7 +73,7 @@ func (d *Driver) readStaff(ctx context.Context) ([]staffMember, error) {
 		return nil, err
 	}
 	if r.status != http.StatusOK {
-		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /company/staff: HTTP %d: %s", r.status, r.message()))
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /company/staff: HTTP %d", r.status))
 	}
 	var list []staffMember
 	if len(r.data) == 0 || r.data[0] != '[' || json.Unmarshal(r.data, &list) != nil {

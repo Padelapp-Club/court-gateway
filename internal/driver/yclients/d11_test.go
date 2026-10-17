@@ -391,21 +391,24 @@ func TestD11UntileableNoBookRecord(t *testing.T) {
 	}
 }
 
-// D11: book_record naming fewer records than asked fails the create, and
-// the records it did name are deleted again.
+// D11: book_record naming fewer records than asked fails the create; the
+// records it named are deleted again, and so is the one it made without
+// naming it (found by the booking's set tag; review round 1, B2).
 func TestD11ShortIDsCompensated(t *testing.T) {
 	f := newFixture(t, d11TileCourt(opts{stub: func(s *yclientsstub.Stub) { s.ShortIDs(true) }}))
 	d := d11Day(f)
 	_, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
 	d11Upstream(t, err, driver.UpstreamInvalid)
 	dels := d11Writes(f, http.MethodDelete, "/record/"+company+"/")
-	if len(dels) != 1 {
-		t.Fatalf("DELETE writes = %+v, want the one named record", dels)
+	if len(dels) != 2 {
+		t.Fatalf("DELETE writes = %+v, want both records of the failed create", dels)
 	}
-	var id int64
-	fmt.Sscan(strings.TrimPrefix(dels[0].Path, "/record/"+company+"/"), &id)
-	if r, ok := f.stub.Record(id); !ok || !r.Deleted {
-		t.Fatalf("named record %d is not deleted", id)
+	for _, w := range dels {
+		var id int64
+		fmt.Sscan(strings.TrimPrefix(w.Path, "/record/"+company+"/"), &id)
+		if r, ok := f.stub.Record(id); !ok || !r.Deleted {
+			t.Fatalf("record %d is not deleted", id)
+		}
 	}
 }
 
@@ -463,8 +466,9 @@ func TestD11CommentMarkerAndCut(t *testing.T) {
 	if len(w) != 1 || json.Unmarshal(w[0].Body, &body) != nil {
 		t.Fatalf("book_record writes = %+v", w)
 	}
-	if body.Comment != "[cg:booker] Иван" {
-		t.Fatalf("comment = %q, want %q", body.Comment, "[cg:booker] Иван")
+	// the marker, the booking's set tag (one record), the note
+	if !regexp.MustCompile(`^\[cg:booker\] \[cg-set:[0-9a-f]{8}/1\] Иван$`).MatchString(body.Comment) {
+		t.Fatalf("comment = %q, want %q", body.Comment, "[cg:booker] [cg-set:<key>/1] Иван")
 	}
 	// a long note is cut
 	note := strings.Repeat("я", 600)
@@ -476,7 +480,7 @@ func TestD11CommentMarkerAndCut(t *testing.T) {
 	if len(w) != 2 || json.Unmarshal(w[1].Body, &body) != nil {
 		t.Fatalf("book_record writes = %d", len(w))
 	}
-	if !strings.HasPrefix(body.Comment, "[cg:booker] я") {
+	if !regexp.MustCompile(`^\[cg:booker\] \[cg-set:[0-9a-f]{8}/1\] я`).MatchString(body.Comment) {
 		t.Fatalf("comment starts %q", body.Comment[:20])
 	}
 	if n := utf8.RuneCountInString(body.Comment + "\n" + yclients.PaidMark); n > 500 {

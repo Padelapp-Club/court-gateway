@@ -96,6 +96,8 @@ type Stub struct {
 	logins    int
 	writes    []Write
 	failNext  map[string]int             // path prefix -> status, once
+	failMsg   map[string]string          // path prefix -> meta.message of that failure
+	bookFail  int                        // book_record makes the records, then answers this
 	shortIDs  bool                       // book_record names one record fewer
 	pageSize  int                        // 0 = as asked
 	totalLies int                        // added to total_count
@@ -111,7 +113,7 @@ func New(partner, userToken, login, password, company string, zone *time.Locatio
 	return &Stub{
 		Partner: partner, UserToken: userToken, Login: login, Password: password, Company: company, Title: "Тестовый филиал", Zone: zone,
 		staff: map[string]*Staff{}, schedule: map[string]map[string]Day{}, records: map[int64]*Record{},
-		nextID: 2017300000, tokens: map[string]bool{}, failNext: map[string]int{},
+		nextID: 2017300000, tokens: map[string]bool{}, failNext: map[string]int{}, failMsg: map[string]string{},
 		DefaultDay: Day{Working: true, Slots: [][2]string{{"07:00", "00:00"}}},
 	}
 }
@@ -177,6 +179,34 @@ func (s *Stub) FailNext(prefix string, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failNext[prefix] = status
+}
+
+// FailNextWith is FailNext with meta.message text of the caller's.
+func (s *Stub) FailNextWith(prefix string, status int, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNext[prefix] = status
+	s.failMsg[prefix] = message
+}
+
+// BookThenFail makes book_record create its records and answer status
+// (0: answer as usual), as a 5xx after the write would.
+func (s *Stub) BookThenFail(status int) { s.mu.Lock(); s.bookFail = status; s.mu.Unlock() }
+
+// SetServices replaces a court's catalog.
+func (s *Stub) SetServices(staff string, svc []Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staff[staff].Services = svc
+}
+
+// Delete deletes a record as the club would in the journal.
+func (s *Stub) Delete(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.records[id]; r != nil {
+		r.Deleted = true
+	}
 }
 
 // ShortIDs makes book_record name one record fewer than it created.
@@ -266,7 +296,12 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for p, st := range s.failNext {
 		if strings.HasPrefix(path, p) {
 			delete(s.failNext, p)
-			fail(w, st, "injected failure")
+			msg := "injected failure"
+			if m, ok := s.failMsg[p]; ok {
+				msg = m
+				delete(s.failMsg, p)
+			}
+			fail(w, st, msg)
 			return
 		}
 	}
@@ -609,6 +644,10 @@ func (s *Stub) book(w http.ResponseWriter, body []byte) {
 			continue
 		}
 		out = append(out, map[string]any{"id": in.Appointments[i].ID, "record_id": s.nextID, "record_hash": "h"})
+	}
+	if s.bookFail != 0 {
+		fail(w, s.bookFail, "injected failure after the write")
+		return
 	}
 	writeJSON(w, http.StatusCreated, true, out, nil)
 }
