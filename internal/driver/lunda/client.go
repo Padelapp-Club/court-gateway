@@ -564,12 +564,19 @@ func profileCurrent(ctx context.Context, c *client) error {
 // lundaCourt is a court of the club as court/settings/load-list lists it
 // (result.infos, seen live 2026-10-17): its courtUid, title and number,
 // and its court category, whose tariff prices it.
+//
+// Active and CategoryInfo.Name are not read, but are decoded on purpose:
+// a court whose "active" is not a boolean or whose category name is not a
+// string fails decoding, so CheckConfig reports the answer as invalid
+// instead of passing a shape it does not know (review r9).
 type lundaCourt struct {
 	CourtUID     string `json:"courtUid"`
 	Title        string `json:"title"`
 	Number       *int   `json:"number"`
+	Active       *bool  `json:"active"`
 	CategoryInfo *struct {
 		ID              string `json:"id"`
+		Name            string `json:"name"`
 		HasActiveTariff *bool  `json:"hasActiveTariff"`
 	} `json:"categoryInfo"`
 }
