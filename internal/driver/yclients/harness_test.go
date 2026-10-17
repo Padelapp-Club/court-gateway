@@ -165,10 +165,7 @@ func (f *fixture) env() *contract.Env {
 		SeedForeign: func(t *testing.T, court string, start, end time.Time) string {
 			return fmt.Sprintf("y-%d", f.seedClubBooking(staffOf(court), start, end))
 		},
-		Price: func(day time.Time) contract.PriceCase {
-			s := time.Date(day.Year(), day.Month(), day.Day(), 10, 0, 0, 0, day.Location())
-			return contract.PriceCase{Court: "court-1", Start: s, End: s.Add(90 * time.Minute)}
-		},
+		Price:          nil, // no prices (Capabilities.NoPrices)
 		Logs:           f.built.Logs.String,
 		PrivacyMarkers: privacyMarkers,
 		Advance:        f.clk.add,

@@ -3,6 +3,8 @@ package yclients
 import "github.com/Padelapp-Club/court-gateway/internal/driver"
 
 func init() {
+	driver.Register("yclients", driver.CRM{Driver: New, Account: NewAccount, ClubCRMKeys: ClubCRMKeys,
+		StudioKeys: []string{StudioKey}, CourtKeys: []string{RoomKey}})
 	driver.RegisterSetup("yclients", driver.SetupSpec{
 		Name:  "YCLIENTS",
 		Needs: "партнёрский токен YCLIENTS и пользовательский токен (или логин и пароль сотрудника филиала)",

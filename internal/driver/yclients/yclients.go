@@ -47,8 +47,7 @@ const (
 var ClubCRMKeys = []string{"company_id", "client_phone", "client_name", "client_email"}
 
 // StudioKey (of the crm section) and RoomKey (of a court) hold the CRM
-// resources a club takes: two clubs never share one. The hub learns them
-// through drivers.ResourceKeys.
+// resources a club takes: two clubs never share one (driver.CRM, setup.go).
 const StudioKey, RoomKey = "company_id", "staff_id"
 
 var digitsRe = regexp.MustCompile(`^[0-9]{1,18}$`)
@@ -239,7 +238,7 @@ func (d *Driver) Resource(court string) string {
 func (d *Driver) Studio() string { return d.company }
 
 // Capabilities: the payment mark goes into the record's comment (D11);
-// prices are in rubles.
+// no prices (see PriceTable); the CRM's currency is the ruble.
 func (d *Driver) Capabilities() driver.Capabilities {
-	return driver.Capabilities{Payments: true, Currency: "RUB"}
+	return driver.Capabilities{Payments: true, NoPrices: true, Currency: "RUB"}
 }
