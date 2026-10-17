@@ -365,6 +365,17 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	if password != "" {
 		s.Secrets = append(s.Secrets, password)
 	}
+	// the secrets the crm.type declares, CRM_PASSWORD among them or not
+	s.Driver.Secrets = map[string]string{}
+	if password != "" {
+		s.Driver.Secrets[PasswordEnv] = password
+	}
+	for _, name := range driver.SecretEnvs(s.CRMType) {
+		if v := getenv(name); v != "" && name != PasswordEnv {
+			s.Driver.Secrets[name] = v
+			s.Secrets = append(s.Secrets, v)
+		}
+	}
 
 	if len(errs) > 0 {
 		return nil, &ConfigError{Problems: errs}

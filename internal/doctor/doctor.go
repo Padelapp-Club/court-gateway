@@ -302,7 +302,7 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 			msg += "; сама служба больше не пробует войти"
 		}
 		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: msg,
-			Hint: "служба не может войти в Viva и пробует снова лишь изредка, а потом перестаёт: проверьте пароль, затем court-gateway set-password — служба войдёт сразу"})
+			Hint: "служба не может войти в CRM и пробует снова лишь изредка, а потом перестаёт: проверьте пароль, затем court-gateway set-password — служба войдёт сразу"})
 	case loginFailed:
 		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM, Hint: crmHint(svc.CRM)})
 	default:

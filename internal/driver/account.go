@@ -122,3 +122,65 @@ type Discovery struct {
 	Hours   [7]*[2]int
 	Notices []Notice
 }
+
+// SetupField is an installation-level key of the `crm` section that setup
+// asks for (or takes from a flag or the environment) and writes to
+// gateway.yaml. It is never a secret: secrets are SetupSecrets.
+type SetupField struct {
+	Key  string // the crm key, e.g. "username"
+	Flag string // the setup flag without dashes, e.g. "crm-username"
+	Env  string // optional environment fallback, e.g. "CRM_USERNAME"
+	// Prompt is the interactive question, in Russian; empty: flag only
+	// (an endpoint override for test doubles).
+	Prompt   string
+	Required bool
+}
+
+// SetupSecret is a CRM secret setup writes to .env (mode 0600), never to
+// gateway.yaml. The gateway reads it from the environment, keeps it out of
+// logs and hands it to the driver in Config.Secrets.
+type SetupSecret struct {
+	Env      string // e.g. "CRM_PASSWORD"
+	Prompt   string // the interactive question, in Russian
+	Required bool
+}
+
+// SetupSpec is what setup needs for one crm.type: the driver's own words
+// for the administrator, the keys and the secrets. Drivers register theirs
+// with RegisterSetup, so setup and the config loader know no CRM by name.
+type SetupSpec struct {
+	// Name is the CRM as a club knows it ("Viva").
+	Name string
+	// Needs completes «Понадобятся … и код подключения.», in Russian.
+	Needs   string
+	Fields  []SetupField
+	Secrets []SetupSecret
+	// Hidden types are never offered to a club (the demo CRM).
+	Hidden bool
+}
+
+var setups = map[string]SetupSpec{}
+
+// RegisterSetup declares the setup of a crm.type; a driver package calls
+// it from init. A second registration of a type panics.
+func RegisterSetup(crmType string, spec SetupSpec) {
+	if _, dup := setups[crmType]; dup {
+		panic("driver: setup of crm.type " + crmType + " registered twice")
+	}
+	setups[crmType] = spec
+}
+
+// SetupFor returns the registered setup of a crm.type.
+func SetupFor(crmType string) (SetupSpec, bool) {
+	s, ok := setups[crmType]
+	return s, ok
+}
+
+// SecretEnvs are the environment variables holding a crm.type's secrets.
+func SecretEnvs(crmType string) []string {
+	var out []string
+	for _, s := range setups[crmType].Secrets {
+		out = append(out, s.Env)
+	}
+	return out
+}

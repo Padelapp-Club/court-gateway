@@ -9,6 +9,24 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 )
 
+// DefaultCRM is the crm.type setup takes when none is given: the CRM of
+// the first installations, kept so their instructions stay true.
+const DefaultCRM = "viva"
+
+func init() {
+	driver.RegisterSetup("viva", driver.SetupSpec{
+		Name:  "Viva",
+		Needs: "логин и пароль администратора Viva",
+		Fields: []driver.SetupField{
+			{Key: "username", Flag: "crm-username", Env: "CRM_USERNAME", Prompt: "Логин администратора Viva (e-mail)", Required: true},
+			{Key: "auth_url", Flag: "crm-auth-url"},
+			{Key: "api_url", Flag: "crm-api-url"},
+		},
+		Secrets: []driver.SetupSecret{{Env: "CRM_PASSWORD", Prompt: "Пароль администратора Viva", Required: true}},
+	})
+	driver.RegisterSetup("demo", driver.SetupSpec{Name: "демо-CRM", Needs: "только код подключения (демо-CRM, не для клубов)", Hidden: true})
+}
+
 // Factories build the driver of one club, by crm.type.
 var Factories = map[string]driver.Factory{"viva": viva.New, "demo": demo.New}
 

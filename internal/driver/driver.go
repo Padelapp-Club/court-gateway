@@ -186,6 +186,9 @@ type Config struct {
 	// CRM holds every key of the `crm` section except `type`.
 	CRM      Params
 	Password string
+	// Secrets are the values of the environment variables the crm.type
+	// declares (SetupSpec.Secrets), by name; CRM_PASSWORD is also Password.
+	Secrets map[string]string
 	Courts   []CourtConfig
 	// Services maps "booking"/"tournament" to driver-specific parameters.
 	Services map[string]Params

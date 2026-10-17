@@ -11,10 +11,12 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,11 +41,28 @@ type Input struct {
 	// gateway pins is authenticated apart from the TLS of the enrollment.
 	HubKey            string
 	HubKeyFingerprint string
-	CRMType           string // viva (default), or another of Deps.Accounts
-	Username          string
-	Password          string
-	AuthURL           string // optional CRM endpoint overrides (test doubles)
-	APIURL            string
+	CRMType           string // drivers.DefaultCRM when empty, or another of Deps.Accounts
+	// CRM holds the installation's crm keys the CRM type asks for
+	// (driver.SetupSpec.Fields), by key.
+	CRM map[string]string
+	// Password is CRM_PASSWORD; Secrets the CRM type's other secrets
+	// (driver.SetupSpec.Secrets), by environment variable.
+	Password string
+	Secrets  map[string]string
+}
+
+// Spec is the setup of the input's CRM type (empty for an unknown type).
+func (in Input) Spec() driver.SetupSpec {
+	s, _ := driver.SetupFor(in.crmType())
+	return s
+}
+
+// Secret returns the value of a secret environment variable of the input.
+func (in Input) Secret(env string) string {
+	if env == core.PasswordEnv {
+		return in.Password
+	}
+	return in.Secrets[env]
 }
 
 // Deps are injectable for tests.
@@ -113,22 +132,26 @@ func (in Input) Missing() []string {
 	if in.HubKey == "" && in.HubKeyFingerprint == "" {
 		out = append(out, "--hub-key-fingerprint (или GATEWAY_HUB_KEY_FINGERPRINT; отпечаток ключа хаба приходит вместе с кодом подключения)")
 	}
-	if in.crmType() == "viva" {
-		if in.Username == "" {
-			out = append(out, "--crm-username")
+	spec := in.Spec()
+	for _, f := range spec.Fields {
+		if f.Required && strings.TrimSpace(in.CRM[f.Key]) == "" {
+			out = append(out, "--"+f.Flag)
 		}
-		if in.Password == "" {
-			out = append(out, "CRM_PASSWORD (или --password-stdin)")
+	}
+	for _, x := range spec.Secrets {
+		if x.Required && in.Secret(x.Env) == "" {
+			if x.Env == core.PasswordEnv {
+				out = append(out, core.PasswordEnv+" (или --password-stdin)")
+			} else {
+				out = append(out, x.Env)
+			}
 		}
 	}
 	return out
 }
 
 func (in Input) crmType() string {
-	if in.CRMType == "" {
-		return "viva"
-	}
-	return in.CRMType
+	return cmp.Or(in.CRMType, drivers.DefaultCRM)
 }
 
 // Run performs setup. The returned Result is always filled; err is a
@@ -164,7 +187,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	factory, ok := deps.Accounts[in.crmType()]
 	if !ok {
-		return fail(problem("INVALID_INPUT", "тип CRM «%s» не поддерживается (viva)", in.CRMType))
+		return fail(problem("INVALID_INPUT", "тип CRM «%s» не поддерживается (%s)", in.CRMType, strings.Join(slices.Sorted(maps.Keys(deps.Accounts)), ", ")))
 	}
 	if in.ConfigPath == "" {
 		in.ConfigPath = "gateway.yaml"
@@ -181,21 +204,26 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			}
 		}
 	}
-	d := &draft{HubURL: strings.TrimRight(in.HubURL, "/"), HubCA: in.HubCAFile, CRMType: in.crmType(),
-		Username: in.Username, AuthURL: in.AuthURL, APIURL: in.APIURL, Now: deps.Now()}
+	d := &draft{HubURL: strings.TrimRight(in.HubURL, "/"), HubCA: in.HubCAFile, CRMType: in.crmType(), Now: deps.Now()}
 
-	// 1. the CRM login, before the join code is spent
+	// 1. the CRM login, before the join code is spent: the keys and the
+	// secrets the CRM type declares, and nothing else
+	spec := in.Spec()
 	crm := driver.Params{}
-	if d.CRMType == "viva" {
-		crm["username"] = in.Username
-		if in.AuthURL != "" {
-			crm["auth_url"] = in.AuthURL
-		}
-		if in.APIURL != "" {
-			crm["api_url"] = in.APIURL
+	for _, f := range spec.Fields {
+		if v := strings.TrimSpace(in.CRM[f.Key]); v != "" {
+			crm[f.Key] = v
+			d.CRM = append(d.CRM, [2]string{f.Key, v})
 		}
 	}
-	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, HTTPClient: deps.CRMClient, Now: deps.Now})
+	secrets := map[string]string{}
+	for _, x := range spec.Secrets {
+		if v := in.Secret(x.Env); v != "" {
+			secrets[x.Env] = v
+			d.Secrets = append(d.Secrets, [2]string{x.Env, v})
+		}
+	}
+	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, Secrets: secrets, HTTPClient: deps.CRMClient, Now: deps.Now})
 	if err != nil {
 		return fail(problem("INVALID_INPUT", "%v", err))
 	}
@@ -281,7 +309,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if p != nil {
 		return fail(p)
 	}
-	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(in.Password, reg.Secret, d.CRMType)), 0o600); err != nil {
+	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(d.Secrets, reg.Secret)), 0o600); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", envPath, err))
 	}
 	if deps.ProtectSecrets != nil {
