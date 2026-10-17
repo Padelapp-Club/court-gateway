@@ -48,10 +48,10 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}
 	svc := d.services[req.Kind]
 	if svc == "" {
-		return driver.Booking{}, fmt.Errorf("no rental service is configured for %s bookings: %w", req.Kind, driver.ErrNotSupported)
+		return driver.Booking{}, fmt.Errorf("no rental service is configured for %s bookings: %w", req.Kind, driver.ErrBookingNotConfigured)
 	}
 	if !d.writer(req.Partner) {
-		return driver.Booking{}, fmt.Errorf("the 1C technical client books for another partner: %w", driver.ErrNotSupported)
+		return driver.Booking{}, fmt.Errorf("the 1C technical client books for another partner: %w", driver.ErrBookingNotConfigured)
 	}
 	loc, err := d.zoneNow(ctx)
 	if err != nil {
@@ -119,11 +119,11 @@ func (d *Driver) bookingServiceNow(ctx context.Context, svc string) error {
 			continue
 		}
 		if s.PaymentRequired == nil || *s.PaymentRequired || !free(s.Price) || s.step() != seance {
-			return driver.Upstream(driver.UpstreamRejected, "the booking service is no longer free, without a payment basis, of 30-minute seances")
+			return fmt.Errorf("the booking service is no longer free, without a payment basis, of 30-minute seances: %w", driver.ErrBookingNotConfigured)
 		}
 		return nil
 	}
-	return driver.Upstream(driver.UpstreamRejected, "the booking service is not among the club's rental services")
+	return fmt.Errorf("the booking service is not among the club's rental services: %w", driver.ErrBookingNotConfigured)
 }
 
 // compensate removes a rental that must not exist, up to three times; the

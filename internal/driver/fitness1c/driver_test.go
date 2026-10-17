@@ -118,12 +118,12 @@ func TestAStaleClientTokenIsIssuedAgain(t *testing.T) {
 func TestWritesNeedAServiceAndThePartner(t *testing.T) {
 	d := day()
 	f := newFixture(t, fixtureOpts{services: map[string]map[string]any{}})
-	if _, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0)); !errors.Is(err, driver.ErrNotSupported) {
+	if _, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0)); !errors.Is(err, driver.ErrBookingNotConfigured) {
 		t.Fatalf("no service: %v", err)
 	}
 	f = newFixture(t, fixtureOpts{})
 	_, err := f.drv.Create(ctx, driver.CreateRequest{Court: "court-1", Start: at(d, 10, 0), End: at(d, 11, 0), Kind: driver.KindGame, Partner: "other"})
-	if !errors.Is(err, driver.ErrNotSupported) || len(f.stub.Rentals()) != 0 {
+	if !errors.Is(err, driver.ErrBookingNotConfigured) || len(f.stub.Rentals()) != 0 {
 		t.Fatalf("another partner: %v, rentals %v", err, f.stub.Rentals())
 	}
 }
@@ -557,8 +557,7 @@ func TestCreateChecksTheBookingServiceNow(t *testing.T) {
 		// the zone is read first, the services after it
 		f.stub.Fail("GET /rental_services/", fitness1cstub.Failure{Body: body})
 		_, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
-		var ue *driver.UpstreamError
-		if !errors.As(err, &ue) || f.stub.Calls("POST /rental/") != 0 {
+		if !errors.Is(err, driver.ErrBookingNotConfigured) || f.stub.Calls("POST /rental/") != 0 {
 			t.Fatalf("%s: create %v, posts %d", name, err, f.stub.Calls("POST /rental/"))
 		}
 	}
