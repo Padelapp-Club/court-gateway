@@ -242,6 +242,11 @@ If `"ok": false`, act on `error.code`:
 | `FOLDER_NOT_RESTRICTED` | Windows: the folder could not be closed to everyone but Administrators and SYSTEM — re-run setup in PowerShell as Administrator; nothing was written and the join code is **not** spent |
 | `WRITE_FAILED` | `gateway.yaml` or `.env` could not be written (the message names the file) — fix the folder's permissions or free disk space; if the code was already spent, ask for a new one |
 | `INTERNAL` | a bug: the config setup built does not load — stop and report the message to the human |
+| `LOGIN_REQUIRED` | the CRM has no password (Lunda): a member of the club's staff logs the gateway in — run setup **without** `--non-interactive` in a terminal the human sees, so they scan the QR code or type the code; nothing was written, the join code is **not** spent |
+| `CRM_LOGIN_EXPIRED` | the QR code or the code expired before the human confirmed — run setup again; the join code is **not** spent |
+| `CRM_LOGIN_DECLINED` | the human declined the login in the CRM's app, or the code was wrong three times — ask them, then run setup again |
+| `CRM_LOGIN_ABORTED` / `CRM_LOGIN_FAILED` | the login was interrupted or failed otherwise (the message says how) — run setup again; the join code is **not** spent |
+| `CLIENT_NOT_CHOSEN` | choosing the club's service client failed (the CRM did not answer the search) — run setup again; to skip the choice answer the search with an empty line (the gateway then reads and does not book: warning `NO_SERVICE_CLIENT`) |
 
 ## Step 4 — install the service
 

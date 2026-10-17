@@ -82,6 +82,17 @@ type Deps struct {
 	// Note, when set, takes a remark that does not change the outcome
 	// (the CRM session of the login check was not ended).
 	Note func(string)
+	// Login logs an interactive account in with a person (QR or code;
+	// LoginInteractively in a terminal). Without it setup of such a CRM
+	// fails: nobody can log the gateway in.
+	Login func(context.Context, driver.InteractiveLogin) error
+	// PickClient has the person choose the club's service client of a
+	// ClientPicker account; it returns the client's id. Without it, or
+	// with "" chosen, the gateway reads and does not book.
+	PickClient func(context.Context, driver.ClientPicker) (string, error)
+	// Sessions keeps the session of an interactive login; default: the
+	// state directory of the config being written.
+	Sessions driver.SessionStore
 }
 
 // Warning is something the administrator must look at.
@@ -223,12 +234,41 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			d.Secrets = append(d.Secrets, [2]string{x.Env, v})
 		}
 	}
-	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, Secrets: secrets, HTTPClient: deps.CRMClient, Now: deps.Now})
+	sessions := deps.Sessions
+	if sessions == nil && spec.Interactive {
+		sessions = core.SessionStore(core.StateDir(cfgPath, nil))
+	}
+	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, Secrets: secrets, HTTPClient: deps.CRMClient, Now: deps.Now, Sessions: sessions})
 	if err != nil {
 		return fail(problem("INVALID_INPUT", "%v", err))
 	}
+	if il, ok := acct.(driver.InteractiveLogin); ok {
+		// a person logs the gateway in, every setup: the session is the
+		// one the service will use (saved in its state directory)
+		if deps.Login == nil {
+			return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", cmp.Or(spec.Name, d.CRMType)))
+		}
+		if err := deps.Login(ctx, il); err != nil {
+			return fail(loginProblem(err))
+		}
+	}
 	if p := checkLogin(ctx, acct, deps.Note); p != nil {
 		return fail(p)
+	}
+	if cp, ok := acct.(driver.ClientPicker); ok && crm[cp.ClientKey()] == nil {
+		id := ""
+		if deps.PickClient != nil {
+			if id, err = deps.PickClient(ctx, cp); err != nil {
+				return fail(problem("CLIENT_NOT_CHOSEN", "служебный клиент не выбран: %v", err))
+			}
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			crm[cp.ClientKey()] = id
+			d.CRM = append(d.CRM, [2]string{cp.ClientKey(), id})
+		} else {
+			res.Warnings = append(res.Warnings, Warning{Code: "NO_SERVICE_CLIENT",
+				Message: "служебный клиент клуба не выбран: шлюз будет только показывать занятость, брони PadelApp не встанут — выберите его, запустив setup ещё раз"})
+		}
 	}
 	d.HubKey = placeholderKey
 	if _, p := validate(d, crm, "pending", "", in.Password, "placeholder-secret"); p != nil {
@@ -350,6 +390,25 @@ func checkLogin(ctx context.Context, acct driver.Account, note func(string)) *Pr
 		return problem("CRM_INVALID_RESPONSE", "CRM ответила в непонятном формате")
 	default:
 		return problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже")
+	}
+}
+
+// loginProblem names the failure of an interactive login.
+func loginProblem(err error) *Problem {
+	var ue *driver.UpstreamError
+	switch {
+	case errors.Is(err, driver.ErrLoginExpired):
+		return problem("CRM_LOGIN_EXPIRED", "время входа истекло — запустите ещё раз")
+	case errors.Is(err, driver.ErrLoginDeclined):
+		return problem("CRM_LOGIN_DECLINED", "вход отклонён в приложении CRM или код неверный")
+	case errors.Is(err, context.Canceled):
+		return problem("CRM_LOGIN_ABORTED", "вход прерван")
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamInvalid:
+		return problem("CRM_INVALID_RESPONSE", "CRM ответила в непонятном формате")
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamUnavailable:
+		return problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже")
+	default:
+		return problem("CRM_LOGIN_FAILED", "вход в CRM не удался: %v", err)
 	}
 }
 

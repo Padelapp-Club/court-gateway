@@ -228,6 +228,9 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 		return nil, err
 	}
 	s.StateDir = StateDir(path, getenv)
+	// an interactive account's CRM session is the installation's, wherever
+	// it is loaded (serve, doctor, login)
+	s.Driver.Sessions = SessionStore(s.StateDir)
 	return s, nil
 }
 

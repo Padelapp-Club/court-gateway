@@ -165,7 +165,7 @@ func Run(ctx context.Context, o Options) Report {
 	loginOK, login := true, len(r.Checks)
 	if err := withTimeout(ctx, o.Timeout, acct.CheckLogin); err != nil {
 		loginOK = false
-		add(Check{Code: CodeCRMLogin, Status: Fail, Message: own + "вход в CRM не удался: " + core.ReadyReason(err), Hint: crmHint(core.ReadyReason(err))})
+		add(Check{Code: CodeCRMLogin, Status: Fail, Message: own + "вход в CRM не удался: " + core.ReadyReason(err), Hint: crmHint(s.CRMType, core.ReadyReason(err))})
 	} else {
 		add(Check{Code: CodeCRMLogin, Status: OK, Message: own + "вход в CRM выполнен"})
 	}
@@ -190,7 +190,7 @@ func Run(ctx context.Context, o Options) Report {
 			_, err := c.drv.Occupancy(ctx, driver.OccupancyQuery{Courts: c.courts, From: now, To: now.Add(24 * time.Hour)})
 			return err
 		}); err != nil {
-			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + c.id + " не читается: " + core.ReadyReason(err), Hint: crmHint(core.ReadyReason(err))})
+			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + c.id + " не читается: " + core.ReadyReason(err), Hint: crmHint(s.CRMType, core.ReadyReason(err))})
 		} else {
 			add(Check{Code: CodeOccupancy, Status: OK, Message: "занятость клуба " + c.id + " на сутки вперёд читается"})
 		}
@@ -294,6 +294,9 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 	case svc.CRM == "":
 		out = append(out, Check{Code: CodeCRMLogin, Status: Warn, Message: unusable,
 			Hint: "повторите doctor через минуту; если не поможет — перезапустите службу"})
+	case loginFailed && svc.CRM == "CRM_AUTH_FAILED" && interactive(s.CRMType):
+		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM + "; служба не пишет в CRM до нового входа",
+			Hint: crmHint(s.CRMType, svc.CRM)})
 	case loginFailed && svc.CRM == "CRM_AUTH_FAILED":
 		msg := from + "вход в CRM не удался: " + svc.CRM
 		if !svc.CRMNextLogin.IsZero() {
@@ -304,7 +307,7 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: msg,
 			Hint: "служба не может войти в CRM и пробует снова лишь изредка, а потом перестаёт: проверьте пароль, затем court-gateway set-password — служба войдёт сразу"})
 	case loginFailed:
-		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM, Hint: crmHint(svc.CRM)})
+		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM, Hint: crmHint(s.CRMType, svc.CRM)})
 	default:
 		out = append(out, Check{Code: CodeCRMLogin, Status: OK, Message: from + "вход в CRM выполнен"})
 	}
@@ -327,7 +330,7 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 		// config mismatch is HUB_CONFIG's
 		out = append(out, Check{Code: CodeOccupancy, Status: OK, Message: from + "занятость клубов на сегодня читается"})
 	default:
-		out = append(out, Check{Code: CodeOccupancy, Status: Fail, Message: from + "занятость клуба " + clubs + " не читается: " + svc.CRM, Hint: crmHint(svc.CRM)})
+		out = append(out, Check{Code: CodeOccupancy, Status: Fail, Message: from + "занятость клуба " + clubs + " не читается: " + svc.CRM, Hint: crmHint(s.CRMType, svc.CRM)})
 	}
 	return append(out, hubOut...)
 }
@@ -354,7 +357,17 @@ func finish(r Report) Report {
 	return r
 }
 
-func crmHint(reason string) string {
+// interactive: a person logs the gateway in to this CRM (no password).
+func interactive(crmType string) bool {
+	spec, _ := driver.SetupFor(crmType)
+	return spec.Interactive
+}
+
+func crmHint(crmType, reason string) string {
+	switch {
+	case reason == "CRM_AUTH_FAILED" && interactive(crmType):
+		return "сессия CRM закончилась или отозвана: сотрудник клуба входит заново командой court-gateway login (QR-код или код из сообщения) — служба подхватит вход сама"
+	}
 	switch reason {
 	case "CRM_AUTH_FAILED":
 		return "проверьте логин в gateway.yaml и пароль CRM_PASSWORD в .env"

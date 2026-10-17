@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/drivers"
 )
 
@@ -42,6 +43,9 @@ func SetPassword(ctx context.Context, cfgPath, password string, getenv func(stri
 	s, err := core.LoadFile(cfgPath, env)
 	if err != nil {
 		return problem("CONFIG_INVALID", "%v", err)
+	}
+	if spec, _ := driver.SetupFor(s.CRMType); spec.Interactive {
+		return problem("NO_PASSWORD", "у CRM %s нет пароля: в неё входит сотрудник клуба — court-gateway login", cmp.Or(spec.Name, s.CRMType))
 	}
 	cfg := s.Driver
 	cfg.HTTPClient = cmp.Or(deps.CRMClient, cfg.HTTPClient)
