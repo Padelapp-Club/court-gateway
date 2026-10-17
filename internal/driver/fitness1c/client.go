@@ -250,8 +250,12 @@ func (c *client) asClient(ctx context.Context, f func(tok string) error) error {
 }
 
 func networkError(op string, err error) error {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return fmt.Errorf("%s: %w", op, err)
+	// never the *url.Error itself: its text is the whole URL, query included
+	// (the technical client's phone)
+	for _, ce := range []error{context.DeadlineExceeded, context.Canceled} {
+		if errors.Is(err, ce) {
+			return fmt.Errorf("%s: %w", op, ce)
+		}
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {

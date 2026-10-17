@@ -447,3 +447,22 @@ func TestServicesWithoutAWholeStepAreRefused(t *testing.T) {
 	_, err := f.drv.Occupancy(ctx, driver.OccupancyQuery{Courts: []string{"court-1"}, From: at(d, 10, 0), To: at(d, 11, 0)})
 	upstreamKind(t, err, driver.UpstreamInvalid)
 }
+
+// A 1C too slow for the request's deadline: the error says so without the
+// URL, whose query carries the technical client's phone.
+func TestATimeoutDoesNotCarryThePhone(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.stub.Fail("GET /client_usertoken/", fitness1cstub.Failure{Delay: 2 * time.Second})
+	c, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	d := day()
+	_, err := f.drv.Create(c, driver.CreateRequest{Court: "court-1", Start: at(d, 10, 0), End: at(d, 11, 0), Kind: driver.KindGame, Partner: partner})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want a deadline", err)
+	}
+	for _, s := range []string{strings.TrimPrefix(clientPhone, "+"), "phone="} {
+		if strings.Contains(err.Error(), s) {
+			t.Fatalf("the error carries %q: %v", s, err)
+		}
+	}
+}

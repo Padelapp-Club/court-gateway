@@ -79,6 +79,8 @@ type Failure struct {
 	Apply bool
 	// Body replaces the answer's body (with Status, 200 when 0).
 	Body string
+	// Delay holds the answer back (a slow 1C), then answers normally.
+	Delay time.Duration
 }
 
 // New builds an instance with one club.
@@ -242,6 +244,14 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	user, pass, basic := r.BasicAuth()
 	authed := basic && user == s.user && pass == s.password && r.Header.Get("apikey") == s.apiKey
 	s.mu.Unlock()
+	if scripted && f.Delay > 0 {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(f.Delay):
+		}
+		scripted = false
+	}
 	if scripted && !f.Apply {
 		switch {
 		case f.Drop:
