@@ -242,6 +242,7 @@ func TestDoctorReportsTheServicesCRMState(t *testing.T) {
 		"CRM check from the future":   {aheadCheck, doctor.Warn, doctor.Skip, "нет свежих данных службы: время проверки CRM", "через минуту"},
 		"status without its version":  {noVersion, doctor.Warn, doctor.Skip, "данные службы неполные", "через минуту"},
 		"unknown CRM result":          {unknownResult, doctor.Warn, doctor.Skip, "неизвестный результат", "через минуту"},
+		"a driver's config alert":     {running("SERVICE_CLIENT_MISSING", "club-a"), doctor.OK, doctor.Warn, from, ""},
 		"ok CRM, CRM reason":          {contradicting, doctor.Warn, doctor.Skip, "расходится", "через минуту"},
 		"failed CRM, ready":           {okButFailed, doctor.Warn, doctor.Skip, "расходится", "через минуту"},
 	} {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -215,6 +216,16 @@ const statusFresh = 3 * core.HealthStatusInterval
 var crmResults = map[string]bool{"ok": true, "NOT_READY": true, "CRM_AUTH_FAILED": true, "CRM_AUTH_ERROR": true, "CRM_UNREACHABLE": true,
 	"CRM_TIMEOUT": true, "CRM_ERROR": true, "CRM_INVALID_RESPONSE": true, "CRM_REJECTED": true, "CONFIG_MISMATCH": true, "TIMEZONE_MISMATCH": true}
 
+// alertCode is the form of a driver's own config alert code
+// (driver.ConfigAlert, e.g. SERVICE_CLIENT_MISSING); CRM_ codes are the
+// core's and are only those listed.
+var alertCode = regexp.MustCompile(`^[A-Z][A-Z_]{2,40}$`)
+
+// isCRMResult: crmResults, or a driver's config alert.
+func isCRMResult(code string) bool {
+	return crmResults[code] || (alertCode.MatchString(code) && !strings.HasPrefix(code, "CRM_"))
+}
+
 // serviceStatus reads the service's status file; present when a service
 // writes it: not older than statusFresh (or ahead of the clock). A
 // service that has not finished its first CRM check yet (it starts at
@@ -256,14 +267,14 @@ func judgeStatus(st core.HealthStatus, present bool, state service.State, now ti
 		return st, stale + "время данных службы впереди часов компьютера (" + at(st.Time) + ")"
 	case st.Version == "" || (st.Hub != "connected" && st.Hub != "disconnected"):
 		return st, stale + "данные службы неполные"
-	case legacy && !st.Ready && st.Reason != "ok" && crmResults[st.Reason]:
+	case legacy && !st.Ready && st.Reason != "ok" && isCRMResult(st.Reason):
 		st.CRM, st.CRMCheckedAt = st.Reason, st.Time
 		return st, ""
 	case st.CRM == "":
 		return st, stale + "служба ещё не сообщила результат проверки CRM"
-	case !crmResults[st.CRM]:
+	case !isCRMResult(st.CRM):
 		return st, stale + "неизвестный результат проверки CRM"
-	case st.CRM == "ok" && crmResults[st.Reason], st.CRM != "ok" && (st.Ready || st.Reason != st.CRM):
+	case st.CRM == "ok" && isCRMResult(st.Reason), st.CRM != "ok" && (st.Ready || st.Reason != st.CRM):
 		return st, stale + "результат проверки CRM расходится с готовностью службы"
 	case st.CRMCheckedAt.IsZero():
 		return st, stale + "нет времени проверки CRM службой"
@@ -325,6 +336,11 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 		out = append(out, Check{Code: CodeOccupancy, Status: Skip, Message: "нет клуба, конфигурация которого подходит CRM"})
 	case len(remoteClubs) == 0:
 		out = append(out, Check{Code: CodeOccupancy, Status: Skip, Message: "клубов пока нет: оператор ещё не подключил клубы на хабе"})
+	case !crmResults[svc.CRM] && isCRMResult(svc.CRM):
+		// a driver's own config alert: the club is served, something in
+		// the CRM is not set up (e.g. Lunda's service client)
+		out = append(out, Check{Code: CodeOccupancy, Status: Warn, Message: from + "занятость клубов читается, но CRM сообщает о незаконченной настройке клуба " + clubs + ": " + svc.CRM,
+			Hint: "что именно не так — в журнале службы рядом с gateway.yaml (court-gateway.log) по коду " + svc.CRM})
 	case svc.CRM == "ok" || !strings.HasPrefix(svc.CRM, "CRM_"):
 		// a config alert comes only after the club's reads passed; a
 		// config mismatch is HUB_CONFIG's
