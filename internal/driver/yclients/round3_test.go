@@ -49,8 +49,33 @@ func TestReviewR3UndoNeverDeletesAMaskTwin(t *testing.T) {
 			if !found {
 				t.Fatalf("the club's record of the twin client was deleted: %+v", liveOnCourt1(t, f, d))
 			}
+			if n := len(liveOnCourt1(t, f, d)); c.wantLeft > 0 && n != c.wantLeft || c.wantLeft < 0 && n != 1 {
+				t.Fatalf("%d records left, want %d (the named ones deleted, the twin kept)", n, map[bool]int{true: 1, false: c.wantLeft}[c.wantLeft < 0])
+			}
 		})
 	}
 }
 
 func fmtSscanf(id string, n *int64) (int, error) { return fmt.Sscanf(id, "y-%d", n) }
+
+// Verification of 78f0607: when a candidate of the undo cannot be read,
+// what the answer did not name is not deleted — the unreadable one may be
+// the gateway's own, and the readable one the club's twin.
+func TestReviewR3UnreadCandidateKeepsTheTwin(t *testing.T) {
+	const twin = "79001234500"
+	f := newFixture(t, oneHourCourt(opts{stub: func(s *yclientsstub.Stub) {
+		s.CopyAfterBook(0, twin)
+		s.BookThenFail(http.StatusInternalServerError)
+		s.FailNext("/api/v1/record/", http.StatusInternalServerError) // the undo's first read: the gateway's record
+	}}))
+	d := d11Day(f)
+	if _, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 11, 0), Kind: driver.KindGame, Partner: "booker"}); err == nil {
+		t.Fatalf("the create passed")
+	}
+	if w := d11Writes(f, http.MethodDelete, "/record/"); len(w) != 0 {
+		t.Fatalf("the undo deleted %d records with a candidate unread", len(w))
+	}
+	if n := len(liveOnCourt1(t, f, d)); n != 2 {
+		t.Fatalf("%d records left, want both (the gateway's, occupied, and the club's twin)", n)
+	}
+}

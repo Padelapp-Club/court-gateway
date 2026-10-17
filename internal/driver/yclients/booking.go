@@ -238,9 +238,10 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 // and starts where one of the booking's records was to start: a club's copy
 // of the record — the comment kept, another client or another time — is not
 // touched. YCLIENTS shows a client's phone masked, so another client's may
-// read as the service client's: when more records than one claim one start
-// of the booking, they cannot be told apart, and only those the answer named
-// are deleted; the rest stay (occupied, never freed) and are logged. It works
+// read as the service client's. So a record the answer did not name is
+// deleted only when every candidate was read and it alone claims its start;
+// otherwise only the named ones go, the rest stay (occupied, never freed)
+// and are logged. It works
 // on after the caller's context ends, within its own limit; what it cannot
 // delete it logs.
 func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, plan []appointmentBody, named []string) {
@@ -269,7 +270,7 @@ func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateR
 	}
 	// the records that are this booking's by everything the gateway can read,
 	// by the start they claim
-	left, done := 0, map[string]bool{}
+	left, done, unread := 0, map[string]bool{}, err != nil
 	claims := map[int64][]string{}
 	for _, id := range candidates {
 		if done[id] {
@@ -279,6 +280,7 @@ func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateR
 		rec, found, err := d.read(ctx, id)
 		if err != nil {
 			left++
+			unread = true
 			d.log.Error("yclients: a record of a failed create could not be read: it may be left", "record", id, "err", err)
 			continue
 		}
@@ -295,7 +297,7 @@ func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateR
 	}
 	for _, ids := range claims {
 		for _, id := range ids {
-			if len(ids) > 1 && !isNamed[id] {
+			if (len(ids) > 1 || unread) && !isNamed[id] {
 				left++
 				d.log.Error("yclients: records of a failed create cannot be told from a club's: left in the journal, check them by hand", "court", req.Court, "record", id)
 				continue
