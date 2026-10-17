@@ -11,9 +11,9 @@ import (
 )
 
 type draft struct {
-	HubURL, HubCA   string
-	HubKey          string
-	CRMType         string
+	HubURL, HubCA string
+	HubKey        string
+	CRMType       string
 	// CRM are the installation's crm keys and Secrets the CRM secrets
 	// (environment variable, value), in the order the CRM type declares.
 	CRM, Secrets [][2]string
