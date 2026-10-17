@@ -259,6 +259,7 @@ func TestConfigValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(d.Close) // its keep-alive must not outlive the fixture
 	var me *driver.MisconfigError
 	if err := d.CheckConfig(context.Background()); !errors.As(err, &me) || !strings.Contains(me.Error(), "нет в клубе Лунды") {
 		t.Fatalf("check: %v", err)
