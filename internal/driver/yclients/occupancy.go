@@ -283,15 +283,22 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 
 // recordIntervals turns the records on the wanted courts (staff id ->
 // court) into intervals. The records of one booking of the gateway made
-// of several (a repeated service) are one interval under the booking's id.
-// A record of a wanted court that cannot be read fails the answer; others'
-// (a coach's) are not looked at.
+// of several (a repeated service, see setTag) are one interval under the
+// booking's id when all of them are there, back to back on one court;
+// otherwise each is its own. A record of a wanted court that cannot be
+// read fails the answer; others' (a coach's) are not looked at.
 func (d *Driver) recordIntervals(records []record, want map[string]string) ([]driver.Interval, error) {
-	type part struct {
+	type piece struct {
 		id         string
 		start, end time.Time
 	}
-	sets := map[string][]part{}
+	type set struct {
+		court  string
+		n      int
+		pieces []piece
+	}
+	sets := map[string]*set{}
+	var keys []string
 	var out []driver.Interval
 	for _, r := range records {
 		if r.Deleted {
@@ -305,53 +312,39 @@ func (d *Driver) recordIntervals(records []record, want map[string]string) ([]dr
 		if !ok || !digitsRe.MatchString(r.ID.String()) {
 			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /records: a record in an unexpected form")
 		}
-		if key, n, ok := setOf(r.Comment); ok && n > 1 {
-			sets[r.StaffID.String()+" "+key] = append(sets[r.StaffID.String()+" "+key], part{r.ID.String(), start, end})
-			if len(sets[r.StaffID.String()+" "+key]) <= n {
-				continue
-			}
+		key, n, tagged := setOf(r.Comment)
+		if !tagged {
+			out = append(out, driver.Interval{ID: "y-" + r.ID.String(), Court: court, Start: start, End: end})
+			continue
 		}
-		out = append(out, driver.Interval{ID: "y-" + r.ID.String(), Court: court, Start: start, End: end})
+		key = r.StaffID.String() + " " + key
+		if sets[key] == nil {
+			sets[key] = &set{court: court, n: n}
+			keys = append(keys, key)
+		}
+		sets[key].pieces = append(sets[key].pieces, piece{r.ID.String(), start, end})
 	}
-	keys := make([]string, 0, len(sets))
-	for k := range sets {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	for _, k := range keys {
-		parts := sets[k]
-		staff, _, _ := strings.Cut(k, " ")
-		court := want[staff]
-		_, n, _ := setOfKey(k)
-		if len(parts) > n {
-			continue // more parts than the tag says: each was reported as a record above
+		st := sets[k]
+		ps := st.pieces
+		sort.Slice(ps, func(i, j int) bool { return ps[i].start.Before(ps[j].start) })
+		whole := len(ps) == st.n
+		for i := 1; whole && i < len(ps); i++ {
+			whole = ps[i].start.Equal(ps[i-1].end)
 		}
-		sort.Slice(parts, func(i, j int) bool { return parts[i].start.Before(parts[j].start) })
-		if len(parts) != n || !contiguous(parts[0].end, parts[1:], func(p part) (time.Time, time.Time) { return p.start, p.end }) {
-			for _, p := range parts { // a part is gone or moved: each stands alone
-				out = append(out, driver.Interval{ID: "y-" + p.id, Court: court, Start: p.start, End: p.end})
+		if !whole { // a part is gone, moved or one too many: each stands alone
+			for _, p := range ps {
+				out = append(out, driver.Interval{ID: "y-" + p.id, Court: st.court, Start: p.start, End: p.end})
 			}
 			continue
 		}
-		ids := make([]string, len(parts))
-		for i, p := range parts {
+		ids := make([]string, len(ps))
+		for i, p := range ps {
 			ids[i] = p.id
 		}
-		out = append(out, driver.Interval{ID: "y-" + strings.Join(ids, "-"), Court: court, Start: parts[0].start, End: parts[len(parts)-1].end})
+		out = append(out, driver.Interval{ID: "y-" + strings.Join(ids, "-"), Court: st.court, Start: ps[0].start, End: ps[len(ps)-1].end})
 	}
 	return out, nil
-}
-
-// contiguous: every next part starts where the one before it ended.
-func contiguous[T any](end time.Time, rest []T, span func(T) (time.Time, time.Time)) bool {
-	for _, p := range rest {
-		s, e := span(p)
-		if !s.Equal(end) {
-			return false
-		}
-		end = e
-	}
-	return true
 }
 
 // Ready implements driver.Driver: the config check (which reads the

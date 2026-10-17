@@ -95,10 +95,12 @@ type Stub struct {
 	tokens    map[string]bool // issued by /auth
 	logins    int
 	writes    []Write
-	failNext  map[string]int // path prefix -> status, once
-	shortIDs  bool           // book_record names one record fewer
-	pageSize  int            // 0 = as asked
-	totalLies int            // added to total_count
+	failNext  map[string]int             // path prefix -> status, once
+	shortIDs  bool                       // book_record names one record fewer
+	pageSize  int                        // 0 = as asked
+	totalLies int                        // added to total_count
+	listDel   bool                       // records lists include deleted records
+	omitDays  map[string]map[string]bool // staff -> date: left out of the schedule answer
 	// DefaultDay is a court's day without an explicit schedule.
 	DefaultDay Day
 }
@@ -185,6 +187,23 @@ func (s *Stub) PageSize(n int) { s.mu.Lock(); s.pageSize = n; s.mu.Unlock() }
 
 // LieTotal adds n to every total_count (a promise the pages do not keep).
 func (s *Stub) LieTotal(n int) { s.mu.Lock(); s.totalLies = n; s.mu.Unlock() }
+
+// ListDeleted makes records lists include deleted records (deleted: true),
+// as a live YCLIENTS may.
+func (s *Stub) ListDeleted(on bool) { s.mu.Lock(); s.listDel = on; s.mu.Unlock() }
+
+// OmitDay leaves a court's local date "2006-01-02" out of schedule answers.
+func (s *Stub) OmitDay(staff, date string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.omitDays == nil {
+		s.omitDays = map[string]map[string]bool{}
+	}
+	if s.omitDays[staff] == nil {
+		s.omitDays[staff] = map[string]bool{}
+	}
+	s.omitDays[staff][date] = true
+}
 
 // RevokeTokens forgets the user tokens logins issued.
 func (s *Stub) RevokeTokens() { s.mu.Lock(); s.tokens = map[string]bool{}; s.mu.Unlock() }
@@ -333,6 +352,9 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		to, _ := time.ParseInLocation("2006-01-02", m[4], s.Zone)
 		var out []any
 		for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
+			if s.omitDays[m[2]][d.Format("2006-01-02")] {
+				continue
+			}
 			day, ok := s.schedule[m[2]][d.Format("2006-01-02")]
 			if !ok {
 				day = s.DefaultDay
@@ -386,9 +408,10 @@ func (s *Stub) listRecords(w http.ResponseWriter, r *http.Request) {
 	to = to.AddDate(0, 0, 1)
 	var list []*Record
 	for _, rec := range s.records {
-		// [ASSUMPTION] records are selected by the local date of their start,
-		// deleted ones included (D11 saw deleted:true only by id)
-		if !rec.Start.Before(from) && rec.Start.Before(to) && !rec.Deleted {
+		// [ASSUMPTION] records are selected by the local date of their start;
+		// deleted ones are left out unless ListDeleted (D11 saw deleted:true
+		// only by id, and the driver skips it either way)
+		if !rec.Start.Before(from) && rec.Start.Before(to) && (!rec.Deleted || s.listDel) {
 			list = append(list, rec)
 		}
 	}

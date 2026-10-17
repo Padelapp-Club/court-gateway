@@ -85,16 +85,6 @@ func setOf(comment *string) (key string, n int, ok bool) {
 	return m[1] + "/" + m[2], n, true
 }
 
-// setOfKey reads n back from a "<staff> <key>/<n>" key of recordIntervals.
-func setOfKey(k string) (string, int, bool) {
-	i := strings.LastIndex(k, "/")
-	if i < 0 {
-		return "", 0, false
-	}
-	n, err := strconv.Atoi(k[i+1:])
-	return k[:i], n, err == nil
-}
-
 // recordIDs splits a booking id into its records.
 func recordIDs(id string) ([]string, bool) {
 	if !bookingIDRe.MatchString(id) {

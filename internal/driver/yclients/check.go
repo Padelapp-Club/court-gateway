@@ -151,12 +151,11 @@ func (d *Driver) CheckConfig(ctx context.Context) error {
 		if b := s.IsBookable; b != nil && !*b || b == nil && s.Bookable != nil && !*s.Bookable {
 			problems = append(problems, fmt.Sprintf("%s: корт «%s» в YCLIENTS закрыт для записи", path, name))
 		}
-		switch till := ""; {
-		case s.ScheduleTill != nil && dateRe.MatchString(*s.ScheduleTill) && *s.ScheduleTill != "0000-00-00" && *s.ScheduleTill < horizon:
-			till = *s.ScheduleTill
-			alert("SCHEDULE_SHORT", fmt.Sprintf("%s: расписание корта «%s» в YCLIENTS заполнено только до %s, а продаётся до %s — дальше корт занят; продлите расписание", path, name, till, horizon))
-		case s.ScheduleTill == nil || !dateRe.MatchString(*s.ScheduleTill) || *s.ScheduleTill == "0000-00-00":
+		switch till := s.ScheduleTill; {
+		case till == nil || !dateRe.MatchString(*till) || *till == "0000-00-00":
 			problems = append(problems, fmt.Sprintf("%s: у корта «%s» в YCLIENTS не заполнено расписание", path, name))
+		case *till < horizon:
+			alert("SCHEDULE_SHORT", fmt.Sprintf("%s: расписание корта «%s» в YCLIENTS заполнено только до %s, а продаётся до %s — дальше корт занят; продлите расписание", path, name, *till, horizon))
 		}
 		if truthy(s.Hidden) {
 			alert("STAFF_HIDDEN", fmt.Sprintf("%s: корт «%s» скрыт из онлайн-записи YCLIENTS — запись через API может быть отклонена", path, name))

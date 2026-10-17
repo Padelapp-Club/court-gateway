@@ -9,11 +9,10 @@ import (
 // service is a court's service as book_services lists it (with staff_id:
 // seance_length is null without one).
 type service struct {
-	ID            int64    `json:"id"`
-	SeanceLength  *float64 `json:"seance_length"`
-	PriceMin      float64  `json:"price_min"`
-	Active        *int     `json:"active"`
-	seanceSeconds int
+	ID           int64    `json:"id"`
+	SeanceLength *float64 `json:"seance_length"`
+	PriceMin     float64  `json:"price_min"`
+	Active       *int     `json:"active"`
 }
 
 func (s service) usable() bool {

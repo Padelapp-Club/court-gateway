@@ -35,6 +35,10 @@ const (
 	rejectedRetryMax = 4 * time.Hour
 	loginRetry       = 5 * time.Second
 	loginRetryMax    = time.Minute
+	// reloginAfter: a user token YCLIENTS refuses is replaced by a new
+	// login only when the last login is this old, so a user without the
+	// rights (401 on every call) does not log in at every request.
+	reloginAfter = time.Minute
 )
 
 // minInterval spaces the process's requests: YCLIENTS allows 200 a minute
@@ -95,8 +99,9 @@ type client struct {
 	mu        sync.Mutex
 	fixedUser string // YCLIENTS_USER_TOKEN: never replaced
 	password  string
-	token     string // from the last login
-	rejected  error  // the last login was refused: none before retryAt
+	token     string    // from the last login
+	loggedIn  time.Time // when token was issued
+	rejected  error     // the last login was refused: none before retryAt
 	rejects   int
 	loginErr  error // the last login failed otherwise
 	failures  int
@@ -262,22 +267,27 @@ func (c *client) userToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	c.token = tok
+	c.token, c.loggedIn = tok, c.now()
 	return tok, nil
 }
 
-// dropToken forgets the login's token the CRM refused; false when there is
-// nothing to log in again with (a configured token, or another request
-// already replaced it).
+// dropToken forgets the login's token the CRM refused, so the request is
+// sent again with a new login's; false when it is not to be sent again: a
+// configured token, or a login younger than reloginAfter. A token another
+// request already replaced is not dropped, the request goes with the new.
 func (c *client) dropToken(used string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.fixedUser != "" {
 		return false
 	}
-	if c.token == used {
-		c.token = ""
+	if c.token != used {
+		return true
 	}
+	if c.now().Sub(c.loggedIn) < reloginAfter {
+		return false
+	}
+	c.token = ""
 	return true
 }
 
