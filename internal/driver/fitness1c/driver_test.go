@@ -3,6 +3,9 @@ package fitness1c_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +41,7 @@ func create(f *fixture, court string, start, end time.Time) (driver.Booking, err
 // A service that needs a payment basis gives a 15-minute reservation, not a
 // booking: it is removed and the create refused (no half-booking).
 func TestCreateOfATemporaryReservationIsUndone(t *testing.T) {
-	f := newFixture(t, fixtureOpts{services: map[string]map[string]any{"booking": {"service": gridSvc}}})
+	f := newFixture(t, fixtureOpts{wrap: rewriteCreate(answeredConfirmed, answeredTemporary)})
 	d := day()
 	_, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
 	upstreamKind(t, err, driver.UpstreamRejected)
@@ -53,7 +56,7 @@ func TestCreateOfATemporaryReservationIsUndone(t *testing.T) {
 // The removal is tried three times; the last failure leaves an error with
 // the rental's id in the log for removal by hand.
 func TestCompensationTriesThreeTimes(t *testing.T) {
-	f := newFixture(t, fixtureOpts{services: map[string]map[string]any{"booking": {"service": gridSvc}}})
+	f := newFixture(t, fixtureOpts{wrap: rewriteCreate(answeredConfirmed, answeredTemporary)})
 	f.stub.Fail("DELETE /rental/", fitness1cstub.Failure{Status: 500}, fitness1cstub.Failure{Status: 500}, fitness1cstub.Failure{Status: 500})
 	d := day()
 	if _, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0)); err == nil {
@@ -522,5 +525,71 @@ func TestCheckConfigRefusesAPricedBookingService(t *testing.T) {
 	var me *driver.MisconfigError
 	if err := f.drv.CheckConfig(ctx); !errors.As(err, &me) || !strings.Contains(err.Error(), "цена не 0") {
 		t.Fatalf("a priced booking service: %v", err)
+	}
+}
+
+// A non-temporary rental in another status (reserved_and_payed: a payment
+// basis was found) is not a free booking either: removed, refused
+// (clean-room round 3).
+func TestCreateOfAnotherStatusIsUndone(t *testing.T) {
+	f := newFixture(t, fixtureOpts{wrap: rewriteCreate(answeredConfirmed, `"status":"reserved_and_payed","temporarily_reserved":false`)})
+	d := day()
+	_, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
+	upstreamKind(t, err, driver.UpstreamRejected)
+	if left := f.stub.Rentals(); len(left) != 0 {
+		t.Fatalf("rentals left in 1C: %v", left)
+	}
+}
+
+// The club changes the booking service after its config was checked: a
+// price, a payment basis or another step each refuse the create before
+// anything is written (clean-room round 3).
+func TestCreateChecksTheBookingServiceNow(t *testing.T) {
+	d := day()
+	for name, svc := range map[string]string{
+		"priced":    `{"id":"` + padelSvc + `","seance_length":30,"price":"875","payment_required":false}`,
+		"basis":     `{"id":"` + padelSvc + `","seance_length":30,"price":"0","payment_required":true}`,
+		"longer":    `{"id":"` + padelSvc + `","seance_length":60,"price":"0","payment_required":false}`,
+		"withdrawn": `{"id":"` + hourSvc + `","seance_length":60,"price":"1750","payment_required":true}`,
+	} {
+		f := newFixture(t, fixtureOpts{})
+		body := `{"result":true,"data":[{"id":"` + gridSvc + `","seance_length":30,"price":"875","payment_required":true},` + svc + `]}`
+		// the zone is read first, the services after it
+		f.stub.Fail("GET /rental_services/", fitness1cstub.Failure{Body: body})
+		_, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
+		var ue *driver.UpstreamError
+		if !errors.As(err, &ue) || f.stub.Calls("POST /rental/") != 0 {
+			t.Fatalf("%s: create %v, posts %d", name, err, f.stub.Calls("POST /rental/"))
+		}
+	}
+}
+
+// 1C makes the rental and its answer is cut off after the headers: the
+// POST is sent once more and 1C, idempotent per client and slot, gives the
+// same rental (clean-room round 3).
+func TestCreateRetriesABodyCutOff(t *testing.T) {
+	posts := 0
+	f := newFixture(t, fixtureOpts{wrap: func(stub http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/hs/api/v3/rental/" {
+				if posts++; posts == 1 {
+					rec := httptest.NewRecorder()
+					stub.ServeHTTP(rec, r)
+					w.Header().Set("Content-Length", fmt.Sprint(rec.Body.Len()))
+					w.WriteHeader(rec.Code)
+					_, _ = w.Write(rec.Body.Bytes()[:1])
+					return
+				}
+			}
+			stub.ServeHTTP(w, r)
+		})
+	}})
+	d := day()
+	b, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left := f.stub.Rentals(); len(left) != 1 || b.ID != "f-"+left[0] || posts != 2 {
+		t.Fatalf("booking %s, rentals %v, posts %d", b.ID, left, posts)
 	}
 }

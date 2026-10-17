@@ -57,6 +57,12 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	if err != nil {
 		return driver.Booking{}, err
 	}
+	// the club may have changed the service since its config was checked:
+	// a price or a payment basis would leave a debt or a 15-minute
+	// reservation, another step another length (count x step)
+	if err := d.bookingServiceNow(ctx, svc); err != nil {
+		return driver.Booking{}, err
+	}
 	minutes := int(req.End.Sub(req.Start) / time.Minute)
 	start := req.Start.In(loc)
 	if minutes <= 0 || minutes%seance != 0 || start.Minute()%seance != 0 || start.Second() != 0 {
@@ -98,6 +104,26 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}
 	d.log.Info("rental created", "court", req.Court, "count", minutes/seance)
 	return driver.Booking{ID: ownID(id), Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
+}
+
+// bookingServiceNow reads the rental services and checks the booking
+// service as CheckConfig does: present, free, no payment basis, the proven
+// step.
+func (d *Driver) bookingServiceNow(ctx context.Context, svc string) error {
+	list, err := listServices(ctx, d.c, d.studio)
+	if err != nil {
+		return err
+	}
+	for _, s := range list {
+		if s.id() != svc {
+			continue
+		}
+		if s.PaymentRequired == nil || *s.PaymentRequired || !free(s.Price) || s.step() != seance {
+			return driver.Upstream(driver.UpstreamRejected, "the booking service is no longer free, without a payment basis, of 30-minute seances")
+		}
+		return nil
+	}
+	return driver.Upstream(driver.UpstreamRejected, "the booking service is not among the club's rental services")
 }
 
 // compensate removes a rental that must not exist, up to three times; the

@@ -1,9 +1,11 @@
 package fitness1c_test
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"maps"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -85,6 +87,7 @@ type fixtureOpts struct {
 	now      func() time.Time
 	timezone string
 	env      map[string]string // overrides of the installation's env
+	wrap     func(stub http.Handler) http.Handler
 }
 
 func testClub(o fixtureOpts) core.ClubSpec {
@@ -121,7 +124,11 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	t.Helper()
 	stub := newStub()
 	stub.Now = o.now
-	srv := httptest.NewServer(stub)
+	var h http.Handler = stub
+	if o.wrap != nil {
+		h = o.wrap(stub)
+	}
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	b := contract.Build(t, crmYAML(srv.URL, o.extraCRM), testClub(o), installEnv(o), "fitness1c", fitness1c.New, func(c *driver.Config) {
 		c.HTTPClient = srv.Client()
@@ -195,3 +202,26 @@ func stubServer(t *testing.T, s *fitness1cstub.Stub) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// rewriteCreate passes POST /rental/ to 1C (the rental is made) and
+// rewrites the answer: 1C answering a created rental with another status.
+func rewriteCreate(from, to string) func(http.Handler) http.Handler {
+	return func(stub http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.URL.Path != "/hs/api/v3/rental/" {
+				stub.ServeHTTP(w, r)
+				return
+			}
+			rec := httptest.NewRecorder()
+			stub.ServeHTTP(rec, r)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(rec.Code)
+			_, _ = w.Write(bytes.Replace(rec.Body.Bytes(), []byte(from), []byte(to), 1))
+		})
+	}
+}
+
+const (
+	answeredConfirmed = `"status":"reserved","temporarily_reserved":false`
+	answeredTemporary = `"status":"temporarily_reserved_need_payment","temporarily_reserved":true`
+)

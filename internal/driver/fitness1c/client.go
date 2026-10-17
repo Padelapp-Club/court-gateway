@@ -145,16 +145,22 @@ func (c *client) call(ctx context.Context, method, path string, query url.Values
 		}
 		return c.http.Do(req)
 	}
-	resp, err := send()
+	// the answer is only had once its body is read: a body cut off after
+	// the headers is as lost as no answer
+	exchange := func() (*http.Response, []byte, error) {
+		resp, err := send()
+		if err != nil {
+			return nil, nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		resp.Body.Close()
+		return resp, data, err
+	}
+	resp, data, err := exchange()
 	if err != nil && retry && ctx.Err() == nil {
 		c.log.Warn("1C: no answer, one retry", "op", op)
-		resp, err = send()
+		resp, data, err = exchange()
 	}
-	if err != nil {
-		return nil, networkError(op, err)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	resp.Body.Close()
 	if err != nil {
 		return nil, networkError(op, err)
 	}
