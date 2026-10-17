@@ -20,7 +20,11 @@ func isoWeekday(t time.Time) int { return (int(t.Weekday()) + 6) % 7 }
 // onDate is the table that prices the local date of lt (in the rules'
 // zone): its Dates entry if it has one, else the weekly table.
 func onDate(t driver.PriceTable, lt time.Time) driver.PriceTable {
-	rules, ok := t.Dates[lt.Format("2006-01-02")]
+	date := lt.Format("2006-01-02")
+	if t.DatesFrom != "" && (date < t.DatesFrom || date > t.DatesTo) {
+		return driver.PriceTable{Zone: t.Zone} // not known: no price
+	}
+	rules, ok := t.Dates[date]
 	if !ok {
 		return t
 	}

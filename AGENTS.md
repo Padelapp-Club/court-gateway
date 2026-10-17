@@ -90,8 +90,16 @@ $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva passw
 #   $env:GATEWAY_HUB_KEY_FINGERPRINT = Read-Host 'Hub key fingerprint'
 ```
 
-The blocks above are for **Viva**. For **Lunda** collect only the join code (the first line of the
-block, and the hub lines for a self-built binary): there is no login and no password to ask for.
+The blocks above are for **Viva**. For **Lunda** collect only the join code (and the hub lines for a
+self-built binary): there is no login and no password to ask for.
+
+```sh
+printf 'Join code: '; stty -echo; read -r GATEWAY_JOIN_CODE; stty echo; echo; export GATEWAY_JOIN_CODE
+```
+
+```powershell
+$env:GATEWAY_JOIN_CODE = [Net.NetworkCredential]::new('', (Read-Host 'Join code' -AsSecureString)).Password
+```
 
 **1C:Fitness** instead of the two Viva lines (the address, the user, then the two secrets):
 
@@ -133,7 +141,7 @@ variables of the `setup` command in step 3 and nowhere else; never repeat them b
 
 **Verify (Viva, 1C:Fitness):** `test -n "$CRM_PASSWORD" && test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
 (PowerShell: `if ($env:CRM_PASSWORD -and $env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
-**Verify (Lunda):** `test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
+**Verify (Lunda):** `sh -c 'test -n "$GATEWAY_JOIN_CODE"' && echo inputs-ok` (a child process must see it)
 (PowerShell: `if ($env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
 **Verify (YCLIENTS):** `test -n "$GATEWAY_JOIN_CODE" && test -n "$YCLIENTS_PARTNER_TOKEN" && { test -n "$YCLIENTS_USER_TOKEN" || { test -n "$CRM_LOGIN" && test -n "$CRM_PASSWORD"; }; } && echo inputs-ok`
 (PowerShell: `if ($env:GATEWAY_JOIN_CODE -and $env:YCLIENTS_PARTNER_TOKEN -and ($env:YCLIENTS_USER_TOKEN -or ($env:CRM_LOGIN -and $env:CRM_PASSWORD))) { 'inputs-ok' }`).

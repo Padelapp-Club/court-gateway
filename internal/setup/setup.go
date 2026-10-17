@@ -265,8 +265,11 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			}
 		}
 		defer func() {
-			if !res.OK {
-				_ = sessions.SaveSession(nil)
+			if res.OK {
+				return
+			}
+			if err := sessions.SaveSession(nil); err != nil && deps.Note != nil {
+				deps.Note("сессия входа в CRM осталась в папке состояния, удалите её вручную (" + core.SessionFile + "): " + err.Error())
 			}
 		}()
 	}

@@ -359,4 +359,15 @@ func TestDatePricesReplaceTheWeekday(t *testing.T) {
 	if got, want := periodsText(datePeriods(tbl, loc, time.Date(2030, 3, 8, 0, 0, 0, 0, time.UTC)), loc), "08:00-23:00 400000"; got != want {
 		t.Fatalf("holiday periods %s, want %s", got, want)
 	}
+	// dates the driver did not look up are not priced by their weekday
+	tbl.DatesFrom, tbl.DatesTo = "2030-03-01", "2030-03-31"
+	if got, err := quote(context.Background(), tbl, loc, 30, at(4, 20), at(4, 22)); err != nil || got != 5200 {
+		t.Fatalf("a known date: %d, %v", got, err)
+	}
+	if _, err := quote(context.Background(), tbl, loc, 30, time.Date(2030, 4, 1, 20, 0, 0, 0, loc), time.Date(2030, 4, 1, 22, 0, 0, 0, loc)); !errors.Is(err, errNoPrice) {
+		t.Fatalf("a date after DatesTo: %v", err)
+	}
+	if ps := datePeriods(tbl, loc, time.Date(2030, 2, 28, 0, 0, 0, 0, time.UTC)); len(ps) != 0 {
+		t.Fatalf("a date before DatesFrom has prices: %v", ps)
+	}
 }

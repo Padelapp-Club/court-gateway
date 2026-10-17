@@ -221,9 +221,16 @@ var crmResults = map[string]bool{"ok": true, "NOT_READY": true, "CRM_AUTH_FAILED
 // core's and are only those listed.
 var alertCode = regexp.MustCompile(`^[A-Z][A-Z_]{2,40}$`)
 
+// serviceReasons are the service's readiness reasons that are not about
+// the CRM (serve's readiness, the hub, the clubs' config): never taken for
+// a driver's alert.
+var serviceReasons = map[string]bool{"STARTING": true, "STATE_UNWRITABLE": true, "CLOCK_SKEW": true, "CLOCK_UNKNOWN": true,
+	"CONFIG_PENDING": true, "CONFIG_REFUSED": true, "CLUB_UNAVAILABLE": true, "DUPLICATE_GATEWAY": true, "SIGNATURE_REFUSED": true}
+
 // isCRMResult: crmResults, or a driver's config alert.
 func isCRMResult(code string) bool {
-	return crmResults[code] || (alertCode.MatchString(code) && !strings.HasPrefix(code, "CRM_"))
+	return crmResults[code] || (alertCode.MatchString(code) && !strings.HasPrefix(code, "CRM_") &&
+		!strings.HasPrefix(code, "HUB_") && !serviceReasons[code])
 }
 
 // serviceStatus reads the service's status file; present when a service
