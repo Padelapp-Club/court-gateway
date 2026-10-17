@@ -246,7 +246,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `GET /hub/installations/{id}` | — | `200 {"installation_id", "name", "created_at", "config_version", "clubs": [клуб…], "gateway": строка /hub/status или null}` |
 | `DELETE /hub/installations/{id}` | — | `204`; шлюз получает `401` при следующем запросе, неиспользованные коды гаснут |
 | `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at", "hub_key_fingerprint"}` |
-| `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки; `409 ROOM_TAKEN` — комнату `viva_room` корта уже бронирует другой клуб (той же или другой установки) |
+| `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки; `409 ROOM_TAKEN` — комнату корта (`viva_room`, `lunda_court` — ключ корта драйвера) уже бронирует другой клуб (той же или другой установки) |
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
 | `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN` |
 
@@ -255,7 +255,14 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 повторить, — и `503 HUB_UNAVAILABLE` (см. «Состояние в Postgres»).
 
 **Конфиг клуба** — `name`, `timezone`, `slot_minutes`, `hours`, `crm`, `courts` (`id`, `name`
-и ключи драйвера — для Viva `viva_room`, `price_list`), `services`. Драйвер `demo` — чтобы
+и ключи драйвера — для Viva `viva_room`, `price_list`; для Лунды `lunda_court` (корт Лунды; цены — по
+тарифу категории этого корта в Лунде)), `services` (кроме Лунды: услуг для броней у неё нет, конфиг клуба
+Лунды с `services` драйвер отвергает).
+У Лунды в `crm` клуба ключей нет: установка — это один клуб Лунды, выбранный при входе сотрудника.
+Праздничные и предпраздничные дни календаря Лунды шлюз отдаёт по тарифу их категории (по датам); цены
+есть на даты от вчера до сегодня плюс горизонт бронирования клуба в Лунде, а если календарь или тариф
+Лунды не читается — цен нет. Часовой пояс клуба на хабе должен совпадать с поясом клуба в Лунде
+(иначе — предупреждение `TIMEZONE_MISMATCH`). Драйвер `demo` — чтобы
 попробовать шлюз без CRM; `setup` не принимает его (`--crm demo`), пока не задана переменная
 `GATEWAY_DEMO_CRM=1`; `serve` эту переменную не проверяет. В `crm` клуб задаёт только
 ключи клуба — для Viva `studio`, `overnight_minutes`, `break_lookback_days` (см. «API для
@@ -334,7 +341,7 @@ partners:
 
 | Запрос | Что делает |
 |---|---|
-| `GET /v1/clubs` · `GET /v1/clubs/{club}` | клубы партнёра (с признаком `online`) · клуб: часовой пояс, шаг сетки, часы, возможности |
+| `GET /v1/clubs` · `GET /v1/clubs/{club}` | клубы партнёра (с признаком `online`) · клуб: часовой пояс, шаг сетки, часы, возможности (`capabilities`: `payments` — отметка оплаты, `prices` — цены; без цен `prices` и `quote` отвечают `501 NOT_SUPPORTED`) |
 | `GET /v1/clubs/{club}/courts` | корты |
 | `GET /v1/clubs/{club}/occupancy?from=&to=[&court=]` | занятость кортов за период (до 31 дня) |
 | `GET /v1/clubs/{club}/prices?court=&date=` | цены корта на дату: периоды `start_at`–`end_at` (RFC 3339) и они же по часам клуба `start`–`end` (`HH:MM`, конец дня — `24:00`; в день перевода часов повторяются) |
@@ -344,7 +351,7 @@ partners:
 | `POST /v1/clubs/{club}/bookings/{id}/payment` | отметить оплату (если CRM умеет) |
 
 Ошибки: `{"code": "...", "message": "...", "request_id": "..."}`. Кроме ошибок самого API:
-`503 CLUB_OFFLINE` — шлюз клуба не на связи; `503 CLUB_BUSY` — все запросы шлюза заняты, и ни один
+`503 CLUB_OFFLINE` — шлюз клуба не на связи; `503 BOOKING_NOT_CONFIGURED` — клуб ещё не закончил настройку броней через шлюз (например, в Лунде не выбран служебный клиент): занятость читается, бронь — позже; `503 CLUB_BUSY` — все запросы шлюза заняты, и ни один
 не взял новый за 10 с;
 `503 CONFIG_PENDING` — шлюз ещё не получил конфигурацию клубов (только что запустился, клуб только
 что заведён или хаб перезапущен);

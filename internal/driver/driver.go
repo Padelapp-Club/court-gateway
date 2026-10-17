@@ -31,7 +31,15 @@ var (
 	ErrCourtNotConfigured = errors.New("booking is on a court that is not configured")
 	// ErrClockUnknown: the time now is not known (Clock): no decision on it.
 	ErrClockUnknown = errors.New("the hub's time is not known yet")
+	// ErrBookingNotConfigured: the CRM takes bookings, but the club has
+	// not finished setting them up for the gateway (e.g. no service client
+	// chosen); unlike ErrNotSupported it passes once the club does.
+	ErrBookingNotConfigured = errors.New("booking through the gateway is not set up in the club's CRM yet")
 )
+
+// Version is the binary's version (main sets it), for drivers that name
+// the gateway to their CRM (a User-Agent).
+var Version = "dev"
 
 // Clock is the time of every booking decision: the hub's, as last signed
 // (tunnel.Verifier.Now), so a club computer whose clock is off decides as
@@ -90,6 +98,10 @@ func Upstream(kind UpstreamKind, detail string) error {
 // Capabilities are reported to partners as-is.
 type Capabilities struct {
 	Payments bool
+	// NoPrices: the CRM gives the gateway no prices (PriceTable is
+	// ErrNotSupported); /prices and /quote answer NOT_SUPPORTED and the
+	// club says "prices": false. Partners then price bookings themselves.
+	NoPrices bool
 	// Currency is the ISO 4217 code of the CRM's prices (PriceTable
 	// amounts are its hundredths).
 	Currency string
@@ -186,7 +198,10 @@ type Config struct {
 	// CRM holds every key of the `crm` section except `type`.
 	CRM      Params
 	Password string
-	Courts   []CourtConfig
+	// Secrets are the values of the environment variables the crm.type
+	// declares (SetupSpec.Secrets), by name; CRM_PASSWORD is also Password.
+	Secrets map[string]string
+	Courts  []CourtConfig
 	// Services maps "booking"/"tournament" to driver-specific parameters.
 	Services map[string]Params
 	Logger   *slog.Logger
@@ -202,6 +217,9 @@ type Config struct {
 	// Account is the installation's CRM account, if any: its clubs' drivers
 	// may share its session, so they all log in once.
 	Account Account
+	// Sessions, when set, keeps an interactive account's CRM session
+	// (InteractiveLogin) in the service's state directory.
+	Sessions SessionStore
 	// Rejections, when set, keeps the account's rejected logins across
 	// restarts (the service's state directory): the retry budget after a
 	// rejection is the installation's, not one process's.

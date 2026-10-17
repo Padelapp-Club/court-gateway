@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -165,7 +166,7 @@ func Run(ctx context.Context, o Options) Report {
 	loginOK, login := true, len(r.Checks)
 	if err := withTimeout(ctx, o.Timeout, acct.CheckLogin); err != nil {
 		loginOK = false
-		add(Check{Code: CodeCRMLogin, Status: Fail, Message: own + "вход в CRM не удался: " + core.ReadyReason(err), Hint: crmHint(core.ReadyReason(err))})
+		add(Check{Code: CodeCRMLogin, Status: Fail, Message: own + "вход в CRM не удался: " + core.ReadyReason(err), Hint: crmHint(s.CRMType, core.ReadyReason(err))})
 	} else {
 		add(Check{Code: CodeCRMLogin, Status: OK, Message: own + "вход в CRM выполнен"})
 	}
@@ -190,7 +191,7 @@ func Run(ctx context.Context, o Options) Report {
 			_, err := c.drv.Occupancy(ctx, driver.OccupancyQuery{Courts: c.courts, From: now, To: now.Add(24 * time.Hour)})
 			return err
 		}); err != nil {
-			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + c.id + " не читается: " + core.ReadyReason(err), Hint: crmHint(core.ReadyReason(err))})
+			add(Check{Code: CodeOccupancy, Status: Fail, Message: "занятость клуба " + c.id + " не читается: " + core.ReadyReason(err), Hint: crmHint(s.CRMType, core.ReadyReason(err))})
 		} else {
 			add(Check{Code: CodeOccupancy, Status: OK, Message: "занятость клуба " + c.id + " на сутки вперёд читается"})
 		}
@@ -214,6 +215,23 @@ const statusFresh = 3 * core.HealthStatusInterval
 // a readiness reason of the CRM (core.ReadyReason, tunnel.SelfCheck).
 var crmResults = map[string]bool{"ok": true, "NOT_READY": true, "CRM_AUTH_FAILED": true, "CRM_AUTH_ERROR": true, "CRM_UNREACHABLE": true,
 	"CRM_TIMEOUT": true, "CRM_ERROR": true, "CRM_INVALID_RESPONSE": true, "CRM_REJECTED": true, "CONFIG_MISMATCH": true, "TIMEZONE_MISMATCH": true}
+
+// alertCode is the form of a driver's own config alert code
+// (driver.ConfigAlert, e.g. SERVICE_CLIENT_MISSING); CRM_ codes are the
+// core's and are only those listed.
+var alertCode = regexp.MustCompile(`^[A-Z][A-Z_]{2,40}$`)
+
+// serviceReasons are the service's readiness reasons that are not about
+// the CRM (serve's readiness, the hub, the clubs' config): never taken for
+// a driver's alert.
+var serviceReasons = map[string]bool{"STARTING": true, "STATE_UNWRITABLE": true, "CLOCK_SKEW": true, "CLOCK_UNKNOWN": true,
+	"CONFIG_PENDING": true, "CONFIG_REFUSED": true, "CLUB_UNAVAILABLE": true, "DUPLICATE_GATEWAY": true, "SIGNATURE_REFUSED": true}
+
+// isCRMResult: crmResults, or a driver's config alert.
+func isCRMResult(code string) bool {
+	return crmResults[code] || (alertCode.MatchString(code) && !strings.HasPrefix(code, "CRM_") &&
+		!strings.HasPrefix(code, "HUB_") && !serviceReasons[code])
+}
 
 // serviceStatus reads the service's status file; present when a service
 // writes it: not older than statusFresh (or ahead of the clock). A
@@ -256,14 +274,14 @@ func judgeStatus(st core.HealthStatus, present bool, state service.State, now ti
 		return st, stale + "время данных службы впереди часов компьютера (" + at(st.Time) + ")"
 	case st.Version == "" || (st.Hub != "connected" && st.Hub != "disconnected"):
 		return st, stale + "данные службы неполные"
-	case legacy && !st.Ready && st.Reason != "ok" && crmResults[st.Reason]:
+	case legacy && !st.Ready && st.Reason != "ok" && isCRMResult(st.Reason):
 		st.CRM, st.CRMCheckedAt = st.Reason, st.Time
 		return st, ""
 	case st.CRM == "":
 		return st, stale + "служба ещё не сообщила результат проверки CRM"
-	case !crmResults[st.CRM]:
+	case !isCRMResult(st.CRM):
 		return st, stale + "неизвестный результат проверки CRM"
-	case st.CRM == "ok" && crmResults[st.Reason], st.CRM != "ok" && (st.Ready || st.Reason != st.CRM):
+	case st.CRM == "ok" && isCRMResult(st.Reason), st.CRM != "ok" && (st.Ready || st.Reason != st.CRM):
 		return st, stale + "результат проверки CRM расходится с готовностью службы"
 	case st.CRMCheckedAt.IsZero():
 		return st, stale + "нет времени проверки CRM службой"
@@ -294,6 +312,9 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 	case svc.CRM == "":
 		out = append(out, Check{Code: CodeCRMLogin, Status: Warn, Message: unusable,
 			Hint: "повторите doctor через минуту; если не поможет — перезапустите службу"})
+	case loginFailed && svc.CRM == "CRM_AUTH_FAILED" && interactive(s.CRMType):
+		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM + "; служба не пишет в CRM до нового входа",
+			Hint: crmHint(s.CRMType, svc.CRM)})
 	case loginFailed && svc.CRM == "CRM_AUTH_FAILED":
 		msg := from + "вход в CRM не удался: " + svc.CRM
 		if !svc.CRMNextLogin.IsZero() {
@@ -302,9 +323,9 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 			msg += "; сама служба больше не пробует войти"
 		}
 		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: msg,
-			Hint: "служба не может войти в Viva и пробует снова лишь изредка, а потом перестаёт: проверьте пароль, затем court-gateway set-password — служба войдёт сразу"})
+			Hint: "служба не может войти в CRM и пробует снова лишь изредка, а потом перестаёт: проверьте пароль, затем court-gateway set-password — служба войдёт сразу"})
 	case loginFailed:
-		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM, Hint: crmHint(svc.CRM)})
+		out = append(out, Check{Code: CodeCRMLogin, Status: Fail, Message: from + "вход в CRM не удался: " + svc.CRM, Hint: crmHint(s.CRMType, svc.CRM)})
 	default:
 		out = append(out, Check{Code: CodeCRMLogin, Status: OK, Message: from + "вход в CRM выполнен"})
 	}
@@ -322,12 +343,17 @@ func serviceCRMChecks(ctx context.Context, o Options, s *core.Settings, svc core
 		out = append(out, Check{Code: CodeOccupancy, Status: Skip, Message: "нет клуба, конфигурация которого подходит CRM"})
 	case len(remoteClubs) == 0:
 		out = append(out, Check{Code: CodeOccupancy, Status: Skip, Message: "клубов пока нет: оператор ещё не подключил клубы на хабе"})
+	case !crmResults[svc.CRM] && isCRMResult(svc.CRM):
+		// a driver's own config alert: the club is served, something in
+		// the CRM is not set up (e.g. Lunda's service client)
+		out = append(out, Check{Code: CodeOccupancy, Status: Warn, Message: from + "занятость клубов читается, но CRM сообщает о незаконченной настройке клуба " + clubs + ": " + svc.CRM,
+			Hint: "что именно не так — в журнале службы рядом с gateway.yaml (court-gateway.log) по коду " + svc.CRM})
 	case svc.CRM == "ok" || !strings.HasPrefix(svc.CRM, "CRM_"):
 		// a config alert comes only after the club's reads passed; a
 		// config mismatch is HUB_CONFIG's
 		out = append(out, Check{Code: CodeOccupancy, Status: OK, Message: from + "занятость клубов на сегодня читается"})
 	default:
-		out = append(out, Check{Code: CodeOccupancy, Status: Fail, Message: from + "занятость клуба " + clubs + " не читается: " + svc.CRM, Hint: crmHint(svc.CRM)})
+		out = append(out, Check{Code: CodeOccupancy, Status: Fail, Message: from + "занятость клуба " + clubs + " не читается: " + svc.CRM, Hint: crmHint(s.CRMType, svc.CRM)})
 	}
 	return append(out, hubOut...)
 }
@@ -354,7 +380,17 @@ func finish(r Report) Report {
 	return r
 }
 
-func crmHint(reason string) string {
+// interactive: a person logs the gateway in to this CRM (no password).
+func interactive(crmType string) bool {
+	spec, _ := driver.SetupFor(crmType)
+	return spec.Interactive
+}
+
+func crmHint(crmType, reason string) string {
+	switch {
+	case reason == "CRM_AUTH_FAILED" && interactive(crmType):
+		return "сессия CRM закончилась или отозвана: сотрудник клуба входит заново командой court-gateway login (QR-код или код из сообщения) — служба подхватит вход сама"
+	}
 	switch reason {
 	case "CRM_AUTH_FAILED":
 		return "проверьте логин в gateway.yaml и пароль CRM_PASSWORD в .env"

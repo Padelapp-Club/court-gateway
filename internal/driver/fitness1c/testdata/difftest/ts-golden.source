@@ -1,0 +1,4 @@
+ts-golden.json was written by ts/fitness1c-difftest.spec.ts against
+monorepository 391bd2d8c8751e6592781220d68aef6d35aa8989 (origin/stage, 2026-10-17)
+backend/src/modules/admins/crm/integrations/fitness1c-crm/fitness1c-crm.service.ts sha256 78593e24601fe8142858dc2853790f2c166909299114849e70820ce364671b4b
+cases.json sha256 b3471e903bf1040bf7ee958c94462a16006cf09100d41a2a8c5b64c3bfc3581d

@@ -11,6 +11,7 @@ import (
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
@@ -42,6 +43,8 @@ func build() string {
 	return tunnel.BuildRelease
 }
 
+func init() { driver.Version = version }
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
 }
@@ -51,6 +54,7 @@ const usage = `court-gateway — партнёрский API клуба пове�
 Установка и работа шлюза:
   setup            собрать gateway.yaml и .env: вход в CRM и код подключения к хабу (клубы задаёт хаб)
   set-password     сменить пароль CRM в .env, если его поменяли в CRM (код подключения не нужен)
+  login            войти в CRM заново, если в неё входит сотрудник клуба (QR-код или код), а сессия закончилась
   serve            запустить шлюз (сам подключается к хабу; входящих портов не открывает)
   doctor           проверить всё: конфигурацию, CRM, связь с хабом, версию (--json — для программ)
   install-service  зарегистрировать службу (systemd, launchd, Windows), чтобы шлюз запускался сам
@@ -94,6 +98,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return cmdSetup(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "set-password":
 		return cmdSetPassword(args[1:], stdout, stderr, getenv, defaultConfig)
+	case "login":
+		return cmdLogin(args[1:], stdout, stderr, getenv, defaultConfig)
 	case "install-service":
 		return cmdInstallService(args[1:], stdout, stderr, defaultConfig, false)
 	case "uninstall-service":

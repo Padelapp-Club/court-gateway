@@ -1,0 +1,1637 @@
+{
+ "support_phone": "79000000000",
+ "support_email": "info@padelapp.club",
+ "scenarios": [
+  {
+   "name": "live 2270517, one day",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121440",
+    "6121446",
+    "6121434",
+    "6121443",
+    "6121449"
+   ],
+   "pages": [
+    {
+     "success": true,
+     "data": [
+      {
+       "id": 2017166322,
+       "company_id": 2270517,
+       "staff_id": 6121440,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 7200,
+       "seance_length": 7200,
+       "deleted": false,
+       "paid_full": 1,
+       "payment_status": 1,
+       "attendance": 1,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306930,
+         "title": "Синг Корт 3 #1",
+         "resource_id": 187398
+        }
+       ],
+       "services": [
+        {
+         "id": 31981905,
+         "title": "Аренда синг корта 2 часа",
+         "cost": 1500
+        }
+       ]
+      },
+      {
+       "id": 2017166247,
+       "company_id": 2270517,
+       "staff_id": 6121446,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 5400,
+       "seance_length": 5400,
+       "deleted": false,
+       "paid_full": 0,
+       "payment_status": 0,
+       "attendance": 1,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306936,
+         "title": "Корт 5 #1",
+         "resource_id": 187404
+        }
+       ],
+       "services": [
+        {
+         "id": 31981887,
+         "title": "Аренда корта 1.5 ч",
+         "cost": 1500
+        }
+       ]
+      },
+      {
+       "id": 2017166136,
+       "company_id": 2270517,
+       "staff_id": 6121434,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 3600,
+       "seance_length": 3600,
+       "deleted": false,
+       "paid_full": 0,
+       "payment_status": 0,
+       "attendance": 0,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306927,
+         "title": "Корт 2 #1",
+         "resource_id": 187395
+        }
+       ],
+       "services": [
+        {
+         "id": 31981893,
+         "title": "Аренда корта 1 ч",
+         "cost": 1000
+        }
+       ]
+      },
+      {
+       "id": 2017166070,
+       "company_id": 2270517,
+       "staff_id": 6121443,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 3600,
+       "seance_length": 3600,
+       "deleted": false,
+       "paid_full": 0,
+       "payment_status": 0,
+       "attendance": 0,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306933,
+         "title": "Сингл Корт 4 #1",
+         "resource_id": 187401
+        }
+       ],
+       "services": [
+        {
+         "id": 31981899,
+         "title": "Аренда синг-корта",
+         "cost": 750
+        }
+       ]
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 4
+     }
+    }
+   ],
+   "schedules": {
+    "6121440": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ],
+    "6121446": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ],
+    "6121434": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ],
+    "6121443": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ],
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "16:00"
+       },
+       {
+        "from": "21:15",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-07",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-08",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-09",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-10",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-11",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-12",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-13",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-14",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-15",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-16",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-17",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-18",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-19",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-20",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "live 2270517, two days (schedule fixture)",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06",
+    "2026-10-07"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "success": true,
+     "data": [
+      {
+       "id": 2017166322,
+       "company_id": 2270517,
+       "staff_id": 6121440,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 7200,
+       "seance_length": 7200,
+       "deleted": false,
+       "paid_full": 1,
+       "payment_status": 1,
+       "attendance": 1,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306930,
+         "title": "Синг Корт 3 #1",
+         "resource_id": 187398
+        }
+       ],
+       "services": [
+        {
+         "id": 31981905,
+         "title": "Аренда синг корта 2 часа",
+         "cost": 1500
+        }
+       ]
+      },
+      {
+       "id": 2017166247,
+       "company_id": 2270517,
+       "staff_id": 6121446,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 5400,
+       "seance_length": 5400,
+       "deleted": false,
+       "paid_full": 0,
+       "payment_status": 0,
+       "attendance": 1,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306936,
+         "title": "Корт 5 #1",
+         "resource_id": 187404
+        }
+       ],
+       "services": [
+        {
+         "id": 31981887,
+         "title": "Аренда корта 1.5 ч",
+         "cost": 1500
+        }
+       ]
+      },
+      {
+       "id": 2017166136,
+       "company_id": 2270517,
+       "staff_id": 6121434,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 3600,
+       "seance_length": 3600,
+       "deleted": false,
+       "paid_full": 0,
+       "payment_status": 0,
+       "attendance": 0,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306927,
+         "title": "Корт 2 #1",
+         "resource_id": 187395
+        }
+       ],
+       "services": [
+        {
+         "id": 31981893,
+         "title": "Аренда корта 1 ч",
+         "cost": 1000
+        }
+       ]
+      },
+      {
+       "id": 2017166070,
+       "company_id": 2270517,
+       "staff_id": 6121443,
+       "datetime": "2026-10-06T16:00:00+05:00",
+       "date": "2026-10-06 16:00:00",
+       "length": 3600,
+       "seance_length": 3600,
+       "deleted": false,
+       "paid_full": 0,
+       "payment_status": 0,
+       "attendance": 0,
+       "comment": "",
+       "resource_instances": [
+        {
+         "id": 306933,
+         "title": "Сингл Корт 4 #1",
+         "resource_id": 187401
+        }
+       ],
+       "services": [
+        {
+         "id": 31981899,
+         "title": "Аренда синг-корта",
+         "cost": 750
+        }
+       ]
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 4
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "16:00"
+       },
+       {
+        "from": "21:15",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-07",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-08",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-09",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-10",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-11",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-12",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-13",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-14",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-15",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-16",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-17",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-18",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-19",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-20",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "a 16:05-17:05 record takes 16:00, 16:30 and 17:00",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T16:05:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 1
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "deleted records and a coach's malformed one are not occupancy",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T10:00:00+05:00",
+       "length": 3600,
+       "deleted": true,
+       "comment": ""
+      },
+      {
+       "id": 2,
+       "staff_id": 7000001,
+       "datetime": "garbage",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 2
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "a day not working and a day missing from schedule are occupied",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06",
+    "2026-10-07",
+    "2026-10-08"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [],
+     "meta": {
+      "page": 1,
+      "total_count": 0
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-07",
+      "is_working": 0,
+      "slots": []
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "a record past midnight is cut at the club's midnight",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06",
+    "2026-10-07"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T23:30:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 1
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "00:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-07",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "00:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "records over three pages",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449",
+    "6121440"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T08:00:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      },
+      {
+       "id": 2,
+       "staff_id": 6121440,
+       "datetime": "2026-10-06T09:00:00+05:00",
+       "length": 1800,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 5
+     }
+    },
+    {
+     "data": [
+      {
+       "id": 3,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T12:00:00+05:00",
+       "length": 5400,
+       "deleted": false,
+       "comment": ""
+      },
+      {
+       "id": 4,
+       "staff_id": 6121440,
+       "datetime": "2026-10-06T13:00:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": []
+    },
+    {
+     "data": [
+      {
+       "id": 5,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T20:00:00+05:00",
+       "length": 7200,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 3,
+      "total_count": 5
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ],
+    "6121440": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "an empty page before the promised total fails the read",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T08:00:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 3
+     }
+    },
+    {
+     "data": [],
+     "meta": {
+      "page": 2,
+      "total_count": 3
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "an unreadable record on a court fails the read",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06 16:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 1
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "a schedule that is not a list fails the read",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [],
+     "meta": {
+      "page": 1,
+      "total_count": 0
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": {
+     "date": "2026-10-06"
+    }
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "a booking of two records reads as the same slots",
+   "kind": "occupancy",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "days": [
+    "2026-10-06"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T18:00:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": "[cg:padelapp] [cg-set:0a1b2c3d/2] x"
+      },
+      {
+       "id": 2,
+       "staff_id": 6121449,
+       "datetime": "2026-10-06T19:00:00+05:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": "[cg:padelapp] [cg-set:0a1b2c3d/2] x"
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 2
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-06",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "days across a clock change (Europe/Berlin, 25.10)",
+   "kind": "occupancy",
+   "tz": "Europe/Berlin",
+   "company": "2270517",
+   "days": [
+    "2026-10-24",
+    "2026-10-25",
+    "2026-10-26"
+   ],
+   "staff": [
+    "6121449"
+   ],
+   "pages": [
+    {
+     "data": [
+      {
+       "id": 1,
+       "staff_id": 6121449,
+       "datetime": "2026-10-25T02:30:00+01:00",
+       "length": 3600,
+       "deleted": false,
+       "comment": ""
+      },
+      {
+       "id": 2,
+       "staff_id": 6121449,
+       "datetime": "2026-10-25T01:30:00+02:00",
+       "length": 1800,
+       "deleted": false,
+       "comment": ""
+      }
+     ],
+     "meta": {
+      "page": 1,
+      "total_count": 2
+     }
+    }
+   ],
+   "schedules": {
+    "6121449": [
+     {
+      "date": "2026-10-24",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-25",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "00:00",
+        "to": "12:00"
+       },
+       {
+        "from": "14:00",
+        "to": "00:00"
+       }
+      ]
+     },
+     {
+      "date": "2026-10-26",
+      "is_working": 1,
+      "slots": [
+       {
+        "from": "07:00",
+        "to": "23:00"
+       }
+      ]
+     }
+    ]
+   },
+   "card": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Europe/Berlin",
+    "split_records_by_resources": 1
+   }
+  },
+  {
+   "name": "1.5 h: one service",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T10:00:00+05:00",
+   "end": "2026-10-07T11:30:00+05:00",
+   "services": [
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    },
+    {
+     "id": 102,
+     "title": "1,5 ч",
+     "seance_length": 5400,
+     "price_min": 1400,
+     "active": 1
+    },
+    {
+     "id": 103,
+     "title": "2 ч",
+     "seance_length": 7200,
+     "price_min": 1800,
+     "active": 1
+    }
+   ],
+   "record_ids": [
+    2017335528
+   ]
+  },
+  {
+   "name": "2 h without a 2 h service: 1 h + 1 h, two records",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T10:00:00+05:00",
+   "end": "2026-10-07T12:00:00+05:00",
+   "services": [
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    },
+    {
+     "id": 102,
+     "title": "1,5 ч",
+     "seance_length": 5400,
+     "price_min": 1400,
+     "active": 1
+    }
+   ],
+   "record_ids": [
+    2017335528,
+    2017335534
+   ]
+  },
+  {
+   "name": "2.5 h: 1.5 h and 1 h in one record",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T18:00:00+05:00",
+   "end": "2026-10-07T20:30:00+05:00",
+   "services": [
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    },
+    {
+     "id": 102,
+     "title": "1,5 ч",
+     "seance_length": 5400,
+     "price_min": 1400,
+     "active": 1
+    }
+   ],
+   "record_ids": [
+    2017335528
+   ]
+  },
+  {
+   "name": "3 h: 1.5 h twice, two records",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T09:00:00+05:00",
+   "end": "2026-10-07T12:00:00+05:00",
+   "services": [
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    },
+    {
+     "id": 102,
+     "title": "1,5 ч",
+     "seance_length": 5400,
+     "price_min": 1400,
+     "active": 1
+    }
+   ],
+   "record_ids": [
+    2017335528,
+    2017335534
+   ]
+  },
+  {
+   "name": "cheaper of two services of one length",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T10:00:00+05:00",
+   "end": "2026-10-07T11:00:00+05:00",
+   "services": [
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    },
+    {
+     "id": 201,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 500,
+     "active": 1
+    }
+   ],
+   "record_ids": [
+    2017335528
+   ]
+  },
+  {
+   "name": "a length no services make: nothing is booked",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T10:00:00+05:00",
+   "end": "2026-10-07T10:45:00+05:00",
+   "services": [
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    },
+    {
+     "id": 102,
+     "title": "1,5 ч",
+     "seance_length": 5400,
+     "price_min": 1400,
+     "active": 1
+    }
+   ],
+   "record_ids": []
+  },
+  {
+   "name": "30 min over midnight-free evening",
+   "kind": "create",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "start": "2026-10-07T23:30:00+05:00",
+   "end": "2026-10-08T00:00:00+05:00",
+   "services": [
+    {
+     "id": 104,
+     "title": "30 мин",
+     "seance_length": 1800,
+     "price_min": 600,
+     "active": 1
+    },
+    {
+     "id": 101,
+     "title": "1 ч",
+     "seance_length": 3600,
+     "price_min": 1000,
+     "active": 1
+    }
+   ],
+   "record_ids": [
+    2017335528
+   ]
+  },
+  {
+   "name": "cancel a booking of two records",
+   "kind": "cancel",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "records": [
+    {
+     "id": 2017335528,
+     "staff_id": 6121449,
+     "datetime": "2026-10-07T10:00:00+05:00",
+     "seance_length": 3600,
+     "length": 3600,
+     "deleted": false,
+     "comment": "[cg:padelapp] [cg-set:0a1b2c3d/2] x",
+     "attendance": 0,
+     "services": [
+      {
+       "id": 101,
+       "title": "1 ч",
+       "cost": 1000,
+       "first_cost": 1000,
+       "discount": 0,
+       "amount": 1
+      }
+     ],
+     "client": {
+      "name": "PadelApp",
+      "phone": "+7900XXXXX00"
+     }
+    },
+    {
+     "id": 2017335534,
+     "staff_id": 6121449,
+     "datetime": "2026-10-07T11:00:00+05:00",
+     "seance_length": 3600,
+     "length": 3600,
+     "deleted": false,
+     "comment": "[cg:padelapp] [cg-set:0a1b2c3d/2] x",
+     "attendance": 0,
+     "services": [
+      {
+       "id": 101,
+       "title": "1 ч",
+       "cost": 1000,
+       "first_cost": 1000,
+       "discount": 0,
+       "amount": 1
+      }
+     ],
+     "client": {
+      "name": "PadelApp",
+      "phone": "+7900XXXXX00"
+     }
+    }
+   ]
+  },
+  {
+   "name": "mark a booking paid",
+   "kind": "paid",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "records": [
+    {
+     "id": 2017335528,
+     "staff_id": 6121449,
+     "datetime": "2026-10-07T10:00:00+05:00",
+     "seance_length": 3600,
+     "length": 3600,
+     "deleted": false,
+     "comment": "[cg:padelapp] Комментарий",
+     "attendance": 1,
+     "services": [
+      {
+       "id": 101,
+       "title": "1 ч",
+       "cost": 1000,
+       "first_cost": 1000,
+       "discount": 0,
+       "amount": 1
+      }
+     ],
+     "client": {
+      "name": "PadelApp",
+      "phone": "+7900XXXXX00"
+     }
+    }
+   ]
+  },
+  {
+   "name": "mark a booking of two records paid",
+   "kind": "paid",
+   "tz": "Asia/Yekaterinburg",
+   "company": "2270517",
+   "staff": "6121449",
+   "records": [
+    {
+     "id": 2017335528,
+     "staff_id": 6121449,
+     "datetime": "2026-10-07T10:00:00+05:00",
+     "seance_length": 3600,
+     "length": 3600,
+     "deleted": false,
+     "comment": "[cg:padelapp] [cg-set:0a1b2c3d/2]",
+     "attendance": 0,
+     "services": [
+      {
+       "id": 101,
+       "title": "1 ч",
+       "cost": 1000,
+       "first_cost": 1000,
+       "discount": 0,
+       "amount": 1
+      }
+     ],
+     "client": {
+      "name": "PadelApp",
+      "phone": "+7900XXXXX00"
+     }
+    },
+    {
+     "id": 2017335534,
+     "staff_id": 6121449,
+     "datetime": "2026-10-07T11:00:00+05:00",
+     "seance_length": 3600,
+     "length": 3600,
+     "deleted": false,
+     "comment": "[cg:padelapp] [cg-set:0a1b2c3d/2]",
+     "attendance": 0,
+     "services": [
+      {
+       "id": 101,
+       "title": "1 ч",
+       "cost": 1000,
+       "first_cost": 1000,
+       "discount": 0,
+       "amount": 1
+      }
+     ],
+     "client": {
+      "name": "PadelApp",
+      "phone": "+7900XXXXX00"
+     }
+    }
+   ]
+  }
+ ]
+}

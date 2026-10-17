@@ -332,3 +332,42 @@ func TestDayStartOfARepeatedMidnight(t *testing.T) {
 		t.Fatalf("dayStart = %s", got.Format(time.RFC3339))
 	}
 }
+
+// A date the table prices apart (a holiday) takes its own rules instead of
+// its weekday's, in quotes and in the day's prices; a date with no rules
+// has no price; the weekday rules still hold on other dates.
+func TestDatePricesReplaceTheWeekday(t *testing.T) {
+	loc := mustLoc(t)
+	tbl := testTable()
+	tbl.Dates = map[string][]driver.PriceRule{
+		"2030-03-08": {{From: 480, To: 1380, PerHour: 4000_00}}, // a Friday holiday, 08-23
+		"2030-03-11": {},                                        // a Monday with no price
+	}
+	at := func(day, hh int) time.Time { return time.Date(2030, 3, day, hh, 0, 0, 0, loc) }
+	if got, err := quote(context.Background(), tbl, loc, 30, at(8, 20), at(8, 22)); err != nil || got != 8000 {
+		t.Fatalf("holiday quote = %d, %v; want 8000 (no Friday surcharge, no weekday rate)", got, err)
+	}
+	if got, err := quote(context.Background(), tbl, loc, 30, at(4, 20), at(4, 22)); err != nil || got != 5200 {
+		t.Fatalf("ordinary Monday quote = %d, %v; want 5200", got, err)
+	}
+	if _, err := quote(context.Background(), tbl, loc, 30, at(11, 10), at(11, 11)); !errors.Is(err, errNoPrice) {
+		t.Fatalf("a date without prices: %v", err)
+	}
+	if _, err := quote(context.Background(), tbl, loc, 30, at(8, 7), at(8, 9)); !errors.Is(err, errNoPrice) {
+		t.Fatalf("outside the holiday's hours: %v", err)
+	}
+	if got, want := periodsText(datePeriods(tbl, loc, time.Date(2030, 3, 8, 0, 0, 0, 0, time.UTC)), loc), "08:00-23:00 400000"; got != want {
+		t.Fatalf("holiday periods %s, want %s", got, want)
+	}
+	// dates the driver did not look up are not priced by their weekday
+	tbl.DatesFrom, tbl.DatesTo = "2030-03-01", "2030-03-31"
+	if got, err := quote(context.Background(), tbl, loc, 30, at(4, 20), at(4, 22)); err != nil || got != 5200 {
+		t.Fatalf("a known date: %d, %v", got, err)
+	}
+	if _, err := quote(context.Background(), tbl, loc, 30, time.Date(2030, 4, 1, 20, 0, 0, 0, loc), time.Date(2030, 4, 1, 22, 0, 0, 0, loc)); !errors.Is(err, errNoPrice) {
+		t.Fatalf("a date after DatesTo: %v", err)
+	}
+	if ps := datePeriods(tbl, loc, time.Date(2030, 2, 28, 0, 0, 0, 0, time.UTC)); len(ps) != 0 {
+		t.Fatalf("a date before DatesFrom has prices: %v", ps)
+	}
+}

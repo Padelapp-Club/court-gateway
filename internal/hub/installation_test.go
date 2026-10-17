@@ -291,6 +291,14 @@ func TestOperatorAPIAuthAndValidation(t *testing.T) {
 	}
 	h.MustOperator(t, http.StatusOK, http.MethodPut, "/hub/installations/x2/clubs/c2", withRoom(demoClub("c2", "demo-south", "Корт 1"), "ROOM-1"))
 	bad(409, "ROOM_TAKEN", http.MethodPut, "/hub/installations/x2/clubs/c3", withRoom(demoClub("c3", "demo-east", "Корт 1"), "room-1"))
+	// a Lunda court likewise; each driver's court key is its own namespace
+	withCourt := func(c core.ClubSpec, key, v string) core.ClubSpec {
+		c.Courts[0].Params = map[string]any{key: v}
+		return c
+	}
+	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/x2/clubs/c4", withCourt(demoClub("c4", "demo-west", "Корт 1"), "lunda_court", "COURT-L1"))
+	bad(409, "ROOM_TAKEN", http.MethodPut, "/hub/installations/x2/clubs/c5", withCourt(demoClub("c5", "demo-far", "Корт 1"), "lunda_court", "court-l1"))
+	h.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/x2/clubs/c5", withCourt(demoClub("c5", "demo-far", "Корт 1"), "viva_room", "court-l1"))
 	bad(404, "NOT_FOUND", http.MethodDelete, "/hub/installations/x1/clubs/c3", nil)
 	// the operator's view
 	dto := installation(t, h, "x1")

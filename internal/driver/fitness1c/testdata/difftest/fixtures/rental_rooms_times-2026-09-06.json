@@ -1,0 +1,982 @@
+{
+"result": true,
+"data": [
+{
+"room": {
+"id": "00000000-0000-4000-8000-00000000d001",
+"title": "Корт 1"
+},
+"durations": [
+{
+"time": "07:00",
+"seance_length": 30,
+"date_time": "2026-09-06 07:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "07:30",
+"seance_length": 30,
+"date_time": "2026-09-06 07:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:00",
+"seance_length": 30,
+"date_time": "2026-09-06 08:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:30",
+"seance_length": 30,
+"date_time": "2026-09-06 08:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:00",
+"seance_length": 30,
+"date_time": "2026-09-06 09:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:30",
+"seance_length": 30,
+"date_time": "2026-09-06 09:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:00",
+"seance_length": 30,
+"date_time": "2026-09-06 10:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:30",
+"seance_length": 30,
+"date_time": "2026-09-06 10:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "11:00",
+"seance_length": 30,
+"date_time": "2026-09-06 11:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "11:30",
+"seance_length": 30,
+"date_time": "2026-09-06 11:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "12:00",
+"seance_length": 30,
+"date_time": "2026-09-06 12:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "12:30",
+"seance_length": 30,
+"date_time": "2026-09-06 12:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "13:00",
+"seance_length": 30,
+"date_time": "2026-09-06 13:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "13:30",
+"seance_length": 30,
+"date_time": "2026-09-06 13:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:00",
+"seance_length": 30,
+"date_time": "2026-09-06 14:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:30",
+"seance_length": 30,
+"date_time": "2026-09-06 14:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "15:00",
+"seance_length": 30,
+"date_time": "2026-09-06 15:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "15:30",
+"seance_length": 30,
+"date_time": "2026-09-06 15:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "16:00",
+"seance_length": 30,
+"date_time": "2026-09-06 16:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "16:30",
+"seance_length": 30,
+"date_time": "2026-09-06 16:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:00",
+"seance_length": 30,
+"date_time": "2026-09-06 17:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:30",
+"seance_length": 30,
+"date_time": "2026-09-06 17:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:00",
+"seance_length": 30,
+"date_time": "2026-09-06 18:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:30",
+"seance_length": 30,
+"date_time": "2026-09-06 18:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:00",
+"seance_length": 30,
+"date_time": "2026-09-06 19:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:30",
+"seance_length": 30,
+"date_time": "2026-09-06 19:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:00",
+"seance_length": 30,
+"date_time": "2026-09-06 20:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:30",
+"seance_length": 30,
+"date_time": "2026-09-06 20:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:00",
+"seance_length": 30,
+"date_time": "2026-09-06 21:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:30",
+"seance_length": 30,
+"date_time": "2026-09-06 21:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:00",
+"seance_length": 30,
+"date_time": "2026-09-06 22:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:30",
+"seance_length": 30,
+"date_time": "2026-09-06 22:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+}
+]
+},
+{
+"room": {
+"id": "00000000-0000-4000-8000-00000000d002",
+"title": "Корт 2"
+},
+"durations": [
+{
+"time": "07:00",
+"seance_length": 30,
+"date_time": "2026-09-06 07:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "07:30",
+"seance_length": 30,
+"date_time": "2026-09-06 07:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:00",
+"seance_length": 30,
+"date_time": "2026-09-06 08:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:30",
+"seance_length": 30,
+"date_time": "2026-09-06 08:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:00",
+"seance_length": 30,
+"date_time": "2026-09-06 09:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:30",
+"seance_length": 30,
+"date_time": "2026-09-06 09:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:00",
+"seance_length": 30,
+"date_time": "2026-09-06 10:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:30",
+"seance_length": 30,
+"date_time": "2026-09-06 10:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "11:00",
+"seance_length": 30,
+"date_time": "2026-09-06 11:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "11:30",
+"seance_length": 30,
+"date_time": "2026-09-06 11:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:00",
+"seance_length": 30,
+"date_time": "2026-09-06 14:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:30",
+"seance_length": 30,
+"date_time": "2026-09-06 14:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:00",
+"seance_length": 30,
+"date_time": "2026-09-06 17:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:30",
+"seance_length": 30,
+"date_time": "2026-09-06 17:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:00",
+"seance_length": 30,
+"date_time": "2026-09-06 18:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:30",
+"seance_length": 30,
+"date_time": "2026-09-06 18:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:00",
+"seance_length": 30,
+"date_time": "2026-09-06 19:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:30",
+"seance_length": 30,
+"date_time": "2026-09-06 19:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:00",
+"seance_length": 30,
+"date_time": "2026-09-06 20:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:30",
+"seance_length": 30,
+"date_time": "2026-09-06 21:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:00",
+"seance_length": 30,
+"date_time": "2026-09-06 22:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:30",
+"seance_length": 30,
+"date_time": "2026-09-06 22:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+}
+]
+},
+{
+"room": {
+"id": "00000000-0000-4000-8000-00000000d003",
+"title": "Корт 3"
+},
+"durations": [
+{
+"time": "07:00",
+"seance_length": 30,
+"date_time": "2026-09-06 07:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "07:30",
+"seance_length": 30,
+"date_time": "2026-09-06 07:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:00",
+"seance_length": 30,
+"date_time": "2026-09-06 08:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:30",
+"seance_length": 30,
+"date_time": "2026-09-06 08:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:00",
+"seance_length": 30,
+"date_time": "2026-09-06 09:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:30",
+"seance_length": 30,
+"date_time": "2026-09-06 09:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:00",
+"seance_length": 30,
+"date_time": "2026-09-06 10:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:30",
+"seance_length": 30,
+"date_time": "2026-09-06 10:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "12:00",
+"seance_length": 30,
+"date_time": "2026-09-06 12:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "12:30",
+"seance_length": 30,
+"date_time": "2026-09-06 12:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:30",
+"seance_length": 30,
+"date_time": "2026-09-06 14:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "15:00",
+"seance_length": 30,
+"date_time": "2026-09-06 15:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "15:30",
+"seance_length": 30,
+"date_time": "2026-09-06 15:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:00",
+"seance_length": 30,
+"date_time": "2026-09-06 17:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:30",
+"seance_length": 30,
+"date_time": "2026-09-06 17:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:00",
+"seance_length": 30,
+"date_time": "2026-09-06 18:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:30",
+"seance_length": 30,
+"date_time": "2026-09-06 18:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:00",
+"seance_length": 30,
+"date_time": "2026-09-06 19:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:30",
+"seance_length": 30,
+"date_time": "2026-09-06 19:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:00",
+"seance_length": 30,
+"date_time": "2026-09-06 20:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:30",
+"seance_length": 30,
+"date_time": "2026-09-06 20:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:00",
+"seance_length": 30,
+"date_time": "2026-09-06 21:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:30",
+"seance_length": 30,
+"date_time": "2026-09-06 21:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:00",
+"seance_length": 30,
+"date_time": "2026-09-06 22:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:30",
+"seance_length": 30,
+"date_time": "2026-09-06 22:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+}
+]
+},
+{
+"room": {
+"id": "00000000-0000-4000-8000-00000000d004",
+"title": "Корт 4"
+},
+"durations": [
+{
+"time": "07:00",
+"seance_length": 30,
+"date_time": "2026-09-06 07:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "07:30",
+"seance_length": 30,
+"date_time": "2026-09-06 07:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:00",
+"seance_length": 30,
+"date_time": "2026-09-06 08:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "08:30",
+"seance_length": 30,
+"date_time": "2026-09-06 08:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:00",
+"seance_length": 30,
+"date_time": "2026-09-06 09:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "09:30",
+"seance_length": 30,
+"date_time": "2026-09-06 09:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:00",
+"seance_length": 30,
+"date_time": "2026-09-06 10:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "10:30",
+"seance_length": 30,
+"date_time": "2026-09-06 10:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "11:00",
+"seance_length": 30,
+"date_time": "2026-09-06 11:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "11:30",
+"seance_length": 30,
+"date_time": "2026-09-06 11:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:00",
+"seance_length": 30,
+"date_time": "2026-09-06 14:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "14:30",
+"seance_length": 30,
+"date_time": "2026-09-06 14:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "15:00",
+"seance_length": 30,
+"date_time": "2026-09-06 15:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "15:30",
+"seance_length": 30,
+"date_time": "2026-09-06 15:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:00",
+"seance_length": 30,
+"date_time": "2026-09-06 17:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "17:30",
+"seance_length": 30,
+"date_time": "2026-09-06 17:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:00",
+"seance_length": 30,
+"date_time": "2026-09-06 18:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "18:30",
+"seance_length": 30,
+"date_time": "2026-09-06 18:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:00",
+"seance_length": 30,
+"date_time": "2026-09-06 19:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "19:30",
+"seance_length": 30,
+"date_time": "2026-09-06 19:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:00",
+"seance_length": 30,
+"date_time": "2026-09-06 20:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "20:30",
+"seance_length": 30,
+"date_time": "2026-09-06 20:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:00",
+"seance_length": 30,
+"date_time": "2026-09-06 21:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "21:30",
+"seance_length": 30,
+"date_time": "2026-09-06 21:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:00",
+"seance_length": 30,
+"date_time": "2026-09-06 22:00",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+},
+{
+"time": "22:30",
+"seance_length": 30,
+"date_time": "2026-09-06 22:30",
+"rental_id": null,
+"price": 875,
+"service_title": null,
+"is_busy": false
+}
+]
+}
+]
+}

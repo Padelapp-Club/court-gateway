@@ -48,7 +48,7 @@ func TestEnvValueQuotesDollar(t *testing.T) {
 
 // The written config is an installation: hub and CRM login, no club.
 func TestRenderedConfigHasNoClub(t *testing.T) {
-	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", Username: "admin@example.test"}
+	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", CRM: [][2]string{{"username", "admin@example.test"}}}
 	text, p := validate(d, driver.Params{"username": "admin@example.test"}, "inst-1", "Сеть", "pw", "secret")
 	if p != nil {
 		t.Fatalf("%v\n%s", p, d.render("inst-1", "Сеть"))
@@ -256,7 +256,7 @@ func TestSetupRefusesURLCredentials(t *testing.T) {
 	const marker = "FIXTURE-URL-PASSWORD"
 	for _, in := range []Input{
 		{HubURL: "https://operator:" + marker + "@hub.example.test", CRMType: "demo"},
-		{HubURL: "https://hub.example.test", Username: "admin@example.test", Password: "pw", AuthURL: "https://u:" + marker + "@crm.example.test/token"},
+		{HubURL: "https://hub.example.test", CRM: map[string]string{"username": "admin@example.test", "auth_url": "https://u:" + marker + "@crm.example.test/token"}, Password: "pw"},
 	} {
 		dir := t.TempDir()
 		in.ConfigPath, in.JoinCode, in.HubKeyFingerprint = filepath.Join(dir, "gateway.yaml"), "AAAA-AAAA-AAAA-AAAA", printOf(testHubKey)
@@ -384,7 +384,7 @@ func TestSetupTakesNothingUnsignedFromTheHub(t *testing.T) {
 	inject := fmt.Sprintf("\ncrm: {type: viva, username: admin@example.test, auth_url: %s/token, api_url: %s/api/v1}\n---\n#", evil.URL, evil.URL)
 	input := func(dir string) Input {
 		return Input{ConfigPath: filepath.Join(dir, "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA",
-			HubKey: testHubKey, Username: "admin@example.test", Password: password, AuthURL: crm.URL + "/token", APIURL: crm.URL + "/api/v1"}
+			HubKey: testHubKey, CRM: map[string]string{"username": "admin@example.test", "auth_url": crm.URL + "/token", "api_url": crm.URL + "/api/v1"}, Password: password}
 	}
 	for name, tamper := range map[string]func(*tunnel.RegisterResponse){
 		"installation":   func(rr *tunnel.RegisterResponse) { rr.Installation = "inst-2" },
@@ -438,7 +438,7 @@ func TestSetupEndsItsCRMSession(t *testing.T) {
 	var notes []string
 	deps := Deps{HubTransport: registerTransport, CRMClient: crm.Client(), Note: func(s string) { notes = append(notes, s) }}
 	in := Input{ConfigPath: filepath.Join(t.TempDir(), "gateway.yaml"), HubURL: "https://hub.example.test", JoinCode: "AAAA-AAAA-AAAA-AAAA",
-		HubKey: testHubKey, Username: "admin@example.test", Password: password, AuthURL: crm.URL + "/token", APIURL: crm.URL + "/api/v1"}
+		HubKey: testHubKey, CRM: map[string]string{"username": "admin@example.test", "auth_url": crm.URL + "/token", "api_url": crm.URL + "/api/v1"}, Password: password}
 	if _, err := Run(context.Background(), in, deps); err != nil {
 		t.Fatal(err)
 	}

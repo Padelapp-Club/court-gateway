@@ -8,9 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"golang.org/x/term"
@@ -53,21 +55,21 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	fs.StringVar(&in.HubCAFile, "hub-ca-file", "", "trust only this CA certificate for the hub (a self-hosted hub, or pinning)")
 	fs.StringVar(&in.HubKeyFingerprint, "hub-key-fingerprint", "", "fingerprint of the hub's key, given with the join code (env GATEWAY_HUB_KEY_FINGERPRINT); a release's own hub needs none")
 	fs.StringVar(&in.JoinCode, "join-code", "", "one-time join code (env GATEWAY_JOIN_CODE)")
-	fs.StringVar(&in.CRMType, "crm", "viva", "CRM type")
-	fs.StringVar(&in.Username, "crm-username", "", "CRM administrator login (env CRM_USERNAME)")
-	fs.StringVar(&in.AuthURL, "crm-auth-url", "", "CRM login endpoint override (test doubles)")
-	fs.StringVar(&in.APIURL, "crm-api-url", "", "CRM API endpoint override (test doubles)")
+	offered := setupTypes(getenv)
+	fs.StringVar(&in.CRMType, "crm", "", "CRM type: "+strings.Join(offered, ", ")+" (default "+drivers.DefaultCRM+")")
+	fields := crmFlags(fs)
 	if fs.Parse(args) != nil {
 		return 2
 	}
+	crmGiven := in.CRMType != ""
+	in.CRMType = cmp.Or(in.CRMType, drivers.DefaultCRM)
 	in.HubURL = cmp.Or(in.HubURL, getenv("GATEWAY_HUB_URL"), defaultHubURL)
 	in.HubKeyFingerprint = strings.TrimSpace(cmp.Or(in.HubKeyFingerprint, getenv("GATEWAY_HUB_KEY_FINGERPRINT")))
 	in.HubKey = embeddedHubKey(in.HubURL)
-	in.Username = cmp.Or(in.Username, getenv("CRM_USERNAME"))
 	// the CRM password is never a flag (it would land in shell history and
 	// in the process list); the join code may be, it is single-use
 	in.JoinCode = strings.TrimSpace(cmp.Or(in.JoinCode, getenv("GATEWAY_JOIN_CODE")))
-	in.Password = getenv("CRM_PASSWORD")
+	in.Password = getenv(core.PasswordEnv)
 	reader := bufio.NewReader(stdin)
 	if *passwordStdin {
 		line, err := reader.ReadString('\n')
@@ -78,6 +80,15 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		in.Password = strings.TrimRight(line, "\r\n")
 	}
 
+	if !*nonInteractive && !crmGiven && len(offered) > 1 {
+		t, err := askCRM(reader, stderr, offered)
+		if err != nil {
+			fmt.Fprintf(stderr, "setup: %v\n", err)
+			return 2
+		}
+		in.CRMType = t
+	}
+	fillCRM(&in, fields, getenv)
 	if !*nonInteractive {
 		if err := prompt(&in, reader, stderr); err != nil {
 			fmt.Fprintf(stderr, "setup: %v\n", err)
@@ -88,6 +99,15 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
 	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets, Accounts: setupAccounts(getenv), Note: noteTo(stderr)}
+	if !*nonInteractive {
+		// a CRM a person logs in to: the login and the service client are
+		// asked in this terminal
+		stateDir := core.StateDir(cmp.Or(in.ConfigPath, "gateway.yaml"), getenv)
+		deps.Login = func(ctx context.Context, il driver.InteractiveLogin) error {
+			return loginInteractively(ctx, il, reader, stderr, "", "", stateDir)
+		}
+		deps.PickClient = pickClient(reader, stderr)
+	}
 	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
@@ -204,7 +224,8 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 		return strings.TrimRight(s, "\r\n"), nil
 	}
 	var err error
-	fmt.Fprintln(w, "Настройка court-gateway. Понадобятся логин и пароль администратора Viva и код подключения.")
+	spec := in.Spec()
+	fmt.Fprintf(w, "Настройка court-gateway. Понадобятся %s и код подключения.\n", cmp.Or(spec.Needs, "данные для входа в CRM"))
 	fmt.Fprintln(w, "Клубы, корты и часы работы здесь не задаются: их подключит оператор на хабе.")
 	if in.HubURL == "" {
 		if in.HubURL, err = line("Адрес хаба (пришёл вместе с кодом подключения)", ""); err != nil {
@@ -217,16 +238,32 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 			return err
 		}
 	}
-	if in.CRMType == "viva" {
-		if in.Username == "" {
-			if in.Username, err = line("Логин администратора Viva (e-mail)", ""); err != nil {
-				return err
-			}
+	for _, f := range spec.Fields {
+		if f.Prompt == "" || in.CRM[f.Key] != "" {
+			continue
 		}
-		if in.Password == "" {
-			if in.Password, err = secret("Пароль администратора Viva"); err != nil {
-				return err
+		if in.CRM == nil {
+			in.CRM = map[string]string{}
+		}
+		if in.CRM[f.Key], err = line(f.Prompt, ""); err != nil {
+			return err
+		}
+	}
+	for _, x := range spec.Secrets {
+		if x.Prompt == "" || in.Secret(x.Env) != "" {
+			continue
+		}
+		v, err := secret(x.Prompt)
+		if err != nil {
+			return err
+		}
+		if x.Env == core.PasswordEnv {
+			in.Password = v
+		} else {
+			if in.Secrets == nil {
+				in.Secrets = map[string]string{}
 			}
+			in.Secrets[x.Env] = v
 		}
 	}
 	if in.JoinCode == "" {
@@ -242,12 +279,114 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 // demonstrations, never offered to a club.
 const demoCRMEnv = "GATEWAY_DEMO_CRM"
 
-// setupAccounts are the CRM types setup takes.
+// setupAccounts are the CRM types setup takes: every registered one but
+// the hidden (demo) ones.
 func setupAccounts(getenv func(string) string) map[string]driver.AccountFactory {
 	if getenv(demoCRMEnv) == "1" {
 		return drivers.Accounts
 	}
-	return map[string]driver.AccountFactory{"viva": drivers.Accounts["viva"]}
+	out := map[string]driver.AccountFactory{}
+	for t, f := range drivers.Accounts {
+		if spec, ok := driver.SetupFor(t); ok && !spec.Hidden {
+			out[t] = f
+		}
+	}
+	return out
+}
+
+// setupTypes are the CRM types setup offers, the default first.
+func setupTypes(getenv func(string) string) []string {
+	var out []string
+	for t := range setupAccounts(getenv) {
+		if t != drivers.DefaultCRM {
+			out = append(out, t)
+		}
+	}
+	slices.Sort(out)
+	if _, ok := setupAccounts(getenv)[drivers.DefaultCRM]; ok {
+		out = append([]string{drivers.DefaultCRM}, out...)
+	}
+	return out
+}
+
+// crmField is a setup flag of a CRM key: the flag's value and the CRM
+// types that ask for the key.
+type crmField struct {
+	value *string
+	field driver.SetupField
+}
+
+// crmFlags defines a flag for every crm key a registered CRM type asks
+// for (one flag per name, shared by the types that ask for it).
+func crmFlags(fs *flag.FlagSet) map[string]crmField {
+	out := map[string]crmField{}
+	types := slices.Sorted(maps.Keys(drivers.Accounts))
+	for _, t := range types {
+		spec, _ := driver.SetupFor(t)
+		for _, f := range spec.Fields {
+			if _, dup := out[f.Flag]; dup || f.Flag == "" {
+				continue
+			}
+			usage := "CRM key " + f.Key
+			if f.Env != "" {
+				usage += " (env " + f.Env + ")"
+			}
+			out[f.Flag] = crmField{value: fs.String(f.Flag, "", usage), field: f}
+		}
+	}
+	return out
+}
+
+// fillCRM takes the CRM type's keys from their flags, else the
+// environment, and its secrets other than CRM_PASSWORD from the
+// environment (a secret is never a flag).
+func fillCRM(in *setup.Input, flags map[string]crmField, getenv func(string) string) {
+	spec := in.Spec()
+	in.CRM = map[string]string{}
+	for _, f := range spec.Fields {
+		v := ""
+		if fl, ok := flags[f.Flag]; ok {
+			v = *fl.value
+		}
+		if v == "" && f.Env != "" {
+			v = getenv(f.Env)
+		}
+		if v = strings.TrimSpace(v); v != "" {
+			in.CRM[f.Key] = v
+		}
+	}
+	in.Secrets = map[string]string{}
+	for _, x := range spec.Secrets {
+		if x.Env != core.PasswordEnv {
+			if v := getenv(x.Env); v != "" {
+				in.Secrets[x.Env] = v
+			}
+		}
+	}
+}
+
+// askCRM asks which CRM the club has.
+func askCRM(r *bufio.Reader, w io.Writer, offered []string) (string, error) {
+	var names []string
+	for _, t := range offered {
+		spec, _ := driver.SetupFor(t)
+		names = append(names, t+" — "+spec.Name)
+	}
+	for {
+		fmt.Fprintf(w, "CRM клуба (%s) [%s]: ", strings.Join(names, ", "), offered[0])
+		s, err := r.ReadString('\n')
+		if err != nil && s == "" {
+			return "", fmt.Errorf("ввод прерван")
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			return offered[0], nil
+		}
+		if slices.Contains(offered, s) {
+			return s, nil
+		}
+		fmt.Fprintf(w, "Нет такой CRM: %s\n", s)
+	}
 }
 
 func printSetup(w io.Writer, r setup.Result) {

@@ -11,12 +11,13 @@ import (
 )
 
 type draft struct {
-	HubURL, HubCA   string
-	HubKey          string
-	CRMType         string
-	Username        string
-	AuthURL, APIURL string
-	Now             time.Time
+	HubURL, HubCA string
+	HubKey        string
+	CRMType       string
+	// CRM are the installation's crm keys and Secrets the CRM secrets
+	// (environment variable, value), in the order the CRM type declares.
+	CRM, Secrets [][2]string
+	Now          time.Time
 }
 
 func q(s string) string { return strconv.Quote(s) }
@@ -54,14 +55,8 @@ func (d *draft) render(installation, name string) string {
 	w("")
 	w("crm:")
 	w("  type: %s", d.CRMType)
-	if d.CRMType == "viva" {
-		w("  username: %s", q(d.Username))
-		if d.AuthURL != "" {
-			w("  auth_url: %s", d.AuthURL)
-		}
-		if d.APIURL != "" {
-			w("  api_url: %s", d.APIURL)
-		}
+	for _, kv := range d.CRM {
+		w("  %s: %s", kv[0], q(kv[1]))
 	}
 	return b.String()
 }
@@ -84,11 +79,11 @@ func envValue(v string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$").Replace(v) + `"`
 }
 
-func renderEnv(password, secret, crmType string) string {
+func renderEnv(crmSecrets [][2]string, secret string) string {
 	var b strings.Builder
 	b.WriteString("# Секреты court-gateway. Не пересылайте этот файл и не публикуйте его.\n")
-	if crmType == "viva" {
-		b.WriteString(core.PasswordEnv + "=" + envValue(password) + "\n")
+	for _, kv := range crmSecrets {
+		b.WriteString(kv[0] + "=" + envValue(kv[1]) + "\n")
 	}
 	b.WriteString(core.DefaultHubSecretEnv + "=" + envValue(secret) + "\n")
 	return b.String()

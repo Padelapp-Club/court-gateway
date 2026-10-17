@@ -40,4 +40,12 @@ type PriceTable struct {
 	// Zone is the zone whose days and clock the rules are written in; nil
 	// means the club's own zone.
 	Zone *time.Location
+	// Dates replace Base and Adjustments on a date of Zone ("2006-01-02"):
+	// a holiday priced apart from its weekday. A date's rules apply to it
+	// whatever their Days; no rules (an empty list) is no price that day.
+	Dates map[string][]PriceRule
+	// DatesFrom and DatesTo ("2006-01-02", inclusive), when set, are the
+	// dates the driver knows Dates for: any other date has no price, so a
+	// date it could not look up is never priced by its weekday.
+	DatesFrom, DatesTo string
 }

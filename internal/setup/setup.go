@@ -11,10 +11,12 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,11 +41,28 @@ type Input struct {
 	// gateway pins is authenticated apart from the TLS of the enrollment.
 	HubKey            string
 	HubKeyFingerprint string
-	CRMType           string // viva (default), or another of Deps.Accounts
-	Username          string
-	Password          string
-	AuthURL           string // optional CRM endpoint overrides (test doubles)
-	APIURL            string
+	CRMType           string // drivers.DefaultCRM when empty, or another of Deps.Accounts
+	// CRM holds the installation's crm keys the CRM type asks for
+	// (driver.SetupSpec.Fields), by key.
+	CRM map[string]string
+	// Password is CRM_PASSWORD; Secrets the CRM type's other secrets
+	// (driver.SetupSpec.Secrets), by environment variable.
+	Password string
+	Secrets  map[string]string
+}
+
+// Spec is the setup of the input's CRM type (empty for an unknown type).
+func (in Input) Spec() driver.SetupSpec {
+	s, _ := driver.SetupFor(in.crmType())
+	return s
+}
+
+// Secret returns the value of a secret environment variable of the input.
+func (in Input) Secret(env string) string {
+	if env == core.PasswordEnv {
+		return in.Password
+	}
+	return in.Secrets[env]
 }
 
 // Deps are injectable for tests.
@@ -63,6 +82,17 @@ type Deps struct {
 	// Note, when set, takes a remark that does not change the outcome
 	// (the CRM session of the login check was not ended).
 	Note func(string)
+	// Login logs an interactive account in with a person (QR or code;
+	// LoginInteractively in a terminal). Without it setup of such a CRM
+	// fails: nobody can log the gateway in.
+	Login func(context.Context, driver.InteractiveLogin) error
+	// PickClient has the person choose the club's service client of a
+	// ClientPicker account; it returns the client's id. Without it, or
+	// with "" chosen, the gateway reads and does not book.
+	PickClient func(context.Context, driver.ClientPicker) (string, error)
+	// Sessions keeps the session of an interactive login; default: the
+	// state directory of the config being written.
+	Sessions driver.SessionStore
 }
 
 // Warning is something the administrator must look at.
@@ -113,22 +143,26 @@ func (in Input) Missing() []string {
 	if in.HubKey == "" && in.HubKeyFingerprint == "" {
 		out = append(out, "--hub-key-fingerprint (или GATEWAY_HUB_KEY_FINGERPRINT; отпечаток ключа хаба приходит вместе с кодом подключения)")
 	}
-	if in.crmType() == "viva" {
-		if in.Username == "" {
-			out = append(out, "--crm-username")
+	spec := in.Spec()
+	for _, f := range spec.Fields {
+		if f.Required && strings.TrimSpace(in.CRM[f.Key]) == "" {
+			out = append(out, "--"+f.Flag)
 		}
-		if in.Password == "" {
-			out = append(out, "CRM_PASSWORD (или --password-stdin)")
+	}
+	for _, x := range spec.Secrets {
+		if x.Required && in.Secret(x.Env) == "" {
+			if x.Env == core.PasswordEnv {
+				out = append(out, core.PasswordEnv+" (или --password-stdin)")
+			} else {
+				out = append(out, x.Env)
+			}
 		}
 	}
 	return out
 }
 
 func (in Input) crmType() string {
-	if in.CRMType == "" {
-		return "viva"
-	}
-	return in.CRMType
+	return cmp.Or(in.CRMType, drivers.DefaultCRM)
 }
 
 // Run performs setup. The returned Result is always filled; err is a
@@ -164,7 +198,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	factory, ok := deps.Accounts[in.crmType()]
 	if !ok {
-		return fail(problem("INVALID_INPUT", "тип CRM «%s» не поддерживается (viva)", in.CRMType))
+		return fail(problem("INVALID_INPUT", "тип CRM «%s» не поддерживается (%s)", in.CRMType, strings.Join(slices.Sorted(maps.Keys(deps.Accounts)), ", ")))
 	}
 	if in.ConfigPath == "" {
 		in.ConfigPath = "gateway.yaml"
@@ -181,26 +215,95 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			}
 		}
 	}
-	d := &draft{HubURL: strings.TrimRight(in.HubURL, "/"), HubCA: in.HubCAFile, CRMType: in.crmType(),
-		Username: in.Username, AuthURL: in.AuthURL, APIURL: in.APIURL, Now: deps.Now()}
+	d := &draft{HubURL: strings.TrimRight(in.HubURL, "/"), HubCA: in.HubCAFile, CRMType: in.crmType(), Now: deps.Now()}
 
-	// 1. the CRM login, before the join code is spent
+	// 1. the CRM login, before the join code is spent: the keys and the
+	// secrets the CRM type declares, and nothing else
+	spec := in.Spec()
 	crm := driver.Params{}
-	if d.CRMType == "viva" {
-		crm["username"] = in.Username
-		if in.AuthURL != "" {
-			crm["auth_url"] = in.AuthURL
-		}
-		if in.APIURL != "" {
-			crm["api_url"] = in.APIURL
+	for _, f := range spec.Fields {
+		if v := strings.TrimSpace(in.CRM[f.Key]); v != "" {
+			crm[f.Key] = v
+			d.CRM = append(d.CRM, [2]string{f.Key, v})
 		}
 	}
-	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, HTTPClient: deps.CRMClient, Now: deps.Now})
+	secrets := map[string]string{}
+	for _, x := range spec.Secrets {
+		if v := in.Secret(x.Env); v != "" {
+			secrets[x.Env] = v
+			d.Secrets = append(d.Secrets, [2]string{x.Env, v})
+		}
+	}
+	notProtected := func(err error) (Result, error) {
+		return fail(problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err))
+	}
+	sessions := deps.Sessions
+	loginRequired := func() (Result, error) {
+		return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", cmp.Or(spec.Name, d.CRMType)))
+	}
+	if spec.Interactive {
+		if deps.Login == nil {
+			return loginRequired() // before anything is written
+		}
+		// the login saves a session: the folders that will hold it are
+		// closed before it exists, and a setup that fails leaves none
+		stateDir := core.StateDir(cfgPath, nil)
+		if sessions == nil {
+			sessions = core.SessionStore(stateDir)
+		}
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+			return fail(problem("WRITE_FAILED", "%v", err))
+		}
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			return fail(problem("WRITE_FAILED", "%v", err))
+		}
+		if deps.ProtectSecrets != nil {
+			for _, p := range []string{filepath.Dir(cfgPath), stateDir} {
+				if err := deps.ProtectSecrets(p); err != nil {
+					return notProtected(err)
+				}
+			}
+		}
+		defer func() {
+			if res.OK {
+				return
+			}
+			if err := sessions.SaveSession(nil); err != nil && deps.Note != nil {
+				deps.Note("сессия входа в CRM осталась в папке состояния, удалите её вручную (" + core.SessionFile + "): " + err.Error())
+			}
+		}()
+	}
+	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, Secrets: secrets, HTTPClient: deps.CRMClient, Now: deps.Now, Sessions: sessions})
 	if err != nil {
 		return fail(problem("INVALID_INPUT", "%v", err))
 	}
+	if il, ok := acct.(driver.InteractiveLogin); ok {
+		// a person logs the gateway in, every setup: the session is the
+		// one the service will use (saved in its state directory)
+		if deps.Login == nil {
+			return loginRequired()
+		}
+		if err := deps.Login(ctx, il); err != nil {
+			return fail(loginProblem(err))
+		}
+	}
 	if p := checkLogin(ctx, acct, deps.Note); p != nil {
 		return fail(p)
+	}
+	if cp, ok := acct.(driver.ClientPicker); ok && crm[cp.ClientKey()] == nil {
+		id := ""
+		if deps.PickClient != nil {
+			if id, err = deps.PickClient(ctx, cp); err != nil {
+				return fail(problem("CLIENT_NOT_CHOSEN", "служебный клиент не выбран: %v", err))
+			}
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			crm[cp.ClientKey()] = id
+			d.CRM = append(d.CRM, [2]string{cp.ClientKey(), id})
+		} else {
+			res.Warnings = append(res.Warnings, Warning{Code: "NO_SERVICE_CLIENT",
+				Message: "служебный клиент клуба не выбран: шлюз будет только показывать занятость, брони PadelApp не встанут — выберите его, запустив setup ещё раз"})
+		}
 	}
 	d.HubKey = placeholderKey
 	if _, p := validate(d, crm, "pending", "", in.Password, "placeholder-secret"); p != nil {
@@ -208,9 +311,6 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		return fail(problem("WRITE_FAILED", "%v", err))
-	}
-	notProtected := func(err error) (Result, error) {
-		return fail(problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err))
 	}
 	if deps.ProtectSecrets != nil {
 		// before the join code is spent and before any secret is written
@@ -281,7 +381,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	if p != nil {
 		return fail(p)
 	}
-	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(in.Password, reg.Secret, d.CRMType)), 0o600); err != nil {
+	if err := core.WriteFileAtomic(envPath, []byte(renderEnv(d.Secrets, reg.Secret)), 0o600); err != nil {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", envPath, err))
 	}
 	if deps.ProtectSecrets != nil {
@@ -322,6 +422,25 @@ func checkLogin(ctx context.Context, acct driver.Account, note func(string)) *Pr
 		return problem("CRM_INVALID_RESPONSE", "CRM ответила в непонятном формате")
 	default:
 		return problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже")
+	}
+}
+
+// loginProblem names the failure of an interactive login.
+func loginProblem(err error) *Problem {
+	var ue *driver.UpstreamError
+	switch {
+	case errors.Is(err, driver.ErrLoginExpired):
+		return problem("CRM_LOGIN_EXPIRED", "время входа истекло — запустите ещё раз")
+	case errors.Is(err, driver.ErrLoginDeclined):
+		return problem("CRM_LOGIN_DECLINED", "вход отклонён в приложении CRM или код неверный")
+	case errors.Is(err, context.Canceled):
+		return problem("CRM_LOGIN_ABORTED", "вход прерван")
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamInvalid:
+		return problem("CRM_INVALID_RESPONSE", "CRM ответила в непонятном формате")
+	case errors.As(err, &ue) && ue.Kind == driver.UpstreamUnavailable:
+		return problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже")
+	default:
+		return problem("CRM_LOGIN_FAILED", "вход в CRM не удался: %v", err)
 	}
 }
 
