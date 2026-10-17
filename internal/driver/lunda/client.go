@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -134,7 +135,15 @@ func newClient(apiURL string, hc *http.Client, store driver.SessionStore, log *s
 	if now == nil {
 		now = time.Now
 	}
-	c := &client{apiURL: apiURL, http: hc, store: store, log: log, now: now,
+	// Lunda ties a QR login to the cookie qr/start sets (X_SESSION_ID): a
+	// qr/status without it answers EXPIRED at once (seen live 2026-10-17).
+	// The client keeps cookies as the admin's browser does; they are never
+	// logged.
+	jc := *hc
+	if jar, err := cookiejar.New(nil); err == nil {
+		jc.Jar = jar
+	}
+	c := &client{apiURL: apiURL, http: &jc, store: store, log: log, now: now,
 		ua: "PadelApp court-gateway/" + asciiOnly(driver.Version) + " (club gateway)"}
 	c.mu.Lock()
 	c.sess = c.loadLocked()

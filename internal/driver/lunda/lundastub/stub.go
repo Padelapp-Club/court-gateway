@@ -48,8 +48,9 @@ type Call struct {
 }
 
 type qrLogin struct {
-	pub    *rsa.PublicKey
-	status string
+	pub     *rsa.PublicKey
+	status  string
+	session string // the X_SESSION_ID cookie qr/start set
 }
 
 type slot struct {
@@ -433,9 +434,12 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	type route struct{ method, path string }
 	open := map[route]func(http.ResponseWriter, map[string]any){
 		{http.MethodPost, "/auth/qr/start"}:     s.qrStart,
-		{http.MethodPost, "/auth/qr/status"}:    s.qrStatus,
 		{http.MethodPost, "/profile/send-push"}: s.sendPush,
 		{http.MethodPost, "/profile/auth"}:      s.auth,
+	}
+	if r.Method == http.MethodPost && path == "/auth/qr/status" {
+		s.qrStatus(w, r, p)
+		return
 	}
 	if h, ok := open[route{r.Method, path}]; ok {
 		h(w, p)
@@ -534,9 +538,13 @@ func (s *Stub) qrStart(w http.ResponseWriter, p map[string]any) {
 	b := make([]byte, 90)
 	_, _ = rand.Read(b)
 	t := base64.RawURLEncoding.EncodeToString(b)
+	sid := newToken()
 	s.mu.Lock()
-	s.qr[t] = &qrLogin{pub: pub, status: "PENDING"}
+	s.qr[t] = &qrLogin{pub: pub, status: "PENDING", session: sid}
 	s.mu.Unlock()
+	// as Lunda: the login is tied to this cookie; qr/status without it
+	// answers EXPIRED
+	http.SetCookie(w, &http.Cookie{Name: "X_SESSION_ID", Value: sid, Path: "/", MaxAge: 60, Secure: true, HttpOnly: true})
 	result(w, map[string]any{"token": t})
 }
 
@@ -547,12 +555,17 @@ func (s *Stub) clubs() []Club {
 	return []Club{s.Club}
 }
 
-func (s *Stub) qrStatus(w http.ResponseWriter, p map[string]any) {
+func (s *Stub) qrStatus(w http.ResponseWriter, r *http.Request, p map[string]any) {
 	s.mu.Lock()
 	q, ok := s.qr[str(p, "token")]
 	if !ok {
 		s.mu.Unlock()
 		fail(w, http.StatusBadRequest, "unknown token")
+		return
+	}
+	if c, err := r.Cookie("X_SESSION_ID"); err != nil || c.Value != q.session {
+		s.mu.Unlock()
+		result(w, map[string]any{"status": "EXPIRED", "token": []string{}, "clubs": []Club{}})
 		return
 	}
 	out := map[string]any{"status": q.status, "token": []string{}, "clubs": []Club{}}
