@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -202,8 +203,13 @@ func TestHolidayPricedByItsCategory(t *testing.T) {
 		{"date": saturday.Format("2006-01-02"), "category": "REGULAR"},
 		{"date": plain.Format("2006-01-02"), "category": "REGULAR"},
 	}
-	for year := holiday.Year(); year <= holiday.AddDate(0, 0, 10).Year(); year++ {
-		cal, _ := json.Marshal(map[string]any{"year": year, "days": days})
+	byYear := map[int][]map[string]string{}
+	for _, d := range days {
+		y, _ := strconv.Atoi(d["date"][:4])
+		byYear[y] = append(byYear[y], d)
+	}
+	for year, ds := range byYear {
+		cal, _ := json.Marshal(map[string]any{"year": year, "days": ds})
 		f.stub.SetCalendar(year, string(cal))
 	}
 	pt, err := f.drv.PriceTable(context.Background(), "court-1")

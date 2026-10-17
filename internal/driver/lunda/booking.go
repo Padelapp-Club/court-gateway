@@ -281,12 +281,47 @@ func (d *Driver) write(ctx context.Context, op string, params map[string]any) er
 	return nil
 }
 
+// errGone: the booking is gone or cancelled already — nothing to cancel.
+var errGone = errors.New("the booking is gone or cancelled")
+
+// notStarted reads the booking again and establishes, by the decision
+// clock, that its CURRENT start (the club may have moved it) is ahead:
+// driver.ErrStarted or driver.ErrClockUnknown otherwise, errGone when it is
+// gone or cancelled, any other error when it cannot be read.
+func (d *Driver) notStarted(ctx context.Context, uid string) error {
+	b, found, err := d.load(ctx, uid)
+	switch {
+	case err != nil:
+		return err
+	case !found || b.cancelled():
+		return errGone
+	}
+	_, start, _, err := d.span(&b)
+	if err != nil {
+		return err
+	}
+	now, known := d.clock()
+	switch {
+	case !known:
+		return driver.ErrClockUnknown
+	case !start.After(now):
+		return driver.ErrStarted
+	}
+	return nil
+}
+
 // cancel cancels a booking (booking-cancel, not forced). A booking Lunda
-// does not know is gone: no error.
+// does not know is gone: no error. A cancel refused with the session and
+// sent again with another one first re-establishes that the booking has
+// not started (notStarted): if that fails, it is not sent again.
 // [UNVERIFIED] whether a cancel inside the club's cancellation deadline
 // (24 h before the start) needs forced: true.
 func (d *Driver) cancel(ctx context.Context, uid, reason string) error {
-	status, _, err := d.c.call(ctx, opCancel, nil, map[string]any{"bookingId": uid, "bookingType": "COURT", "forced": false, "reason": reason})
+	status, _, err := d.c.callGuarded(ctx, opCancel, nil, map[string]any{"bookingId": uid, "bookingType": "COURT", "forced": false, "reason": reason},
+		func(ctx context.Context) error { return d.notStarted(ctx, uid) })
+	if errors.Is(err, errGone) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -300,23 +335,24 @@ func (d *Driver) cancel(ctx context.Context, uid, reason string) error {
 // rollback cancels the booking a failed Create made and returns cause, or,
 // when it cannot be cancelled, an error that says the booking stays in
 // Lunda (logged at ERROR: the core reports it). Like Cancel, it goes by
-// the decision clock: a booking that has started (or with the time not
-// known) is not cancelled; nor is anything sent on a lost session.
+// the decision clock and the booking as it is now, read again: one whose
+// current start has passed (the club may have moved it), whose start or
+// the time is not known, or that cannot be read, is not cancelled; nor is
+// anything sent on a lost session.
 func (d *Driver) rollback(ctx context.Context, uid string, req driver.CreateRequest, cause error) error {
 	stays := func(why error) error {
 		d.log.Error("a booking the gateway made in Lunda could not be cancelled after a failed step: it stays in Lunda, unpaid, until the club cancels it",
 			"booking", "l-"+uid, "court", req.Court, "error", why)
 		return fmt.Errorf("%w; the booking l-%s it made STAYS IN LUNDA: it could not be cancelled (%v)", cause, uid, why)
 	}
-	now, known := d.clock()
-	switch {
-	case !known:
-		return stays(driver.ErrClockUnknown)
-	case !req.Start.After(now):
-		return stays(driver.ErrStarted)
-	}
 	rctx, stop := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer stop()
+	switch err := d.notStarted(rctx, uid); {
+	case errors.Is(err, errGone):
+		return cause // nothing left to undo
+	case err != nil:
+		return stays(err)
+	}
 	if err := d.cancel(rctx, uid, reasonRollback); err != nil {
 		return stays(err)
 	}

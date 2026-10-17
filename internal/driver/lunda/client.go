@@ -271,6 +271,15 @@ func noSession(detail string) error {
 // network failures are UpstreamUnavailable; other statuses are the
 // caller's. Neither the token nor a body ever goes into an error.
 func (c *client) call(ctx context.Context, op string, query url.Values, params any) (int, json.RawMessage, error) {
+	return c.callGuarded(ctx, op, query, params, nil)
+}
+
+// callGuarded is call for a write whose precondition may have changed by
+// the time it is sent again with another session (a cancel of a booking
+// that has started meanwhile): guard, when set, is asked before that
+// retry, and an error from it is returned instead — the write is not
+// sent again.
+func (c *client) callGuarded(ctx context.Context, op string, query url.Values, params any, guard func(context.Context) error) (int, json.RawMessage, error) {
 	ep, ok := endpoints[op]
 	if !ok {
 		return 0, nil, fmt.Errorf("lunda: %s is not an operation the driver may call", op)
@@ -301,6 +310,11 @@ func (c *client) call(ctx context.Context, op string, query url.Values, params a
 				return 0, nil, driver.Upstream(driver.UpstreamRejected, ep.method+" /"+op+": forbidden for the staff member the gateway is logged in as")
 			}
 			if attempt == 0 && c.replaced(tok) {
+				if guard != nil {
+					if err := guard(ctx); err != nil {
+						return 0, nil, err
+					}
+				}
 				continue
 			}
 			c.markLost(tok)

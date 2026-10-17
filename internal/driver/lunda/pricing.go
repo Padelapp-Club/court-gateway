@@ -22,10 +22,12 @@ import (
 // days and weekends are by default, HOLIDAY and the PRE_* categories mark
 // dates (a working Saturday may be marked REGULAR). The price table takes
 // REGULAR for Monday to Friday and WEEKEND for Saturday and Sunday, and,
-// for every date of the horizon the calendar gives a category priced
-// otherwise than its weekday, that category's rules (PriceTable.Dates; a
-// category without prices is no price that date). A calendar that does
-// not read is an error: never weekday prices on a holiday.
+// for every date of the calendar years it read that the calendar gives a
+// category priced otherwise than its weekday, that category's rules
+// (PriceTable.Dates; a category without prices is no price that date).
+// Only those years are priced (DatesFrom..DatesTo): a date of a year not
+// read has no price. A calendar that does not read is an error: never
+// weekday prices on a holiday.
 //
 // [UNVERIFIED] the whole model: tariff/load?uid= answering {uid, name,
 // prices: [{dayCategory, timeFrom, timeTo, price}]} with price in rubles
@@ -56,9 +58,10 @@ func defaultCategory(iso int) string {
 	return "REGULAR"
 }
 
-// priceHorizon is how far ahead dates are priced apart: the core's
-// booking horizon (beyond a club's bookingDepth of 14 days, which the
-// driver cannot read).
+// priceHorizon is how far ahead the calendar is read: the core's booking
+// horizon (beyond a club's bookingDepth of 14 days, which the driver
+// cannot read). Every calendar year from yesterday's to that of today plus
+// the horizon is read whole.
 const priceHorizon = driver.ZoneHorizon
 
 // tariffList reads the club's tariffs.
@@ -118,10 +121,11 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 		days[iso] = true
 		t.Base = append(t.Base, priceRules(byCat[defaultCategory(iso)], days)...)
 	}
-	special, err := d.specialDates(ctx)
+	special, from, to, err := d.specialDates(ctx)
 	if err != nil {
 		return driver.PriceTable{}, err
 	}
+	t.DatesFrom, t.DatesTo = from, to
 	for date, cat := range special {
 		day, _ := time.Parse("2006-01-02", date)
 		if sameRules(byCat[cat], byCat[defaultCategory(isoWeekday(day))]) {
@@ -193,22 +197,23 @@ func kopecks(r json.RawMessage) (int64, bool) {
 	return int64(math.Round(f * 100)), true
 }
 
-// specialDates reads the calendar of the years the next priceHorizon
-// touches and returns its dates in that window (local "2006-01-02" ->
-// category) whose category is not their weekday's. A calendar that does
-// not read is an error.
-func (d *Driver) specialDates(ctx context.Context) (map[string]string, error) {
+// specialDates reads the calendar of every year from yesterday's to that
+// of today plus priceHorizon, whole, and returns the dates of those years
+// (local "2006-01-02" -> category) whose category is not their weekday's,
+// with the first and the last date read. A calendar that does not read is
+// an error.
+func (d *Driver) specialDates(ctx context.Context) (out map[string]string, first, last string, err error) {
 	now, _ := d.clock()
-	from := localDay(now, d.loc)
-	to := from.Add(priceHorizon)
-	out := map[string]string{}
-	for year := from.Year(); year <= to.Year(); year++ {
+	today := localDay(now, d.loc)
+	y0, y1 := today.AddDate(0, 0, -1).Year(), today.Add(priceHorizon).Year()
+	out = map[string]string{}
+	for year := y0; year <= y1; year++ {
 		status, res, err := d.c.call(ctx, opCalendar, url.Values{"year": {strconv.Itoa(year)}}, nil)
 		if err != nil {
-			return nil, err
+			return nil, "", "", err
 		}
 		if status != http.StatusOK {
-			return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", opCalendar, status))
+			return nil, "", "", driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", opCalendar, status))
 		}
 		var cal struct {
 			Days *[]struct {
@@ -217,23 +222,20 @@ func (d *Driver) specialDates(ctx context.Context) (map[string]string, error) {
 			} `json:"days"`
 		}
 		if json.Unmarshal(res, &cal) != nil || cal.Days == nil {
-			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCalendar+": the answer is not a calendar")
+			return nil, "", "", driver.Upstream(driver.UpstreamInvalid, "GET /"+opCalendar+": the answer is not a calendar")
 		}
 		for _, day := range *cal.Days {
 			t, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(day.Date), d.loc)
 			cat := strings.ToUpper(strings.TrimSpace(day.Category))
-			if err != nil || cat == "" {
-				return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCalendar+": a day without a valid date and category")
-			}
-			if t.Before(from) || t.After(to) {
-				continue
+			if err != nil || cat == "" || t.Year() != year {
+				return nil, "", "", driver.Upstream(driver.UpstreamInvalid, "GET /"+opCalendar+": a day without a valid date of the year and a category")
 			}
 			if cat != defaultCategory(isoWeekday(t)) {
 				out[t.Format("2006-01-02")] = cat
 			}
 		}
 	}
-	return out, nil
+	return out, fmt.Sprintf("%04d-01-01", y0), fmt.Sprintf("%04d-12-31", y1), nil
 }
 
 func sameRules(a, b []rule) bool {
