@@ -291,3 +291,42 @@ type ClientPicker interface {
 	ClientKey() string
 	FindClients(ctx context.Context, pattern string) ([]Client, error)
 }
+
+// CRM is everything the binary knows of one crm.type: the driver of a
+// club, the account of an installation, and the keys the hub reads
+// without knowing the type. A driver package registers it from init with
+// Register (its setup with RegisterSetup), and internal/drivers imports
+// the package: one line per driver, nothing else to edit.
+type CRM struct {
+	Driver  Factory
+	Account AccountFactory
+	// ClubCRMKeys are the keys of the crm section a club configured on the
+	// hub may set; every other key belongs to the installation.
+	ClubCRMKeys []string
+	// StudioKeys are crm keys naming a whole club of the account, CourtKeys
+	// court params naming one CRM room: the resources two clubs on the hub
+	// never share.
+	StudioKeys, CourtKeys []string
+}
+
+var crms = map[string]CRM{}
+
+// Register declares a crm.type; a second registration panics.
+func Register(crmType string, c CRM) {
+	if _, dup := crms[crmType]; dup {
+		panic("driver: crm.type " + crmType + " registered twice")
+	}
+	if c.Driver == nil || c.Account == nil {
+		panic("driver: crm.type " + crmType + " registered without a driver or an account")
+	}
+	crms[crmType] = c
+}
+
+// Registered returns every registered crm.type.
+func Registered() map[string]CRM {
+	out := make(map[string]CRM, len(crms))
+	for t, c := range crms {
+		out[t] = c
+	}
+	return out
+}
