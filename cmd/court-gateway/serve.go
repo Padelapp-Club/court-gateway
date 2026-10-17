@@ -153,8 +153,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 
 	// every statusInterval a readiness round (syncer.Ready) feeds the
 	// health status file (read by `healthcheck`) and a heartbeat to the
-	// hub; the file is also rewritten when the hub connection changes
+	// hub; the file is also rewritten when the hub connection changes.
+	// serve waits for it before returning: a status write still running
+	// after that would land in the state directory of a stopped service
+	statusDone := make(chan struct{})
 	go func() {
+		defer close(statusDone)
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
 		// each club has its own time limit (core.ReadyTimeout); this only
@@ -280,6 +284,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		log.Info("restarting to run the version that is current now")
 	}
 	cancel()
+	<-statusDone
 	// the copy started after this one (a restart, an update, the service
 	// manager) must not be refused by the hub as a duplicate
 	<-tunnelDone
