@@ -82,8 +82,8 @@ $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva passw
 ```sh
 printf '1C address (without /hs/api/v3): '; read -r CRM_BASE_URL
 printf '1C user: ';                         read -r CRM_USERNAME
-printf '1C password: ';        stty -echo; read -r CRM_PASSWORD; stty echo; echo
-printf '1C application key: '; stty -echo; read -r FITNESS1C_APIKEY; stty echo; echo
+printf '1C password: ';        stty -echo; IFS= read -r CRM_PASSWORD; stty echo; echo
+printf '1C application key: '; stty -echo; IFS= read -r FITNESS1C_APIKEY; stty echo; echo
 export CRM_BASE_URL CRM_USERNAME CRM_PASSWORD FITNESS1C_APIKEY
 # for bookings (both or neither): printf 'Technical client phone: '; read -r CRM_CLIENT_PHONE
 #   printf 'Hub partner: '; read -r CRM_PARTNER; export CRM_CLIENT_PHONE CRM_PARTNER
