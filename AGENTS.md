@@ -115,6 +115,19 @@ $env:FITNESS1C_APIKEY = [Net.NetworkCredential]::new('', (Read-Host '1C applicat
 
 Check that the secrets are not empty without printing them: `[ -n "$CRM_PASSWORD" ] && [ -n "$FITNESS1C_APIKEY" ] && echo set`.
 
+**YCLIENTS** instead of the two Viva lines: the partner token, then **either** the user token
+**or** the staff login and password (leave the other empty):
+
+```sh
+printf 'YCLIENTS partner token: '; stty -echo; IFS= read -r YCLIENTS_PARTNER_TOKEN; stty echo; echo
+printf 'YCLIENTS user token (empty: login): '; stty -echo; IFS= read -r YCLIENTS_USER_TOKEN; stty echo; echo
+printf 'YCLIENTS staff login (empty: token): '; read -r CRM_LOGIN
+printf 'YCLIENTS staff password (empty: token): '; stty -echo; IFS= read -r CRM_PASSWORD; stty echo; echo
+export YCLIENTS_PARTNER_TOKEN YCLIENTS_USER_TOKEN CRM_LOGIN CRM_PASSWORD
+```
+
+(PowerShell: the same four variables, the secret ones with `Read-Host -AsSecureString` as above.)
+
 If the human can only give you the values in the conversation, put them into these environment
 variables of the `setup` command in step 3 and nowhere else; never repeat them back.
 
@@ -122,6 +135,8 @@ variables of the `setup` command in step 3 and nowhere else; never repeat them b
 (PowerShell: `if ($env:CRM_PASSWORD -and $env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
 **Verify (Lunda):** `test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
 (PowerShell: `if ($env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
+**Verify (YCLIENTS):** `test -n "$GATEWAY_JOIN_CODE" && test -n "$YCLIENTS_PARTNER_TOKEN" && { test -n "$YCLIENTS_USER_TOKEN" || { test -n "$CRM_LOGIN" && test -n "$CRM_PASSWORD"; }; } && echo inputs-ok`
+(PowerShell: `if ($env:GATEWAY_JOIN_CODE -and $env:YCLIENTS_PARTNER_TOKEN -and ($env:YCLIENTS_USER_TOKEN -or ($env:CRM_LOGIN -and $env:CRM_PASSWORD))) { 'inputs-ok' }`).
 **Expect:** `inputs-ok`. Never print the values themselves.
 
 ## Step 1 — platform and folder

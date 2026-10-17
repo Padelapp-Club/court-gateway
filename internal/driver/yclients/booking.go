@@ -196,17 +196,17 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	// what was never made costs one read.
 	r, err := d.c.do(ctx, http.MethodPost, "/book_record/"+d.company, nil, body, partnerAuth)
 	if err != nil {
-		d.undo(ctx, staff, tag, req, nil)
+		d.undo(ctx, staff, tag, req, body.Appointments, nil)
 		return driver.Booking{}, err
 	}
 	switch {
 	case r.status == http.StatusOK || r.status == http.StatusCreated:
 	case r.status == http.StatusUnprocessableEntity:
 		// YCLIENTS refuses a busy time with 422 (D11 R-9, probe)
-		d.undo(ctx, staff, tag, req, nil)
+		d.undo(ctx, staff, tag, req, body.Appointments, nil)
 		return driver.Booking{}, fmt.Errorf("POST /book_record: %w", driver.ErrSlotUnavailable)
 	default:
-		d.undo(ctx, staff, tag, req, nil)
+		d.undo(ctx, staff, tag, req, body.Appointments, nil)
 		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /book_record: HTTP %d", r.status))
 	}
 	var created []struct {
@@ -222,7 +222,7 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		}
 	}
 	if len(ids) != len(plans) || len(created) != len(plans) { // one id per record, each its own
-		d.undo(ctx, staff, tag, req, ids)
+		d.undo(ctx, staff, tag, req, body.Appointments, ids)
 		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /book_record: %d record ids for %d records", len(ids), len(plans)))
 	}
 	d.log.Info("record created", "court", req.Court, "records", len(ids))
@@ -235,11 +235,15 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 // have made records it did not name, or answered nothing). Each is read
 // back by id and deleted only if it is the partner's own (marker and the
 // club's service client, as Cancel requires), carries this booking's tag
-// and lies within the booking's time: a club's copy of the record — the
-// comment kept, another client or another time — is not touched. It works
+// and starts where one of the booking's records was to start: a club's copy
+// of the record — the comment kept, another client or another time — is not
+// touched. YCLIENTS shows a client's phone masked, so another client's may
+// read as the service client's: when more records than one claim one start
+// of the booking, they cannot be told apart, and only those the answer named
+// are deleted; the rest stay (occupied, never freed) and are logged. It works
 // on after the caller's context ends, within its own limit; what it cannot
 // delete it logs.
-func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, named []string) {
+func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, plan []appointmentBody, named []string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
 	defer cancel()
 	key := strings.TrimSuffix(strings.TrimPrefix(tag, "[cg-set:"), "]") // "<key>/<n>", as setOf reads it
@@ -253,7 +257,20 @@ func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateR
 			candidates = append(candidates, r.ID.String())
 		}
 	}
+	starts := map[int64]bool{}
+	for _, ap := range plan {
+		if t, perr := time.Parse(time.RFC3339, ap.Datetime); perr == nil {
+			starts[t.Unix()] = true
+		}
+	}
+	isNamed := map[string]bool{}
+	for _, id := range named {
+		isNamed[id] = true
+	}
+	// the records that are this booking's by everything the gateway can read,
+	// by the start they claim
 	left, done := 0, map[string]bool{}
+	claims := map[int64][]string{}
 	for _, id := range candidates {
 		if done[id] {
 			continue
@@ -270,12 +287,23 @@ func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateR
 		}
 		start, end, ok := rec.span()
 		k, _, tagged := setOf(rec.Comment)
-		if !ok || !tagged || k != key || rec.StaffID.String() != staff || !d.owned(rec, req.Partner) || start.Before(req.Start) || end.After(req.End) {
+		if !ok || !tagged || k != key || rec.StaffID.String() != staff || !d.owned(rec, req.Partner) ||
+			start.Before(req.Start) || end.After(req.End) || !starts[start.Unix()] {
 			continue // not this booking's record
 		}
-		if err := d.deleteRecord(ctx, id); err != nil {
-			left++
-			d.log.Error("yclients: a record of a failed create is left", "record", id, "err", err)
+		claims[start.Unix()] = append(claims[start.Unix()], id)
+	}
+	for _, ids := range claims {
+		for _, id := range ids {
+			if len(ids) > 1 && !isNamed[id] {
+				left++
+				d.log.Error("yclients: records of a failed create cannot be told from a club's: left in the journal, check them by hand", "court", req.Court, "record", id)
+				continue
+			}
+			if err := d.deleteRecord(ctx, id); err != nil {
+				left++
+				d.log.Error("yclients: a record of a failed create is left", "record", id, "err", err)
+			}
 		}
 	}
 	if left == 0 && err == nil {
