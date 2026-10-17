@@ -875,9 +875,14 @@ func (s *Stub) visitorList(w http.ResponseWriter, p map[string]any) {
 // customer's data, which the driver must never pass on).
 func (s *Stub) bookingJSON(b *Booking) map[string]any {
 	// as Lunda: no top-level price — each court of the booking carries its
-	// own (rubles)
-	m := map[string]any{"id": b.ID, "bookingType": "COURT", "placeholder": false, "status": b.Status,
-		"courts":     []map[string]any{{"courtUid": b.Court, "price": b.Price + b.Adjustment}},
+	// own (rubles), and a price adjustment is a further entry of its own,
+	// the "Court discount", the court's price left as it was. [UNVERIFIED]
+	// the discount entry's fields beyond its title and its negative price.
+	courts := []map[string]any{{"courtUid": b.Court, "price": b.Price}}
+	if b.Adjustment != 0 {
+		courts = append(courts, map[string]any{"title": "Court discount", "price": b.Adjustment})
+	}
+	m := map[string]any{"id": b.ID, "bookingType": "COURT", "placeholder": false, "status": b.Status, "courts": courts,
 		"datasource": "CLUB_APP", "goal": b.Goal, "customerUid": b.Customer, "payments": b.Payments, "financialItems": []any{},
 		"cancellationDeadline": s.local(b.Begin.Add(-24 * time.Hour)),
 		"slots":                []map[string]any{{"courtUid": b.Court, "begin": s.local(b.Begin), "end": s.local(b.End), "pinned": false}}}

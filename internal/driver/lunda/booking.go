@@ -68,10 +68,9 @@ func parseID(id string) (string, bool) {
 // [UNVERIFIED] customerUid, notes and slots as booking-load answers them
 // (observed: id, bookingType, placeholder, price, status, payments).
 type lundaBooking struct {
-	ID          string          `json:"id"`
-	Status      string          `json:"status"`
-	Price       json.RawMessage `json:"price"`
-	CustomerUID string          `json:"customerUid"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	CustomerUID string `json:"customerUid"`
 	Customer    *struct {
 		UID        string `json:"uid"`
 		ProfileUID string `json:"profileUid"`
@@ -79,7 +78,8 @@ type lundaBooking struct {
 	Notes    *string         `json:"notes"`
 	Payments json.RawMessage `json:"payments"`
 	// Courts carry the price of each court of the booking (rubles): Lunda
-	// answers no top-level price (seen live at Kosmos, 2026-10-17).
+	// answers no top-level price, and a price adjustment adds a further
+	// entry, the "Court discount" (seen live at Kosmos, 2026-10-17).
 	Courts []struct {
 		CourtUID string          `json:"courtUid"`
 		Price    json.RawMessage `json:"price"`
@@ -91,24 +91,21 @@ type lundaBooking struct {
 	} `json:"slots"`
 }
 
-// price is the booking's price in rubles: the sum of its courts' prices,
-// or the top-level price if Lunda gives one; ok is false when a price
-// does not read (never taken for 0).
-func (b *lundaBooking) price() (string, bool) {
-	if len(b.Courts) == 0 {
-		p := strings.TrimSpace(string(b.Price))
-		return p, decimalRe.MatchString(p)
-	}
-	sum := new(big.Rat)
+// courtsSum is the sum of the prices of the booking's courts[] entries
+// (rubles); ok is false when it has none, a price does not read as re
+// (never taken for 0), or an entry is on a court other than court (unless
+// court is "").
+func (b *lundaBooking) courtsSum(court string, re *regexp.Regexp) (sum *big.Rat, ok bool) {
+	sum = new(big.Rat)
 	for _, c := range b.Courts {
 		p := strings.TrimSpace(string(c.Price))
-		r, ok := new(big.Rat).SetString(p)
-		if !decimalRe.MatchString(p) || !ok {
-			return "", false
+		if !re.MatchString(p) || court != "" && c.CourtUID != court {
+			return nil, false
 		}
+		r, _ := new(big.Rat).SetString(p)
 		sum.Add(sum, r)
 	}
-	return strings.TrimRight(strings.TrimRight(sum.FloatString(2), "0"), "."), true
+	return sum, len(b.Courts) > 0
 }
 
 func (b *lundaBooking) customer() string {
@@ -121,6 +118,14 @@ func (b *lundaBooking) customer() string {
 		return b.Customer.UID
 	}
 	return b.Customer.ProfileUID
+}
+
+// netZero: the booking's courts[] entries, the adjustment's negative
+// "Court discount" included, read and sum to 0 — neither under- nor
+// over-adjusted. Entries that do not read, or none at all, are not 0.
+func (b *lundaBooking) netZero() bool {
+	net, ok := b.courtsSum("", signedRe)
+	return ok && net.Sign() == 0
 }
 
 func (b *lundaBooking) cancelled() bool { return strings.EqualFold(b.Status, "CANCELLED") }
@@ -211,16 +216,22 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	return driver.Booking{ID: id, Court: court, Start: start, End: end, Status: status}, nil
 }
 
-// decimalRe is a price as Lunda writes it (rubles, maybe with kopecks).
-var decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
+// decimalRe is a price as Lunda writes it (rubles, maybe with kopecks);
+// signedRe also takes the negative "Court discount" entry a price
+// adjustment adds to a booking.
+var (
+	decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
+	signedRe  = regexp.MustCompile(`^-?[0-9]{1,9}(\.[0-9]{1,2})?$`)
+)
 
 // Create implements driver.Driver, as alex decided on 2026-10-17: an
 // ordinary court booking on the club's service client
 // (booking-create, placeholder false), its price adjusted by minus the
-// price Lunda computed for it (update-courts-price-adjustment), so it is
-// PAID without any payment, and its notes starting with the partner's
-// marker (booking-notes-update). Read back, it must be PAID, list no
-// payment and carry the marker and the service client; if any step after
+// price Lunda computed for the booked court (update-courts-price-adjustment),
+// so it is PAID without any payment, and its notes starting with the
+// partner's marker (booking-notes-update). Read back, it must be PAID, list
+// no payment, have courts[] prices (the discount entry included) that sum
+// to 0, and carry the marker and the service client; if any step after
 // the create fails, the booking is cancelled and the partner gets an
 // error — never a half-made booking (an unpaid debt of the service client
 // in the club's books); a booking that has started meanwhile is not
@@ -272,12 +283,15 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
 	}
 	uid := b.ID
-	price, ok := b.price()
+	// the price is that of the booked court alone: an entry on another
+	// court, or none on ours, is a price that does not read
+	price, ok := b.courtsSum(c.uid, decimalRe)
 	if !ok {
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price"))
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price of the court"))
 	}
-	if strings.Trim(price, "0.") != "" { // a booking of price 0 needs no adjustment
-		if err := d.write(ctx, opAdjust, map[string]any{"bookingId": uid, "priceAdjustment": json.Number("-" + price)}); err != nil {
+	if price.Sign() != 0 { // a booking of price 0 needs no adjustment
+		minus := strings.TrimRight(strings.TrimRight(price.FloatString(2), "0"), ".")
+		if err := d.write(ctx, opAdjust, map[string]any{"bookingId": uid, "priceAdjustment": json.Number("-" + minus)}); err != nil {
 			return driver.Booking{}, d.rollback(ctx, uid, req, err)
 		}
 	}
@@ -293,6 +307,8 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
 	case !strings.EqualFold(got.Status, "PAID") || !got.noPayments():
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
+	case !got.netZero():
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back at a net court price of 0"))
 	case got.Notes == nil || !hasMarker(*got.Notes, req.Partner) || got.customer() != d.service:
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
 	}
