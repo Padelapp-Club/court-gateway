@@ -147,6 +147,9 @@ type Stub struct {
 	WSPing time.Duration
 	// RefuseWS answers a WebSocket opening 403.
 	RefuseWS bool
+	// CloseWSAtOnce closes every WebSocket right after it opened (Close
+	// 1001, going away).
+	CloseWSAtOnce bool
 
 	mu       sync.Mutex
 	courts   []court
@@ -1052,7 +1055,7 @@ func (s *Stub) serveWS(w http.ResponseWriter, r *http.Request) {
 	s.wsOpen++
 	s.wsOpened++
 	s.wsConns = append(s.wsConns, conn)
-	ping := s.WSPing
+	ping, atOnce := s.WSPing, s.CloseWSAtOnce
 	s.mu.Unlock()
 	if ping <= 0 {
 		ping = 50 * time.Millisecond
@@ -1064,6 +1067,14 @@ func (s *Stub) serveWS(w http.ResponseWriter, r *http.Request) {
 		defer wmu.Unlock()
 		_, err := conn.Write(append([]byte{0x80 | op, byte(len(payload))}, payload...))
 		return err
+	}
+	if atOnce {
+		_ = send(0x8, []byte{0x03, 0xe9})
+		conn.Close()
+		s.mu.Lock()
+		s.wsOpen--
+		s.mu.Unlock()
+		return
 	}
 	go func() {
 		t := time.NewTicker(ping)
