@@ -246,7 +246,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `GET /hub/installations/{id}` | — | `200 {"installation_id", "name", "created_at", "config_version", "clubs": [клуб…], "gateway": строка /hub/status или null}` |
 | `DELETE /hub/installations/{id}` | — | `204`; шлюз получает `401` при следующем запросе, неиспользованные коды гаснут |
 | `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at", "hub_key_fingerprint"}` |
-| `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки; `409 ROOM_TAKEN` — комнату `viva_room` корта уже бронирует другой клуб (той же или другой установки) |
+| `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки; `409 ROOM_TAKEN` — комнату корта (`viva_room`, `lunda_court` — ключ корта драйвера) уже бронирует другой клуб (той же или другой установки) |
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
 | `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN` |
 
@@ -255,7 +255,11 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 повторить, — и `503 HUB_UNAVAILABLE` (см. «Состояние в Postgres»).
 
 **Конфиг клуба** — `name`, `timezone`, `slot_minutes`, `hours`, `crm`, `courts` (`id`, `name`
-и ключи драйвера — для Viva `viva_room`, `price_list`), `services`. Драйвер `demo` — чтобы
+и ключи драйвера — для Viva `viva_room`, `price_list`; для Лунды `lunda_court` (корт Лунды) и
+`lunda_tariff` (тариф цен корта; черновик подставляет его, если тариф у клуба один), `services`.
+У Лунды в `crm` клуба ключей нет: установка — это один клуб Лунды, выбранный при входе сотрудника.
+Цены Лунды по праздникам и предпраздничным дням пока считаются по дню недели (черновик предупреждает
+`PRICE_CALENDAR`). Драйвер `demo` — чтобы
 попробовать шлюз без CRM; `setup` не принимает его (`--crm demo`), пока не задана переменная
 `GATEWAY_DEMO_CRM=1`; `serve` эту переменную не проверяет. В `crm` клуб задаёт только
 ключи клуба — для Viva `studio`, `overnight_minutes`, `break_lookback_days` (см. «API для
