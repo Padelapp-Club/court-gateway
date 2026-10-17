@@ -134,9 +134,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) (build fun
 		}
 		hc.CheckRedirect = core.RefuseRedirects // the token goes nowhere else
 		u := strings.TrimRight(apiURL, "/")
-		c := newClient(u, wsURLOf(u), hc, cfg.Sessions, cfg.Logger, cfg.Now)
-		c.keepSaved()
-		return c
+		return newClient(u, wsURLOf(u), hc, cfg.Sessions, cfg.Logger, cfg.Now)
 	}, service, true
 }
 
@@ -202,7 +200,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 // Account.EndSession).
 func (d *Driver) Close() {
 	if d.own {
-		d.c.stopKeepAlive()
+		_ = d.c.stopKeepAliveCtx(context.Background())
 	}
 }
 
@@ -297,7 +295,7 @@ func (d *Driver) Ready(ctx context.Context) error {
 		return alert
 	}
 	now, _ := d.clock()
-	ds, err := d.readDay(ctx, localDay(now, d.loc))
+	ds, err := readSlots(ctx, d.c, localDay(now, d.loc))
 	if err != nil {
 		return err
 	}

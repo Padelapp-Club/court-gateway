@@ -119,12 +119,6 @@ func TestFailedRollbackIsReported(t *testing.T) {
 	}
 }
 
-type discard struct{ header http.Header }
-
-func (d *discard) Header() http.Header         { return d.header }
-func (d *discard) Write(b []byte) (int, error) { return len(b), nil }
-func (d *discard) WriteHeader(int)             {}
-
 // Without a service client nothing is booked and nothing sent; reading
 // works, and readiness says what is missing.
 func TestNoServiceClientReadsButDoesNotBook(t *testing.T) {

@@ -131,9 +131,6 @@ type Stub struct {
 	AvailableHours []int
 	// PricePerHour of a new booking, in rubles.
 	PricePerHour float64
-	// RefreshKeepsToken answers a renewal the same token (as Lunda does
-	// when it did not ask for one).
-	RefreshKeepsToken bool
 	// OmitNotesOnLoad leaves notes out of booking-load.
 	OmitNotesOnLoad bool
 	// Category is the court category of the courts AddCourt adds.
@@ -143,8 +140,6 @@ type Stub struct {
 	// SecurityWindow (real time) is how long a club session lives without
 	// a registered ticket; 0: forever.
 	SecurityWindow time.Duration
-	// WSPing is how often the WebSocket pings (default 50 ms).
-	WSPing time.Duration
 	// RefuseWS answers a WebSocket opening 403.
 	RefuseWS bool
 	// CloseWSAtOnce closes every WebSocket right after it opened (Close
@@ -421,9 +416,7 @@ func (s *Stub) Renewals() int {
 // FailNext makes the next request of method to path (below APIPrefix)
 // answer status and body instead.
 func (s *Stub) FailNext(method, path string, status int, body string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.fails = append(s.fails, failure{method: method, path: path, status: status, body: body})
+	s.FailNextQuery(method, path, "", status, body)
 }
 
 // FailNextQuery is FailNext for a request whose raw query is query (e.g.
@@ -788,7 +781,7 @@ func (s *Stub) refresh(w http.ResponseWriter, tok string, p map[string]any) {
 	}
 	s.mu.Lock()
 	next := tok
-	if s.due[tok] && !s.RefreshKeepsToken {
+	if s.due[tok] {
 		next = newToken()
 		renewed := *s.tokens[tok]
 		s.tokens[next] = &renewed
@@ -1024,7 +1017,7 @@ func (s *Stub) addPayment(w http.ResponseWriter, p map[string]any) {
 }
 
 // serveWS is the admin's WebSocket: a registered, unused ticket opens it
-// (101); the stub pings every WSPing and counts the pongs; frames of the
+// (101); the stub pings every 50 ms and counts the pongs; frames of the
 // client are read and dropped.
 func (s *Stub) serveWS(w http.ResponseWriter, r *http.Request) {
 	t := r.URL.Query().Get("ticket")
@@ -1055,11 +1048,8 @@ func (s *Stub) serveWS(w http.ResponseWriter, r *http.Request) {
 	s.wsOpen++
 	s.wsOpened++
 	s.wsConns = append(s.wsConns, conn)
-	ping, atOnce := s.WSPing, s.CloseWSAtOnce
+	atOnce := s.CloseWSAtOnce
 	s.mu.Unlock()
-	if ping <= 0 {
-		ping = 50 * time.Millisecond
-	}
 	done := make(chan struct{})
 	var wmu sync.Mutex
 	send := func(op byte, payload []byte) error { // a server's frames are not masked
@@ -1077,7 +1067,7 @@ func (s *Stub) serveWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		t := time.NewTicker(ping)
+		t := time.NewTicker(50 * time.Millisecond)
 		defer t.Stop()
 		_ = send(0x1, []byte(`{"type":"HELLO"}`))
 		for {

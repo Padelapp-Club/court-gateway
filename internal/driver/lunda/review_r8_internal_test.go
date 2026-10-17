@@ -148,3 +148,23 @@ func TestWSStopAtTheUpgradeReturnsNoConnection(t *testing.T) {
 		t.Fatalf("dial: %v, %v", ws, err)
 	}
 }
+
+// A fragmented message with a ping between its fragments is valid: both
+// pings are answered and the connection stays (pins the data/continuation
+// sequence check against a refusal of valid frames).
+func TestWSValidFragmentationIsKept(t *testing.T) {
+	_, b, done := wsPair(t)
+	go func() {
+		_, _ = b.Write([]byte{0x01, 0x01, 'a', 0x89, 0x01, 'p', 0x00, 0x01, 'b', 0x80, 0x01, 'c', 0x82, 0x00, 0x89, 0x02, 'h', 'i'})
+	}()
+	for _, want := range []string{"p", "hi"} {
+		if op, p := readClientFrame(t, b); op != 0xA || string(p) != want {
+			t.Fatalf("op %#x %q, want the pong %q", op, p, want)
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the connection ended: %v", err)
+	default:
+	}
+}

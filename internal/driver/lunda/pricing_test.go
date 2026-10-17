@@ -208,7 +208,7 @@ func TestFindClients(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].ID != serviceUID || got[0].Name != "Kosmos PRIVACY-MARKER-LASTNAME-4be0" || got[0].Hint != "телефон …67" {
 		t.Fatalf("clients: %+v %v", got, err)
 	}
-	if f.stub.Calls()[findCallOf(f.stub.Calls(), "/club/visitor/list")].Params["freeTextPattern"] != "kosmos" {
+	if f.stub.Calls()[findCall(f, "/club/visitor/list")].Params["freeTextPattern"] != "kosmos" {
 		t.Fatalf("search: %+v", f.stub.Calls())
 	}
 	if logs := f.logs.String(); strings.Contains(logs, "PRIVACY-MARKER") || strings.Contains(logs, "1267") || strings.Contains(logs, "kosmos") {
@@ -282,13 +282,4 @@ func TestSetupRegistered(t *testing.T) {
 			t.Fatalf("field %+v", f)
 		}
 	}
-}
-
-func findCallOf(calls []lundastub.Call, path string) int {
-	for i, c := range calls {
-		if c.Path == path {
-			return i
-		}
-	}
-	return -1
 }

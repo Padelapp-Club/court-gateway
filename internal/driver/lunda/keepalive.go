@@ -118,9 +118,6 @@ func (c *client) startKeepAlive(relogin bool) {
 	go c.keepAliveLoop(ctx, k.done, k.kick)
 }
 
-// stopKeepAlive stops the keep-alive for good and waits for it to end.
-func (c *client) stopKeepAlive() { _ = c.stopKeepAliveCtx(context.Background()) }
-
 // stopKeepAliveCtx stops the keep-alive for good and waits for it to end,
 // no longer than ctx allows (its error then).
 func (c *client) stopKeepAliveCtx(ctx context.Context) error {
@@ -362,7 +359,7 @@ func closeCodeOK(code uint16) bool {
 // sequence with Close 1002, and the connection is dropped. Not checked:
 // the UTF-8 of text messages (they are discarded unread) and that lengths
 // are minimally encoded.
-func (w *wsConn) run(ctx context.Context) error {
+func (w *wsConn) run(ctx context.Context) (err error) {
 	ended := make(chan struct{})
 	defer close(ended)
 	go func() {
@@ -374,46 +371,31 @@ func (w *wsConn) run(ctx context.Context) error {
 		}
 	}()
 	defer w.conn.Close()
+	defer func() { // before the connection is closed
+		if errors.Is(err, errProtocol) {
+			_ = w.write(0x8, []byte{0x03, 0xea}) // 1002: protocol error
+		}
+	}()
 	inMessage := false // a fragmented data message is being read
 	for {
 		fin, op, payload, err := w.readFrame()
-		if errors.Is(err, errProtocol) {
-			_ = w.write(0x8, []byte{0x03, 0xea}) // 1002: protocol error
-			return err
-		}
 		if err != nil {
 			return err
 		}
 		switch op {
 		case 0x8: // close: a valid status is echoed, none answered with none
-			var reply []byte
-			if len(payload) >= 2 {
-				code := binary.BigEndian.Uint16(payload)
-				if !closeCodeOK(code) || !utf8.Valid(payload[2:]) {
-					_ = w.write(0x8, []byte{0x03, 0xea})
-					return errProtocol
-				}
-				reply = payload[:2]
-			} else if len(payload) == 1 {
-				_ = w.write(0x8, []byte{0x03, 0xea})
+			if len(payload) == 1 || len(payload) >= 2 && (!closeCodeOK(binary.BigEndian.Uint16(payload)) || !utf8.Valid(payload[2:])) {
 				return errProtocol
 			}
-			_ = w.write(0x8, reply)
+			_ = w.write(0x8, payload[:min(len(payload), 2)])
 			return errors.New("the WebSocket was closed by Lunda")
 		case 0x9: // ping
 			if err := w.write(0xA, payload); err != nil {
 				return errors.New("the WebSocket pong could not be sent")
 			}
 		case 0xA: // pong: dropped
-		case 0x1, 0x2: // data, dropped: a new message only after the last one ended
-			if inMessage {
-				_ = w.write(0x8, []byte{0x03, 0xea})
-				return errProtocol
-			}
-			inMessage = !fin
-		case 0x0: // continuation of a message begun before
-			if !inMessage {
-				_ = w.write(0x8, []byte{0x03, 0xea})
+		case 0x1, 0x2, 0x0: // data, dropped: a message begins only after the last ended, continues only within one
+			if inMessage != (op == 0x0) {
 				return errProtocol
 			}
 			inMessage = !fin
@@ -478,7 +460,8 @@ func (w *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 var errCloseSent = errors.New("the WebSocket close was sent already")
 
 // write sends one final frame, masked as a client's must be; after a
-// Close, nothing.
+// Close, nothing. Its payloads are at most 125 bytes: a close status, or
+// the payload of a ping readFrame bounded.
 func (w *wsConn) write(op byte, payload []byte) error {
 	w.wmu.Lock()
 	defer w.wmu.Unlock()
@@ -486,9 +469,6 @@ func (w *wsConn) write(op byte, payload []byte) error {
 		return errCloseSent
 	}
 	w.closeSent = op == 0x8
-	if len(payload) > 125 {
-		payload = payload[:125]
-	}
 	var mask [4]byte
 	_, _ = rand.Read(mask[:])
 	frame := make([]byte, 0, 6+len(payload))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func TestRenewalOnRefreshRequired(t *testing.T) {
 		t.Fatalf("renewals = %d, want 1", f.stub.Renewals())
 	}
 	renewed := f.store.token()
-	if renewed == old || renewed == "" || f.store.saves != saves+1 || !contains(f.stub.Sessions(), renewed) {
+	if renewed == old || renewed == "" || f.store.saves != saves+1 || !slices.Contains(f.stub.Sessions(), renewed) {
 		t.Fatalf("the renewed token was not saved")
 	}
 	refresh := f.stub.Calls()[findCall(f, "/auth/refresh")]

@@ -20,8 +20,7 @@ import (
 // of one club's staff. The club is the session's (SelectClub), so the
 // account serves one Lunda club.
 type Account struct {
-	c       *client
-	service string
+	c *client
 
 	mu   sync.Mutex
 	pend *pending // the login in progress
@@ -60,7 +59,7 @@ const (
 // the installation-level keys and takes up the saved session, if any.
 func NewAccount(cfg driver.Config) (driver.Account, error) {
 	var errs []string
-	build, service, _ := login(cfg, 30*time.Second, func(err error) {
+	build, _, _ := login(cfg, 30*time.Second, func(err error) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
@@ -68,7 +67,7 @@ func NewAccount(cfg driver.Config) (driver.Account, error) {
 	if len(errs) > 0 {
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
-	return &Account{c: build(), service: service}, nil // valid: only now is a client made
+	return &Account{c: build()}, nil // valid: only now is a client made
 }
 
 // EndSession implements driver.SessionEnder: it stops the keep-alive of the
