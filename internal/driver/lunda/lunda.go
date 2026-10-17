@@ -16,9 +16,11 @@
 // checked against it. Nothing about the club's clients is read but their
 // ids, and nothing of them leaves the driver.
 //
-// The gateway presents itself as the admin's browser does (userAgent) and
-// keeps the admin's WebSocket open while it has a session (keepalive.go):
-// Lunda binds a session to both.
+// The gateway presents itself as the admin's browser does (userAgent: Lunda
+// binds a session's token to it) and, while it has a session, registers a
+// WebSocket ticket and keeps the WebSocket open as the admin does
+// (keepalive.go: without a ticket Lunda refused sessions ~20 s after the
+// login; which of the two keeps one is not separated).
 package lunda
 
 import (
@@ -132,9 +134,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) (build fun
 		}
 		hc.CheckRedirect = core.RefuseRedirects // the token goes nowhere else
 		u := strings.TrimRight(apiURL, "/")
-		c := newClient(u, wsURLOf(u), hc, cfg.Sessions, cfg.Logger, cfg.Now)
-		c.keepSaved()
-		return c
+		return newClient(u, wsURLOf(u), hc, cfg.Sessions, cfg.Logger, cfg.Now)
 	}, service, true
 }
 
@@ -200,7 +200,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 // Account.EndSession).
 func (d *Driver) Close() {
 	if d.own {
-		d.c.stopKeepAlive()
+		_ = d.c.stopKeepAliveCtx(context.Background())
 	}
 }
 
@@ -295,7 +295,7 @@ func (d *Driver) Ready(ctx context.Context) error {
 		return alert
 	}
 	now, _ := d.clock()
-	ds, err := d.readDay(ctx, localDay(now, d.loc))
+	ds, err := readSlots(ctx, d.c, localDay(now, d.loc))
 	if err != nil {
 		return err
 	}

@@ -2,13 +2,11 @@ package lunda_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
-	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda/lundastub"
 )
 
@@ -130,12 +128,8 @@ func TestSecretsNeverLoggedNorInErrors(t *testing.T) {
 			t.Errorf("the logs hold the %s", name)
 		}
 		for _, err := range errs {
-			if strings.Contains(err.Error(), s) {
+			if strings.Contains(err.Error(), s) { // an UpstreamError's Detail is in its Error()
 				t.Errorf("an error holds the %s: %v", name, err)
-			}
-			var ue *driver.UpstreamError
-			if errors.As(err, &ue) && strings.Contains(ue.Detail, s) {
-				t.Errorf("an UpstreamError detail holds the %s", name)
 			}
 		}
 	}

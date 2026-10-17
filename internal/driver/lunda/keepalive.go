@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,19 +29,15 @@ import (
 // registers a CLUB_BOOKING ticket (club/websocket/ticket/register) and
 // listens on wss://app.lundapadel.ru/api-ws/websocket-listen?ticket=…,
 // reconnecting every 3 s up to 10 times with a new ticket each time
-// (react-use-websocket, reconnectInterval 3e3, reconnectAttempts 10, in its
-// bundle). Seen live 2026-10-17: a session that registered no ticket was
-// refused ~20 s after the login (403 "missing security details"); one that
-// did lived. So the gateway does the same for as long as it has a session:
-// it is a keep-alive. Its frames are read and dropped (the second wave
-// will use them); neither a ticket nor a frame is ever logged. It never
-// holds up a call, and its failure fails none: it is logged at WARN once
-// per outage.
-//
-// [UNVERIFIED] whether the ticket alone or the open WebSocket keeps the
-// session (a run with the ticket and no WebSocket lived 4 minutes); both
-// are done, as the admin does. Through a proxy (Config.Proxy) the
-// WebSocket is dialled directly: no CONNECT tunnel.
+// (react-use-websocket, in its bundle). Seen live 2026-10-17: sessions
+// that registered no ticket were refused ~20 s after the login (403
+// "missing security details"); one with a ticket and the WebSocket open
+// lived 5 minutes, one with a ticket and no WebSocket 4+ minutes. Which of
+// the two is necessary is not separated, so the gateway does both, as the
+// admin does, for as long as it has a session: a keep-alive. Its frames
+// are dropped (the second wave will use them); neither a ticket nor a
+// frame is logged; its failure fails no call (WARN once per outage).
+// Through a proxy (Config.Proxy) the WebSocket is dialled directly.
 
 const (
 	// wsPath is the admin's WebSocket on its host.
@@ -52,18 +49,19 @@ const (
 	// wsFastRetries is how many reconnects in a row are tried wsRetry
 	// apart; then one every wsSlowRetry, for as long as there is a session.
 	wsFastRetries = 10
-	// wsMaxFrame bounds a frame read (a control frame has at most 125).
-	wsMaxFrame = 1 << 20
 	// wsHandshake bounds the dial and the opening handshake.
 	wsHandshake = 15 * time.Second
 	// wsGUID is RFC 6455's key suffix.
 	wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
 
-// Retry intervals of the keep-alive (variables for tests).
+// Retry intervals of the keep-alive, and how long a connection must stay
+// open to count as up (variables for tests): one that closes sooner counts
+// as a failed reconnect, toward the backoff and the outage's WARN.
 var (
 	wsRetry     = 3 * time.Second
 	wsSlowRetry = time.Minute
+	wsStable    = 30 * time.Second
 )
 
 // wsURLOf is the WebSocket beside an API base: the admin's for the default
@@ -120,9 +118,6 @@ func (c *client) startKeepAlive(relogin bool) {
 	go c.keepAliveLoop(ctx, k.done, k.kick)
 }
 
-// stopKeepAlive stops the keep-alive for good and waits for it to end.
-func (c *client) stopKeepAlive() { _ = c.stopKeepAliveCtx(context.Background()) }
-
 // stopKeepAliveCtx stops the keep-alive for good and waits for it to end,
 // no longer than ctx allows (its error then).
 func (c *client) stopKeepAliveCtx(ctx context.Context) error {
@@ -148,6 +143,7 @@ var errNoKeepSession = errors.New("no session")
 
 func (c *client) keepAliveLoop(ctx context.Context, done chan struct{}, kick chan struct{}) {
 	defer close(done)
+	var mu sync.Mutex // fails and down: the loop's, and the timer's that finds a connection up
 	fails, down := 0, false
 	for ctx.Err() == nil {
 		// a new session (kick) ends the connection of the old one: its
@@ -163,26 +159,39 @@ func (c *client) keepAliveLoop(ctx context.Context, done chan struct{}, kick cha
 				kicked <- false
 			}
 		}()
-		opened, err := c.listen(cctx, func() { // open: the outage, if any, is over
-			if down {
-				c.log.Info("the Lunda keep-alive connection is up again")
-			}
-			fails, down = 0, false
+		var stable *time.Timer
+		opened, err := c.listen(cctx, func() {
+			stable = time.AfterFunc(wsStable, func() { // open for wsStable: the outage, if any, is over
+				mu.Lock()
+				defer mu.Unlock()
+				if down {
+					c.log.Info("the Lunda keep-alive connection is up again")
+				}
+				fails, down = 0, false
+			})
 		})
 		endConn()
-		if <-kicked {
+		lived := stable != nil && !stable.Stop()
+		wasKicked := <-kicked
+		mu.Lock()
+		if wasKicked {
 			fails = 0
+			mu.Unlock()
 			continue
 		}
 		if ctx.Err() != nil {
+			mu.Unlock()
 			return
 		}
 		wait := wsRetry
 		switch {
-		case opened: // closed after it opened: reconnect after wsRetry
+		case lived: // closed after it was up: reconnect after wsRetry
 		case errors.Is(err, errNoKeepSession):
 			fails, wait = 0, wsSlowRetry
-		default:
+		default: // not opened, or closed soon after: a failure
+			if opened {
+				err = fmt.Errorf("it closed within %s of opening: %w", wsStable, err)
+			}
 			if !down {
 				c.log.Warn("the Lunda keep-alive connection is down: the gateway keeps trying (calls go on without it)", "error", err)
 				down = true
@@ -191,6 +200,7 @@ func (c *client) keepAliveLoop(ctx context.Context, done chan struct{}, kick cha
 				wait = wsSlowRetry
 			}
 		}
+		mu.Unlock()
 		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -238,9 +248,10 @@ func (c *client) listen(ctx context.Context, onOpen func()) (opened bool, err er
 // wsConn is a client WebSocket (RFC 6455): frames are read and dropped,
 // pings answered, a close echoed.
 type wsConn struct {
-	conn net.Conn
-	r    *bufio.Reader
-	wmu  sync.Mutex
+	conn      net.Conn
+	r         *bufio.Reader
+	wmu       sync.Mutex
+	closeSent bool // under wmu: after a Close, nothing more is sent
 }
 
 // wsDialer and wsRoots are the WebSocket's TCP dial and TLS roots: the
@@ -343,9 +354,12 @@ func closeCodeOK(code uint16) bool {
 
 // run reads frames until the connection ends or ctx is done (then it says
 // goodbye with a close frame). A ping is answered with a pong; a valid
-// close is answered with its status; anything RFC 6455 forbids with Close
-// 1002, and the connection is dropped.
-func (w *wsConn) run(ctx context.Context) error {
+// close is answered with its status; a frame readFrame refuses, a close
+// with an invalid status or reason, and a data frame out of its message's
+// sequence with Close 1002, and the connection is dropped. Not checked:
+// the UTF-8 of text messages (they are discarded unread) and that lengths
+// are minimally encoded.
+func (w *wsConn) run(ctx context.Context) (err error) {
 	ended := make(chan struct{})
 	defer close(ended)
 	go func() {
@@ -357,46 +371,31 @@ func (w *wsConn) run(ctx context.Context) error {
 		}
 	}()
 	defer w.conn.Close()
+	defer func() { // before the connection is closed
+		if errors.Is(err, errProtocol) {
+			_ = w.write(0x8, []byte{0x03, 0xea}) // 1002: protocol error
+		}
+	}()
 	inMessage := false // a fragmented data message is being read
 	for {
 		fin, op, payload, err := w.readFrame()
-		if errors.Is(err, errProtocol) {
-			_ = w.write(0x8, []byte{0x03, 0xea}) // 1002: protocol error
-			return err
-		}
 		if err != nil {
 			return err
 		}
 		switch op {
 		case 0x8: // close: a valid status is echoed, none answered with none
-			var reply []byte
-			if len(payload) >= 2 {
-				code := binary.BigEndian.Uint16(payload)
-				if !closeCodeOK(code) || !utf8.Valid(payload[2:]) {
-					_ = w.write(0x8, []byte{0x03, 0xea})
-					return errProtocol
-				}
-				reply = payload[:2]
-			} else if len(payload) == 1 {
-				_ = w.write(0x8, []byte{0x03, 0xea})
+			if len(payload) == 1 || len(payload) >= 2 && (!closeCodeOK(binary.BigEndian.Uint16(payload)) || !utf8.Valid(payload[2:])) {
 				return errProtocol
 			}
-			_ = w.write(0x8, reply)
+			_ = w.write(0x8, payload[:min(len(payload), 2)])
 			return errors.New("the WebSocket was closed by Lunda")
 		case 0x9: // ping
 			if err := w.write(0xA, payload); err != nil {
 				return errors.New("the WebSocket pong could not be sent")
 			}
 		case 0xA: // pong: dropped
-		case 0x1, 0x2: // data, dropped: a new message only after the last one ended
-			if inMessage {
-				_ = w.write(0x8, []byte{0x03, 0xea})
-				return errProtocol
-			}
-			inMessage = !fin
-		case 0x0: // continuation of a message begun before
-			if !inMessage {
-				_ = w.write(0x8, []byte{0x03, 0xea})
+		case 0x1, 0x2, 0x0: // data, dropped: a message begins only after the last ended, continues only within one
+			if inMessage != (op == 0x0) {
 				return errProtocol
 			}
 			inMessage = !fin
@@ -404,11 +403,12 @@ func (w *wsConn) run(ctx context.Context) error {
 	}
 }
 
-// readFrame reads one frame; data frames are discarded unread, control
-// frames returned with their payload. A frame RFC 6455 forbids is
+// readFrame reads one frame; data frames, of any length, are discarded
+// unread as they stream in, control frames returned with their payload.
 // errProtocol: reserved bits set, a reserved opcode, a masked frame (a
 // server's never are), a fragmented control frame or one longer than
-// 125. The error never holds a frame.
+// 125, a 64-bit length with its top bit set. The error never holds a
+// frame.
 func (w *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 	ended := errors.New("the WebSocket connection ended")
 	var h [2]byte
@@ -438,10 +438,9 @@ func (w *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 		if _, err := io.ReadFull(w.r, b[:]); err != nil {
 			return false, 0, nil, ended
 		}
-		n = binary.BigEndian.Uint64(b[:])
-	}
-	if n > wsMaxFrame {
-		return false, 0, nil, errors.New("the WebSocket sent a frame too long")
+		if n = binary.BigEndian.Uint64(b[:]); n > math.MaxInt64 {
+			return false, 0, nil, errProtocol
+		}
 	}
 	if !control {
 		if _, err := io.CopyN(io.Discard, w.r, int64(n)); err != nil {
@@ -456,13 +455,20 @@ func (w *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 	return fin, op, payload, nil
 }
 
-// write sends one final frame, masked as a client's must be.
+// errCloseSent: a Close went out already; nothing is sent after it
+// (RFC 6455 §5.5.1), a second Close least of all.
+var errCloseSent = errors.New("the WebSocket close was sent already")
+
+// write sends one final frame, masked as a client's must be; after a
+// Close, nothing. Its payloads are at most 125 bytes: a close status, or
+// the payload of a ping readFrame bounded.
 func (w *wsConn) write(op byte, payload []byte) error {
 	w.wmu.Lock()
 	defer w.wmu.Unlock()
-	if len(payload) > 125 {
-		payload = payload[:125]
+	if w.closeSent {
+		return errCloseSent
 	}
+	w.closeSent = op == 0x8
 	var mask [4]byte
 	_, _ = rand.Read(mask[:])
 	frame := make([]byte, 0, 6+len(payload))

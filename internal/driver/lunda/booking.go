@@ -64,14 +64,13 @@ func parseID(id string) (string, bool) {
 }
 
 // lundaBooking is the subset of a booking the driver reads (booking-load,
-// booking-create). Nothing about the customer but the id is decoded.
-// [UNVERIFIED] customerUid, notes and slots as booking-load answers them
-// (observed: id, bookingType, placeholder, price, status, payments).
+// booking-create). Nothing about the customer but the id is decoded. Seen
+// live (Kosmos, 2026-10-17): a gateway booking read back with its status,
+// payments, notes and service client, and its cancel read its slots.
 type lundaBooking struct {
-	ID          string          `json:"id"`
-	Status      string          `json:"status"`
-	Price       json.RawMessage `json:"price"`
-	CustomerUID string          `json:"customerUid"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	CustomerUID string `json:"customerUid"`
 	Customer    *struct {
 		UID        string `json:"uid"`
 		ProfileUID string `json:"profileUid"`
@@ -79,10 +78,14 @@ type lundaBooking struct {
 	Notes    *string         `json:"notes"`
 	Payments json.RawMessage `json:"payments"`
 	// Courts carry the price of each court of the booking (rubles): Lunda
-	// answers no top-level price (seen live at Kosmos, 2026-10-17).
+	// answers no top-level price. A price adjustment adds a further entry,
+	// the discount: no courtUid, description "Court discount" and a
+	// POSITIVE price, the discount's size (seen live at Kosmos, 2026-10-17
+	// and 2026-10-18: court 2000 + discount 2000 is PAID).
 	Courts []struct {
-		CourtUID string          `json:"courtUid"`
-		Price    json.RawMessage `json:"price"`
+		CourtUID    string          `json:"courtUid"`
+		Description string          `json:"description"`
+		Price       json.RawMessage `json:"price"`
 	} `json:"courts"`
 	Slots []struct {
 		CourtUID string `json:"courtUid"`
@@ -91,24 +94,35 @@ type lundaBooking struct {
 	} `json:"slots"`
 }
 
-// price is the booking's price in rubles: the sum of its courts' prices,
-// or the top-level price if Lunda gives one; ok is false when a price
-// does not read (never taken for 0).
-func (b *lundaBooking) price() (string, bool) {
-	if len(b.Courts) == 0 {
-		p := strings.TrimSpace(string(b.Price))
-		return p, decimalRe.MatchString(p)
-	}
-	sum := new(big.Rat)
+// discountRow is the description of the entry a price adjustment adds to
+// a booking's courts[].
+const discountRow = "Court discount"
+
+// courtsNet is the booking's price in rubles: the prices of its entries
+// on court less those of its discount entries (no courtUid, description
+// discountRow), which count only when discounts is true. ok is false when
+// there is no entry on court, a price does not read (a negative one
+// included: never taken for 0), or an entry is neither court's nor, with
+// discounts, a discount.
+func (b *lundaBooking) courtsNet(court string, discounts bool) (net *big.Rat, ok bool) {
+	net = new(big.Rat)
 	for _, c := range b.Courts {
 		p := strings.TrimSpace(string(c.Price))
-		r, ok := new(big.Rat).SetString(p)
-		if !decimalRe.MatchString(p) || !ok {
-			return "", false
+		if !decimalRe.MatchString(p) {
+			return nil, false
 		}
-		sum.Add(sum, r)
+		r, _ := new(big.Rat).SetString(p)
+		switch {
+		case c.CourtUID == court:
+			net.Add(net, r)
+			ok = true
+		case discounts && c.CourtUID == "" && c.Description == discountRow:
+			net.Sub(net, r)
+		default:
+			return nil, false
+		}
 	}
-	return strings.TrimRight(strings.TrimRight(sum.FloatString(2), "0"), "."), true
+	return net, ok
 }
 
 func (b *lundaBooking) customer() string {
@@ -121,6 +135,14 @@ func (b *lundaBooking) customer() string {
 		return b.Customer.UID
 	}
 	return b.Customer.ProfileUID
+}
+
+// netZero: the booking's price on court less its discounts is 0 —
+// neither under- nor over-adjusted. Entries that do not read, or none on
+// court, are not 0.
+func (b *lundaBooking) netZero(court string) bool {
+	net, ok := b.courtsNet(court, true)
+	return ok && net.Sign() == 0
 }
 
 func (b *lundaBooking) cancelled() bool { return strings.EqualFold(b.Status, "CANCELLED") }
@@ -160,8 +182,8 @@ func (d *Driver) span(b *lundaBooking) (court string, start, end time.Time, err 
 }
 
 // load reads a booking; found=false when Lunda answers 404. [UNVERIFIED]
-// the query parameter (bookingId) and what Lunda answers for an unknown
-// booking: anything but 404 is not taken for "gone".
+// what Lunda answers for an unknown booking: anything but 404 is not taken
+// for "gone".
 func (d *Driver) load(ctx context.Context, uid string) (b lundaBooking, found bool, err error) {
 	// bookingType is required: without it Lunda answers 400 (seen live)
 	status, res, err := d.c.call(ctx, opBookingLoad, url.Values{"bookingId": {uid}, "bookingType": {"COURT"}}, nil)
@@ -211,33 +233,31 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	return driver.Booking{ID: id, Court: court, Start: start, End: end, Status: status}, nil
 }
 
-// decimalRe is a price as Lunda writes it (rubles, maybe with kopecks).
+// decimalRe is a price as Lunda writes it (rubles, maybe with kopecks;
+// never negative, a discount entry's neither).
 var decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
 
-// Create implements driver.Driver, as alex decided on 2026-10-17: an
-// ordinary court booking on the club's service client
-// (booking-create, placeholder false), its price adjusted by minus the
-// price Lunda computed for it (update-courts-price-adjustment), so it is
-// PAID without any payment, and its notes starting with the partner's
-// marker (booking-notes-update). Read back, it must be PAID, list no
-// payment and carry the marker and the service client; if any step after
-// the create fails, the booking is cancelled and the partner gets an
-// error — never a half-made booking (an unpaid debt of the service client
-// in the club's books); a booking that has started meanwhile is not
-// cancelled (rollback). A create whose outcome is unknown — no answer, a
-// 5xx, an answer that does not read or has no id — cancels nothing: the
-// club books its own tournaments on the same service client, so a booking
-// found there without the marker may be the club's (unknownOutcome).
-// Without a service client nothing is sent.
-//
-// Every booking of the gateway, a game or a tournament block, is of goal
-// GENERAL ("other" in Lunda's own labels, club/global-form-config): a
-// GAME or TOURNAMENT may surface in Lunda's app to players (alex,
-// 2026-10-17: «все наши записи надо создавать как Other … чтобы не дай бог
-// что-то не ушло в приложку лунды пользователям»).
-// bookingGoal is the goal of every booking the gateway makes in Lunda.
+// bookingGoal is the goal of every booking the gateway makes in Lunda, a
+// game or a tournament block alike: GENERAL ("other" in Lunda's own
+// labels, club/global-form-config), since a GAME or TOURNAMENT may surface
+// in Lunda's app to players (alex, 2026-10-17: «все наши записи надо
+// создавать как Other … чтобы не дай бог что-то не ушло в приложку лунды
+// пользователям»).
 const bookingGoal = "GENERAL"
 
+// Create implements driver.Driver, as alex decided on 2026-10-17: an
+// ordinary court booking of goal bookingGoal on the club's service client
+// (booking-create, placeholder false), adjusted by minus the booked court's
+// price (update-courts-price-adjustment) so it is PAID without any payment,
+// its notes starting with the partner's marker (booking-notes-update). Read
+// back, it must be PAID, list no payment, have a price on the booked court
+// equal to its discount entries' (net 0), and carry the marker and the
+// service client. If a step after the create fails, the booking is
+// cancelled unless it has started (rollback) and the partner gets an
+// error: never a half-made booking, an unpaid debt of the service client.
+// A create of unknown outcome (no answer, a 5xx, no readable id) cancels
+// nothing: the club books its own tournaments on the same service client
+// (unknownOutcome). Without a service client nothing is sent.
 func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
 	c, ok := d.byCourt[req.Court]
 	if !ok {
@@ -272,16 +292,19 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
 	}
 	uid := b.ID
-	price, ok := b.price()
+	// the price is that of the booked court alone: an entry on another
+	// court or a discount already, or none on ours, is a price that does
+	// not read
+	price, ok := b.courtsNet(c.uid, false)
 	if !ok {
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price"))
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price of the court"))
 	}
-	if strings.Trim(price, "0.") != "" { // a booking of price 0 needs no adjustment
-		if err := d.write(ctx, opAdjust, map[string]any{"bookingId": uid, "priceAdjustment": json.Number("-" + price)}); err != nil {
+	if price.Sign() != 0 { // a booking of price 0 needs no adjustment
+		minus := strings.TrimRight(strings.TrimRight(price.FloatString(2), "0"), ".")
+		if err := d.write(ctx, opAdjust, map[string]any{"bookingId": uid, "priceAdjustment": json.Number("-" + minus)}); err != nil {
 			return driver.Booking{}, d.rollback(ctx, uid, req, err)
 		}
 	}
-	// [UNVERIFIED] the parameter's name: notes
 	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "bookingType": "COURT", "notes": buildNotes(req.Note, req.Partner)}); err != nil {
 		return driver.Booking{}, d.rollback(ctx, uid, req, err)
 	}
@@ -293,6 +316,8 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
 	case !strings.EqualFold(got.Status, "PAID") || !got.noPayments():
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
+	case !got.netZero(c.uid):
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back at a net court price of 0"))
 	case got.Notes == nil || !hasMarker(*got.Notes, req.Partner) || got.customer() != d.service:
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
 	}

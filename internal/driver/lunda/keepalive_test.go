@@ -11,9 +11,9 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
-// Lunda refuses a session that keeps no CLUB_BOOKING ticket ~20 s after
-// its login (seen live 2026-10-17: 403 "missing security details"); the
-// stub does too, after SecurityWindow. The gateway keeps the session as
+// Live (2026-10-17), sessions that registered no CLUB_BOOKING ticket were
+// refused ~20 s after the login (403 "missing security details"); the
+// stub refuses one after SecurityWindow. The gateway keeps the session as
 // the admin does — after a login, and when it starts with a saved one —
 // so it is still served past that window, and the WebSocket answers the
 // pings.
@@ -82,7 +82,7 @@ func TestNewLoginReconnectsTheKeepAlive(t *testing.T) {
 // Lunda refusing it: calls go on, one WARN for the whole outage; back, an
 // INFO. Neither a ticket nor anything of a frame is logged.
 func TestKeepAliveReconnectsAndWarnsOnce(t *testing.T) {
-	defer lunda.SetWSRetry(20*time.Millisecond, 40*time.Millisecond)()
+	t.Cleanup(lunda.SetWSRetry(20*time.Millisecond, 40*time.Millisecond, time.Second)) // restored after the driver is closed
 	f, d := loggedIn(t)
 	_, opened, _ := f.stub.WebSockets()
 	f.stub.DropWebSockets()
@@ -129,5 +129,31 @@ func TestKeepAliveStopsWithTheAccount(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if len(f.stub.Tickets()) != tickets || f.store.token() == "" {
 		t.Fatalf("tickets %d after %d, session kept %v", len(f.stub.Tickets()), tickets, f.store.token() != "")
+	}
+}
+
+// A WebSocket that opens and closes at once is a failed reconnect, not an
+// outage's end: one WARN for the outage, with the reason, no INFO "up
+// again", and the backoff applies (wsFastRetries fast, then slow) instead
+// of a reconnect every wsRetry for ever.
+func TestShortLivedOpensBackOffAndWarnOnce(t *testing.T) {
+	t.Cleanup(lunda.SetWSRetry(20*time.Millisecond, time.Second, time.Second)) // restored after the driver is closed
+	f := newAcctFixture(t)
+	f.stub.CloseWSAtOnce = true
+	f.store.set(lunda.EncodeSession(f.stub.IssueSession(), clubUID, clubName))
+	f.driver(t, f.account(t))
+	// 1 + wsFastRetries (10) fast tries, then one a second
+	testkit.WaitFor(t, "the fast tries", 10*time.Second, func() bool { return len(f.stub.Tickets()) >= 11 })
+	n := len(f.stub.Tickets())
+	time.Sleep(500 * time.Millisecond)
+	if got := len(f.stub.Tickets()); got > n+1 {
+		t.Fatalf("no backoff: %d tickets, then %d within 500 ms", n, got)
+	}
+	logs := f.logs.String()
+	if c := strings.Count(logs, "keep-alive connection is down"); c != 1 || !strings.Contains(logs, "of opening") || !strings.Contains(logs, "closed by Lunda") {
+		t.Fatalf("%d WARN lines: %s", c, logs)
+	}
+	if strings.Contains(logs, "up again") {
+		t.Fatalf("an INFO for a connection that never stayed up: %s", logs)
 	}
 }

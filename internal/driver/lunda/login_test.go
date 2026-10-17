@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -114,7 +115,7 @@ func TestQRLoginSavesTheClubSession(t *testing.T) {
 	}
 	f.loginQR(t, a)
 	saved := f.store.token()
-	if saved == "" || !contains(f.stub.Sessions(), saved) {
+	if saved == "" || !slices.Contains(f.stub.Sessions(), saved) {
 		t.Fatalf("the saved token is not a live club session")
 	}
 	if f.stub.CallsTo("/profile/switch-club") != 1 || f.stub.CallsTo("/profile/current") != 1 {
@@ -288,16 +289,6 @@ func upstreamKind(err error) driver.UpstreamKind {
 	return -1
 }
 
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// The User-Agent names the gateway to the staff member confirming a login.
 // browserUA is the User-Agent the gateway must send, byte for byte, on
 // every call and the WebSocket: Lunda binds a session to the User-Agent of
 // its login, so it may never change between versions (seen live

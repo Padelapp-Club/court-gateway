@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -137,7 +138,7 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 		if v := versionAt(date); v != "" {
 			want = rules[v][cat]
 		}
-		if sameRules(want, week[defaultCategory(iso)]) {
+		if slices.Equal(want, week[defaultCategory(iso)]) {
 			continue
 		}
 		if t.Dates == nil {
@@ -155,18 +156,6 @@ func priceRules(rs []rule, days driver.Weekdays) []driver.PriceRule {
 		out = append(out, driver.PriceRule{Days: days, From: r.from, To: r.to, PerHour: r.perHour})
 	}
 	return out
-}
-
-func sameRules(a, b []rule) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // validDate: a date as Lunda writes it.

@@ -19,10 +19,11 @@ func SessionToken(raw []byte) string {
 	return s.Token
 }
 
-// SetWSRetry sets the keep-alive's retry intervals for a test and returns
-// what restores them.
-func SetWSRetry(fast, slow time.Duration) (restore func()) {
-	f, s := wsRetry, wsSlowRetry
-	wsRetry, wsSlowRetry = fast, slow
-	return func() { wsRetry, wsSlowRetry = f, s }
+// SetWSRetry sets the keep-alive's retry intervals, and how long a
+// connection must stay open to count as up, for a test and returns what
+// restores them.
+func SetWSRetry(fast, slow, stable time.Duration) (restore func()) {
+	f, s, st := wsRetry, wsSlowRetry, wsStable
+	wsRetry, wsSlowRetry, wsStable = fast, slow, stable
+	return func() { wsRetry, wsSlowRetry, wsStable = f, s, st }
 }

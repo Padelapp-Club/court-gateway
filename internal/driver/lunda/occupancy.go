@@ -76,12 +76,7 @@ func readSlots(ctx context.Context, c *client, day time.Time) (daySchedule, erro
 	if t := bytes.TrimSpace(res); len(t) == 0 || t[0] != '{' || json.Unmarshal(t, &ds) != nil || ds.Courts == nil {
 		return ds, driver.Upstream(driver.UpstreamInvalid, "GET /"+opSlots+": the answer is not a day's schedule")
 	}
-	ds.day = day
 	return ds, nil
-}
-
-func (d *Driver) readDay(ctx context.Context, day time.Time) (daySchedule, error) {
-	return readSlots(ctx, d.c, day)
 }
 
 // slotID is the interval id of a slot: "l-<bookingId>" for a slot of a
@@ -189,7 +184,7 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 	occ := driver.Occupancy{Complete: true}
 	var all []driver.Interval
 	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
-		ds, err := d.readDay(ctx, day)
+		ds, err := readSlots(ctx, d.c, day)
 		var ue *driver.UpstreamError
 		if err != nil {
 			if errors.As(err, &ue) && (ue.Kind == driver.UpstreamUnavailable || ue.Kind == driver.UpstreamRejected) {

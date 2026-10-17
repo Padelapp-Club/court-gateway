@@ -161,21 +161,10 @@ func newClient(apiURL, wsURL string, hc *http.Client, store driver.SessionStore,
 		jc.Jar = jar
 	}
 	c := &client{apiURL: apiURL, wsURL: wsURL, http: &jc, store: store, log: log, now: now}
-	c.mu.Lock()
-	c.sess = c.loadLocked()
-	c.mu.Unlock()
-	return c
-}
-
-// keepSaved starts the keep-alive of a saved session the client took up.
-// It is called once the config the client was built from is known valid.
-func (c *client) keepSaved() {
-	c.mu.Lock()
-	saved := c.sess != nil
-	c.mu.Unlock()
-	if saved {
-		c.startKeepAlive(false)
+	if c.sess = c.loadLocked(); c.sess != nil { // not shared yet: no lock
+		c.startKeepAlive(false) // a saved session is kept from the start
 	}
+	return c
 }
 
 // loadLocked reads the store's session (nil when there is none, or it does
@@ -333,8 +322,7 @@ func (c *client) callGuarded(ctx context.Context, op string, query url.Values, p
 		if ep.auth && op != opRefresh && (renewAsked(hdr) || c.renewDue(tok)) {
 			c.renewSession(ctx, tok)
 		}
-		switch {
-		case ep.auth && (status == http.StatusUnauthorized || status == http.StatusForbidden):
+		if ep.auth && (status == http.StatusUnauthorized || status == http.StatusForbidden) {
 			if status == http.StatusForbidden && op != opCurrent && c.alive(ctx, tok) {
 				return 0, nil, driver.Upstream(driver.UpstreamRejected, ep.method+" /"+op+": forbidden for the staff member the gateway is logged in as")
 			}
@@ -348,19 +336,28 @@ func (c *client) callGuarded(ctx context.Context, op string, query url.Values, p
 			}
 			c.markLost(tok)
 			return 0, nil, noSession(fmt.Sprintf("%s /%s: Lunda refused the session (HTTP %d)", ep.method, op, status))
-		case core.IsRedirect(status):
-			return 0, nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("%s /%s answered with a redirect (HTTP %d), which is not followed", ep.method, op, status))
-		case status >= 500:
-			return 0, nil, driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("%s /%s answered HTTP %d", ep.method, op, status))
-		case status >= 200 && status < 300:
-			res, ok := unwrap(data)
-			if !ok {
-				return 0, nil, driver.Upstream(driver.UpstreamInvalid, ep.method+" /"+op+": the answer is not a JSON object")
-			}
-			return status, res, nil
 		}
-		return status, nil, nil
+		return answer(ep, op, status, data)
 	}
+}
+
+// answer reads an answer that is not a refusal of the session: a redirect
+// is not followed, a 5xx is UpstreamUnavailable, a 2xx gives its result;
+// other statuses are the caller's.
+func answer(ep endpoint, op string, status int, data []byte) (int, json.RawMessage, error) {
+	switch {
+	case core.IsRedirect(status):
+		return 0, nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("%s /%s answered with a redirect (HTTP %d), which is not followed", ep.method, op, status))
+	case status >= 500:
+		return 0, nil, driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("%s /%s answered HTTP %d", ep.method, op, status))
+	case status >= 200 && status < 300:
+		res, ok := unwrap(data)
+		if !ok {
+			return 0, nil, driver.Upstream(driver.UpstreamInvalid, ep.method+" /"+op+": the answer is not a JSON object")
+		}
+		return status, res, nil
+	}
+	return status, nil, nil
 }
 
 // alive asks profile/current with tok, without the loss machinery: true
@@ -384,21 +381,10 @@ func (c *client) exchange(ctx context.Context, op, tok string, params any) (int,
 		return 0, nil, err
 	}
 	status, _, data, err := c.send(ctx, op, ep, nil, body, tok)
-	switch {
-	case err != nil:
+	if err != nil {
 		return 0, nil, err
-	case core.IsRedirect(status):
-		return 0, nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("%s /%s answered with a redirect (HTTP %d), which is not followed", ep.method, op, status))
-	case status >= 500:
-		return 0, nil, driver.Upstream(driver.UpstreamUnavailable, fmt.Sprintf("%s /%s answered HTTP %d", ep.method, op, status))
-	case status >= 200 && status < 300:
-		res, ok := unwrap(data)
-		if !ok {
-			return 0, nil, driver.Upstream(driver.UpstreamInvalid, ep.method+" /"+op+": the answer is not a JSON object")
-		}
-		return status, res, nil
 	}
-	return status, nil, nil
+	return answer(ep, op, status, data)
 }
 
 // envelope wraps parameters as the admin client sends them:
@@ -578,6 +564,11 @@ func profileCurrent(ctx context.Context, c *client) error {
 // lundaCourt is a court of the club as court/settings/load-list lists it
 // (result.infos, seen live 2026-10-17): its courtUid, title and number,
 // and its court category, whose tariff prices it.
+//
+// Active and CategoryInfo.Name are not read, but are decoded on purpose:
+// a court whose "active" is not a boolean or whose category name is not a
+// string fails decoding, so CheckConfig reports the answer as invalid
+// instead of passing a shape it does not know (review r9).
 type lundaCourt struct {
 	CourtUID     string `json:"courtUid"`
 	Title        string `json:"title"`
