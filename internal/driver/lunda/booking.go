@@ -286,11 +286,11 @@ func (d *Driver) write(ctx context.Context, op string, params map[string]any) er
 // errGone: the booking is gone or cancelled already — nothing to cancel.
 var errGone = errors.New("the booking is gone or cancelled")
 
-// notStarted reads the booking again and establishes, by the decision
-// clock, that its CURRENT start (the club may have moved it) is ahead:
-// driver.ErrStarted or driver.ErrClockUnknown otherwise, errGone when it is
-// gone or cancelled, any other error when it cannot be read.
-func (d *Driver) notStarted(ctx context.Context, uid string) error {
+// notStarted reads the booking again and establishes that it is still the
+// gateway's to cancel (ownedAndAhead, as it is NOW: the club may have moved
+// it, changed its client or its notes): errGone when it is gone or
+// cancelled, any other error when it cannot be read or is not.
+func (d *Driver) notStarted(ctx context.Context, uid, partner string) error {
 	b, found, err := d.load(ctx, uid)
 	switch {
 	case err != nil:
@@ -298,9 +298,24 @@ func (d *Driver) notStarted(ctx context.Context, uid string) error {
 	case !found || b.cancelled():
 		return errGone
 	}
-	_, start, _, err := d.span(&b)
+	return d.ownedAndAhead(&b, partner)
+}
+
+// ownedAndAhead: the booking is on a configured court, on the service
+// client, carries partner's marker (unless partner is "": a rollback of
+// the gateway's own fresh booking, whose notes may not be written yet),
+// and its start is ahead by the decision clock. driver.ErrCourtNotConfigured,
+// ErrNotOwned, ErrClockUnknown or ErrStarted otherwise.
+func (d *Driver) ownedAndAhead(b *lundaBooking, partner string) error {
+	court, start, _, err := d.span(b)
 	if err != nil {
 		return err
+	}
+	if court == "" {
+		return driver.ErrCourtNotConfigured
+	}
+	if d.service == "" || b.customer() != d.service || partner != "" && (b.Notes == nil || !hasMarker(*b.Notes, partner)) {
+		return driver.ErrNotOwned
 	}
 	now, known := d.clock()
 	switch {
@@ -318,9 +333,9 @@ func (d *Driver) notStarted(ctx context.Context, uid string) error {
 // not started (notStarted): if that fails, it is not sent again.
 // [UNVERIFIED] whether a cancel inside the club's cancellation deadline
 // (24 h before the start) needs forced: true.
-func (d *Driver) cancel(ctx context.Context, uid, reason string) error {
+func (d *Driver) cancel(ctx context.Context, uid, reason, partner string) error {
 	status, _, err := d.c.callGuarded(ctx, opCancel, nil, map[string]any{"bookingId": uid, "bookingType": "COURT", "forced": false, "reason": reason},
-		func(ctx context.Context) error { return d.notStarted(ctx, uid) })
+		func(ctx context.Context) error { return d.notStarted(ctx, uid, partner) })
 	if errors.Is(err, errGone) {
 		return nil
 	}
@@ -349,13 +364,13 @@ func (d *Driver) rollback(ctx context.Context, uid string, req driver.CreateRequ
 	}
 	rctx, stop := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer stop()
-	switch err := d.notStarted(rctx, uid); {
+	switch err := d.notStarted(rctx, uid, ""); {
 	case errors.Is(err, errGone):
 		return cause // nothing left to undo
 	case err != nil:
 		return stays(err)
 	}
-	if err := d.cancel(rctx, uid, reasonRollback); err != nil {
+	if err := d.cancel(rctx, uid, reasonRollback, ""); err != nil {
 		return stays(err)
 	}
 	d.log.Warn("a booking the gateway made in Lunda was cancelled after a failed step", "booking", "l-"+uid, "court", req.Court, "error", cause)
@@ -452,24 +467,11 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 	if !found || b.cancelled() {
 		return nil
 	}
-	court, start, _, err := d.span(&b)
-	if err != nil {
+	if err := d.ownedAndAhead(&b, partner); err != nil {
 		return err
 	}
-	if court == "" {
-		return driver.ErrCourtNotConfigured
-	}
-	if d.service == "" || b.customer() != d.service || b.Notes == nil || !hasMarker(*b.Notes, partner) {
-		return driver.ErrNotOwned
-	}
-	now, known := d.clock()
-	switch {
-	case !known:
-		return driver.ErrClockUnknown
-	case !start.After(now):
-		return driver.ErrStarted
-	}
-	if err := d.cancel(ctx, uid, reasonCancel); err != nil {
+	court, _, _, _ := d.span(&b)
+	if err := d.cancel(ctx, uid, reasonCancel, partner); err != nil {
 		return err
 	}
 	d.log.Info("booking cancelled in Lunda", "booking", id, "court", court)

@@ -142,3 +142,40 @@ func TestCancelRetryRechecksTheStart(t *testing.T) {
 		})
 	}
 }
+
+// Review r3: a cancel resent with a replacement session re-establishes
+// that the booking is still the gateway's, as it is NOW: the club may have
+// given it to one of its clients, rewritten its notes or moved it to a
+// court that is not the club's config. Then it is not sent again.
+func TestCancelRetryRechecksOwnership(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit func(*lundastub.Booking)
+		want error
+	}{
+		"another client": {func(b *lundastub.Booking) { b.Customer = "00000000-0000-4000-8000-0000000000aa" }, driver.ErrNotOwned},
+		"marker removed": {func(b *lundastub.Booking) { b.Notes = "игра клуба" }, driver.ErrNotOwned},
+		"another court":  {func(b *lundastub.Booking) { b.Court = "00000000-0000-4000-8000-0000000000c9" }, driver.ErrCourtNotConfigured},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, d := loggedIn(t)
+			now := f.clk.now()
+			id := f.stub.SeedBooking(lundastub.Booking{Court: court1, Begin: now.Add(time.Hour), End: now.Add(2 * time.Hour), Customer: serviceUID,
+				Notes: "[cg:booker] test", Status: "PAID"})
+			attempts := 0
+			stub := f.srv.Config.Handler
+			intercept(f, "/club/booking/booking-cancel", func(w http.ResponseWriter, r *http.Request) {
+				if attempts++; attempts == 1 {
+					f.stub.EditBooking(id, tc.edit) // the club, meanwhile
+					f.store.set(lunda.EncodeSession(f.stub.IssueSession(), clubUID, clubName))
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				stub.ServeHTTP(w, r)
+			})
+			err := d.Cancel(context.Background(), "l-"+id, "booker")
+			if got := f.stub.Booking(id); !errors.Is(err, tc.want) || got.Status == "CANCELLED" || attempts != 1 {
+				t.Fatalf("resent a cancel of a booking no longer ours: %v %+v attempts=%d", err, got, attempts)
+			}
+		})
+	}
+}

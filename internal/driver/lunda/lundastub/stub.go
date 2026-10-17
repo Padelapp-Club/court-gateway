@@ -215,6 +215,15 @@ func (s *Stub) Booking(id string) *Booking {
 	return &c
 }
 
+// EditBooking changes a booking as the club's staff would in Lunda.
+func (s *Stub) EditBooking(id string, edit func(*Booking)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b, ok := s.bookings[id]; ok {
+		edit(b)
+	}
+}
+
 // Bookings returns copies of every booking.
 func (s *Stub) Bookings() []Booking {
 	s.mu.Lock()
