@@ -57,7 +57,7 @@ const (
 	// wsHandshake bounds the dial and the opening handshake.
 	wsHandshake = 15 * time.Second
 	// wsGUID is RFC 6455's key suffix.
-	wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC65B11"
+	wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
 
 // Retry intervals of the keep-alive (variables for tests).
