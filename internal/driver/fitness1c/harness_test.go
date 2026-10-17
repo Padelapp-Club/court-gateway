@@ -188,3 +188,10 @@ func (f *fixture) env(clock *movableClock) *contract.Env {
 		Advance:        clock.Advance,
 	}
 }
+
+func stubServer(t *testing.T, s *fitness1cstub.Stub) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+	return srv
+}
