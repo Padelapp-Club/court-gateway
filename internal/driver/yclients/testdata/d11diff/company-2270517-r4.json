@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "data": {
+    "id": 2270517,
+    "title": "ТЕСТОВЫЙ УФА",
+    "active": 1,
+    "timetable_off": false,
+    "timezone_name": "Asia/Yekaterinburg",
+    "split_records_by_resources": 1
+  },
+  "meta": []
+}
