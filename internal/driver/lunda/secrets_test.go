@@ -3,6 +3,7 @@ package lunda_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -91,6 +92,17 @@ func TestSecretsNeverLoggedNorInErrors(t *testing.T) {
 
 	if len(errs) < 7 {
 		t.Fatalf("only %d errors collected: the check would prove little", len(errs))
+	}
+	// every token that went to Lunda, every temporal token and QR polled
+	for i, c := range f.stub.Calls() {
+		if c.Token != "" {
+			secrets[fmt.Sprintf("token of call %d", i)] = c.Token
+		}
+		for _, k := range []string{"token", "temporalToken", "code", "phone"} {
+			if v, _ := c.Params[k].(string); v != "" {
+				secrets[fmt.Sprintf("%s of call %d", k, i)] = v
+			}
+		}
 	}
 	logs := f.logs.String()
 	if !strings.Contains(logs, "renewed") || !strings.Contains(logs, "refused") {
