@@ -64,11 +64,16 @@ $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva passw
 #   $env:GATEWAY_HUB_KEY_FINGERPRINT = Read-Host 'Hub key fingerprint'
 ```
 
+The blocks above are for **Viva**. For **Lunda** collect only the join code (the first line of the
+block, and the hub lines for a self-built binary): there is no login and no password to ask for.
+
 If the human can only give you the values in the conversation, put them into these environment
 variables of the `setup` command in step 3 and nowhere else; never repeat them back.
 
-**Verify:** `test -n "$CRM_PASSWORD" && test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
+**Verify (Viva):** `test -n "$CRM_PASSWORD" && test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
 (PowerShell: `if ($env:CRM_PASSWORD -and $env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
+**Verify (Lunda):** `test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
+(PowerShell: `if ($env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
 **Expect:** `inputs-ok`. Never print the values themselves.
 
 ## Step 1 — platform and folder

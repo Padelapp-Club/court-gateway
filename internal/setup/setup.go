@@ -234,9 +234,41 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			d.Secrets = append(d.Secrets, [2]string{x.Env, v})
 		}
 	}
+	notProtected := func(err error) (Result, error) {
+		return fail(problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err))
+	}
 	sessions := deps.Sessions
-	if sessions == nil && spec.Interactive {
-		sessions = core.SessionStore(core.StateDir(cfgPath, nil))
+	loginRequired := func() (Result, error) {
+		return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", cmp.Or(spec.Name, d.CRMType)))
+	}
+	if spec.Interactive {
+		if deps.Login == nil {
+			return loginRequired() // before anything is written
+		}
+		// the login saves a session: the folders that will hold it are
+		// closed before it exists, and a setup that fails leaves none
+		stateDir := core.StateDir(cfgPath, nil)
+		if sessions == nil {
+			sessions = core.SessionStore(stateDir)
+		}
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+			return fail(problem("WRITE_FAILED", "%v", err))
+		}
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			return fail(problem("WRITE_FAILED", "%v", err))
+		}
+		if deps.ProtectSecrets != nil {
+			for _, p := range []string{filepath.Dir(cfgPath), stateDir} {
+				if err := deps.ProtectSecrets(p); err != nil {
+					return notProtected(err)
+				}
+			}
+		}
+		defer func() {
+			if !res.OK {
+				_ = sessions.SaveSession(nil)
+			}
+		}()
 	}
 	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, Secrets: secrets, HTTPClient: deps.CRMClient, Now: deps.Now, Sessions: sessions})
 	if err != nil {
@@ -246,7 +278,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		// a person logs the gateway in, every setup: the session is the
 		// one the service will use (saved in its state directory)
 		if deps.Login == nil {
-			return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", cmp.Or(spec.Name, d.CRMType)))
+			return loginRequired()
 		}
 		if err := deps.Login(ctx, il); err != nil {
 			return fail(loginProblem(err))
@@ -276,9 +308,6 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		return fail(problem("WRITE_FAILED", "%v", err))
-	}
-	notProtected := func(err error) (Result, error) {
-		return fail(problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err))
 	}
 	if deps.ProtectSecrets != nil {
 		// before the join code is spent and before any secret is written

@@ -62,6 +62,16 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if !ok {
 		return fail(fmt.Errorf("в CRM %s входят паролем, а не сотрудником: если пароль сменился — court-gateway set-password", s.CRMType))
 	}
+	// the session is written in the state folder: closed to other users
+	// first (Windows: protectSecrets; elsewhere the file is 0600 in 0700)
+	if err := os.MkdirAll(s.StateDir, 0o700); err != nil {
+		return fail(err)
+	}
+	if protectSecrets != nil {
+		if err := protectSecrets(s.StateDir); err != nil {
+			return fail(fmt.Errorf("не удалось закрыть папку %s от других пользователей (запустите от имени администратора): %v", s.StateDir, err))
+		}
+	}
 	ctx := context.Background()
 	r := bufio.NewReader(stdin)
 	if err := loginInteractively(ctx, il, r, stderr, driver.LoginMethod(*method), *phone, s.StateDir); err != nil {

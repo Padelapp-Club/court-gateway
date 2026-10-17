@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
 func init() {
@@ -199,5 +201,55 @@ func TestSetPasswordRefusesAnInteractiveCRM(t *testing.T) {
 	err := SetPassword(context.Background(), filepath.Join(dir, "gateway.yaml"), "x", func(string) string { return "" }, loginDeps())
 	if p, ok := err.(*Problem); !ok || p.Code != "NO_PASSWORD" {
 		t.Fatalf("set-password: %v", err)
+	}
+}
+
+// The session of an interactive login never exists in a folder not yet
+// closed to other users (Windows: the ACL), and a setup that fails after
+// the login leaves no session behind.
+func TestInteractiveSetupClosesTheFoldersBeforeTheSession(t *testing.T) {
+	dir := t.TempDir()
+	sess := filepath.Join(dir, "state", core.SessionFile)
+	deps := loginDeps()
+	var protected []string
+	deps.ProtectSecrets = func(p string) error {
+		if _, err := os.Stat(sess); err == nil && len(protected) < 2 {
+			t.Errorf("the session exists before %s is closed", p)
+		}
+		protected = append(protected, p)
+		return nil
+	}
+	if _, err := Run(context.Background(), loginInput(dir), deps); err != nil {
+		t.Fatal(err)
+	}
+	if len(protected) < 2 || protected[0] != dir || protected[1] != filepath.Join(dir, "state") {
+		t.Fatalf("closed, in order: %v", protected)
+	}
+	// a failure after the login: no session stays
+	dir = t.TempDir()
+	sess = filepath.Join(dir, "state", core.SessionFile)
+	calls := 0
+	deps.ProtectSecrets = func(string) error {
+		if calls++; calls > 2 {
+			return errors.New("simulated ACL failure after the login")
+		}
+		return nil
+	}
+	res, err := Run(context.Background(), loginInput(dir), deps)
+	if err == nil || res.Error.Code != "FOLDER_NOT_RESTRICTED" {
+		t.Fatalf("%+v %v", res.Error, err)
+	}
+	if _, err := os.Stat(sess); !os.IsNotExist(err) {
+		t.Fatalf("a failed setup left the session: %v", err)
+	}
+	// nor does a refused join code
+	dir = t.TempDir()
+	deps = loginDeps()
+	deps.HubTransport = tamperTransport(func(rr *tunnel.RegisterResponse) { rr.Signature = nil })
+	if _, err := Run(context.Background(), loginInput(dir), deps); err == nil {
+		t.Fatal("an unsigned answer was taken")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", core.SessionFile)); !os.IsNotExist(err) {
+		t.Fatalf("a failed setup left the session: %v", err)
 	}
 }
