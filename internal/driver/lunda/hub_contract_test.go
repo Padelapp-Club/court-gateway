@@ -1,6 +1,7 @@
 package lunda_test
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -31,7 +32,13 @@ func TestContractMultiClubThroughHub(t *testing.T) {
 			Courts: []core.CourtSpec{{ID: "court-1", Name: "Корт", Params: map[string]any{lunda.CourtKey: courtOther}}}}
 		hook := func(c *driver.Config) { c.HTTPClient = srv.Client(); c.Sessions = store; c.Now = clk.now }
 		in := testkit.StartInstallation(t, h, "lunda-net", testkit.InstallationOptions{
-			CRMYAML: crmYAML(srv.URL, true), CRMType: "lunda", Factory: lunda.New, Account: lunda.NewAccount,
+			CRMYAML: crmYAML(srv.URL, true), CRMType: "lunda", Factory: lunda.New, Account: func(cfg driver.Config) (driver.Account, error) {
+				a, err := lunda.NewAccount(cfg)
+				if err == nil {
+					t.Cleanup(func() { _ = driver.EndSession(context.Background(), a) })
+				}
+				return a, err
+			},
 			Hook: hook, Clubs: []core.ClubSpec{main, other},
 		})
 		s, _ := in.Clubs.Server("test-club")

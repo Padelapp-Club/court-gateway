@@ -14,6 +14,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda/lundastub"
+	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
 // Obviously fake identifiers: nothing here refers to a real club.
@@ -23,20 +24,27 @@ const (
 	court1      = "00000000-0000-4000-8000-0000000000c1"
 	court2      = "00000000-0000-4000-8000-0000000000c2"
 	courtOther  = "00000000-0000-4000-8000-0000000000c9"
-	tariffUID   = "00000000-0000-4000-8000-0000000000d1"
 	serviceUID  = "00000000-0000-4000-8000-0000000000e1"
 	clubClient  = "00000000-0000-4000-8000-0000000000e2"
 	stubPhone   = "+7 999 000-00-00"
 	stubCountry = "7"
 )
 
-// tariffJSON: working days 2000 ₽/h 07–16 and 3000 ₽/h 16–23, weekends
-// 2500 ₽/h, holidays 4000 ₽/h.
-const tariffJSON = `{"uid":"` + tariffUID + `","name":"Основной","prices":[
- {"dayCategory":"REGULAR","timeFrom":"07:00","timeTo":"16:00","price":2000},
- {"dayCategory":"REGULAR","timeFrom":"16:00","timeTo":"23:00","price":"3000.00"},
- {"dayCategory":"WEEKEND","timeFrom":"07:00","timeTo":"23:00","price":2500},
- {"dayCategory":"HOLIDAY","timeFrom":"07:00","timeTo":"23:00","price":4000}]}`
+// tariff: working days 2000 ₽/h 07–16 and 3000 ₽/h 16–23, weekends
+// 2500 ₽/h, holidays 4000 ₽/h, from 2020 on.
+func tariff() []lundastub.TariffInfo {
+	var out []lundastub.TariffInfo
+	for h := 7; h < 23; h++ {
+		regular := 2000.0
+		if h >= 16 {
+			regular = 3000
+		}
+		out = append(out, lundastub.TariffInfo{Category: "REGULAR", Hour: h, Price: regular},
+			lundastub.TariffInfo{Category: "WEEKEND", Hour: h, Price: 2500},
+			lundastub.TariffInfo{Category: "HOLIDAY", Hour: h, Price: 4000})
+	}
+	return out
+}
 
 // Markers planted in a club booking; none may ever leave the gateway.
 var privacyMarkers = []string{
@@ -126,8 +134,8 @@ func testClub() core.ClubSpec {
 	return core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: "Europe/Moscow", SlotMinutes: 30,
 		Hours: map[string]string{"mon-sun": "07:00-23:00"},
 		Courts: []core.CourtSpec{
-			{ID: "court-1", Name: "Корт 1", Params: map[string]any{lunda.CourtKey: court1, lunda.TariffKey: tariffUID}},
-			{ID: "court-2", Name: "Корт 2", Params: map[string]any{lunda.CourtKey: court2, lunda.TariffKey: tariffUID}},
+			{ID: "court-1", Name: "Корт 1", Params: map[string]any{lunda.CourtKey: court1}},
+			{ID: "court-2", Name: "Корт 2", Params: map[string]any{lunda.CourtKey: court2}},
 		}}
 }
 
@@ -138,7 +146,7 @@ func newStub(clk *clock) *lundastub.Stub {
 	stub.AddCourt(court1, "Корт 1")
 	stub.AddCourt(court2, "Корт 2")
 	stub.AddCourt(courtOther, "Корт 9")
-	stub.SetTariff(tariffUID, tariffJSON)
+	stub.SetTariff(stub.Category, "2020-01-01", tariff())
 	return stub
 }
 
@@ -159,7 +167,12 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 		c.Now = clk.now
 		c.Clock = o.clock
 	})
-	return &fixture{stub: stub, srv: srv, store: store, built: b, drv: b.Driver.(*lunda.Driver), clk: clk}
+	d := b.Driver.(*lunda.Driver)
+	t.Cleanup(d.Close)
+	if !o.noSession {
+		waitKeepAlive(t, stub, 0)
+	}
+	return &fixture{stub: stub, srv: srv, store: store, built: b, drv: d, clk: clk}
 }
 
 // assertOnlyAllowedCalls fails the test, at its end, if the driver called
@@ -227,4 +240,15 @@ func (f *fixture) env() *contract.Env {
 		PrivacyMarkers: privacyMarkers,
 		Advance:        f.clk.add,
 	}
+}
+
+// waitKeepAlive waits for the keep-alive to have opened a WebSocket more
+// than prev in all (and one to be open): from then on it makes no call
+// until that connection ends.
+func waitKeepAlive(t *testing.T, stub *lundastub.Stub, prev int) {
+	t.Helper()
+	testkit.WaitFor(t, "the keep-alive's WebSocket", 5*time.Second, func() bool {
+		open, opened, _ := stub.WebSockets()
+		return open > 0 && opened > prev
+	})
 }

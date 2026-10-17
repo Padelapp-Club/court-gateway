@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +50,7 @@ func (f *acctFixture) account(t *testing.T) *lunda.Account {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = driver.EndSession(context.Background(), a) })
 	return a.(*lunda.Account)
 }
 
@@ -62,13 +62,14 @@ func (f *acctFixture) driver(t *testing.T, acct driver.Account) *lunda.Driver {
 	cfg.Account = acct
 	cfg.Timezone, _ = time.LoadLocation("Europe/Moscow")
 	cfg.Courts = []driver.CourtConfig{
-		{ID: "court-1", Name: "Корт 1", Params: driver.Params{lunda.CourtKey: court1, lunda.TariffKey: tariffUID}},
+		{ID: "court-1", Name: "Корт 1", Params: driver.Params{lunda.CourtKey: court1}},
 		{ID: "court-2", Name: "Корт 2", Params: driver.Params{lunda.CourtKey: court2}},
 	}
 	d, err := lunda.NewDriver(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(d.Close)
 	return d
 }
 
@@ -91,9 +92,11 @@ func (f *acctFixture) loginQR(t *testing.T, a *lunda.Account) driver.Challenge {
 	if f.store.token() != before {
 		t.Fatalf("a login was saved before its club was chosen")
 	}
+	_, opened, _ := f.stub.WebSockets()
 	if err := a.SelectClub(ctx, clubUID); err != nil {
 		t.Fatalf("select: %v", err)
 	}
+	waitKeepAlive(t, f.stub, opened)
 	return ch
 }
 
@@ -121,13 +124,19 @@ func TestQRLoginSavesTheClubSession(t *testing.T) {
 	if !b.HasSession() {
 		t.Fatal("the saved session is not taken up")
 	}
+	n := len(f.stub.Calls())
 	if err := b.CheckLogin(context.Background()); err != nil {
 		t.Fatalf("check with the saved session: %v", err)
 	}
 	// the token goes in X-Club-Auth-Token, and only there
-	calls := f.stub.Calls()
-	if last := calls[len(calls)-1]; last.Path != "/profile/current" || last.Token != saved {
-		t.Fatalf("last call: %+v", last)
+	checked := false
+	for _, c := range f.stub.Calls()[n:] {
+		if c.Path == "/profile/current" {
+			checked = c.Token == saved
+		}
+	}
+	if !checked {
+		t.Fatalf("profile/current did not go with the saved token: %+v", f.stub.Calls()[n:])
 	}
 }
 
@@ -289,14 +298,37 @@ func contains(list []string, s string) bool {
 }
 
 // The User-Agent names the gateway to the staff member confirming a login.
-func TestUserAgentNamesTheGateway(t *testing.T) {
+// browserUA is the User-Agent the gateway must send, byte for byte, on
+// every call and the WebSocket: Lunda binds a session to the User-Agent of
+// its login, so it may never change between versions (seen live
+// 2026-10-17: the same token with another one is 401 "missing auth
+// token"). It carries no marker of the gateway (alex 2026-10-17).
+const browserUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+// Every call, from the login on, and the WebSocket go with the one fixed
+// browser User-Agent; the WebSocket also with the admin's Origin. The
+// stub binds the session to the login's User-Agent, as Lunda does.
+func TestUserAgentIsTheFixedBrowserOne(t *testing.T) {
 	f := newAcctFixture(t)
-	var ua string
-	f.srv.Config.Handler = uaRecorder(f.stub, &ua)
-	if _, err := f.account(t).StartLogin(context.Background(), driver.LoginQR, ""); err != nil {
-		t.Fatal(err)
+	a := f.account(t)
+	f.loginQR(t, a)
+	d := f.driver(t, a)
+	if err := d.Ready(context.Background()); err != nil {
+		t.Fatalf("ready: %v", err)
 	}
-	if !strings.HasPrefix(ua, "PadelApp court-gateway/") {
-		t.Fatalf("User-Agent = %q", ua)
+	ws := 0
+	for _, c := range f.stub.Calls() {
+		if c.UserAgent != browserUA {
+			t.Fatalf("%s %s went with User-Agent %q", c.Method, c.Path, c.UserAgent)
+		}
+		if c.Method == "WS" {
+			ws++
+			if c.Origin != "https://club.lundapadel.ru" {
+				t.Fatalf("WebSocket Origin %q", c.Origin)
+			}
+		}
+	}
+	if ws == 0 {
+		t.Fatal("no WebSocket opened")
 	}
 }

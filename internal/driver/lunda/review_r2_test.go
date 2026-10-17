@@ -32,41 +32,39 @@ func quote(t *testing.T, f *fixture, start time.Time) (int, int64) {
 	return rec.Code, q.Total
 }
 
-// r2-B1: the price table covers exactly the calendar years read (from
-// yesterday's to that of today plus the horizon), holidays included all
-// through them; a date of a year not read has no price — a holiday there
-// is never quoted at its weekday's rate.
+// r2-B1 (as of the live round: the range is the club's booking depth):
+// the price table covers exactly the dates it priced, from yesterday to
+// today plus the booking depth of club/settings, holidays included; a
+// date past it has no price — a holiday there is never quoted at its
+// weekday's rate.
 func TestDatesOutsideTheReadCalendarHaveNoPrice(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	msk := f.built.Settings.Location
 	f.clk.mu.Lock()
 	f.clk.t = time.Date(2026, 10, 17, 6, 0, 0, 0, time.UTC)
 	f.clk.mu.Unlock()
-	f.stub.SetCalendar(2026, `{"year":2026,"days":[{"date":"2026-12-28","category":"HOLIDAY"}]}`)
-	f.stub.SetCalendar(2027, `{"year":2027,"days":[{"date":"2027-01-01","category":"HOLIDAY"}]}`)
+	f.stub.BookingDepth = 14
+	f.stub.SetCalendar(2026, map[string][]string{"HOLIDAY": {"2026-10-28", "2026-12-28"}})
+	f.stub.SetCalendar(2027, map[string][]string{"HOLIDAY": {"2027-01-01"}})
 	pt, err := f.drv.PriceTable(context.Background(), "court-1")
-	if err != nil || pt.DatesFrom != "2026-01-01" || pt.DatesTo != "2026-12-31" || len(pt.Dates) != 1 {
+	if err != nil || pt.DatesFrom != "2026-10-16" || pt.DatesTo != "2026-10-31" || len(pt.Dates) != 1 {
 		t.Fatalf("table: from %q to %q dates %v: %v", pt.DatesFrom, pt.DatesTo, pt.Dates, err)
 	}
-	if f.stub.CallsTo("/club/settings/calendar/load") != 1 {
-		t.Fatalf("calendar reads: %d", f.stub.CallsTo("/club/settings/calendar/load"))
+	if code, total := quote(t, f, time.Date(2026, 10, 28, 10, 0, 0, 0, msk)); code != http.StatusOK || total != 4000 {
+		t.Fatalf("2026-10-28: %d %d", code, total)
 	}
-	// a holiday past the 62-day horizon, within the year read: its own rate
-	if code, total := quote(t, f, time.Date(2026, 12, 28, 10, 0, 0, 0, msk)); code != http.StatusOK || total != 4000 {
-		t.Fatalf("2026-12-28: %d %d", code, total)
-	}
-	// a holiday, and a plain weekday, of a year not read: no price
-	for _, day := range []time.Time{time.Date(2027, 1, 1, 10, 0, 0, 0, msk), time.Date(2027, 3, 3, 10, 0, 0, 0, msk)} {
+	// a holiday, and a plain weekday, past the booking depth: no price
+	for _, day := range []time.Time{time.Date(2026, 12, 28, 10, 0, 0, 0, msk), time.Date(2026, 11, 4, 10, 0, 0, 0, msk)} {
 		if code, total := quote(t, f, day); code == http.StatusOK {
 			t.Fatalf("%s priced: %d", day.Format("2006-01-02"), total)
 		}
 	}
-	// at the year's end the next year is read too
+	// at the year's end the next year's calendar is read too
 	f.clk.mu.Lock()
-	f.clk.t = time.Date(2026, 12, 1, 6, 0, 0, 0, time.UTC)
+	f.clk.t = time.Date(2026, 12, 25, 6, 0, 0, 0, time.UTC)
 	f.clk.mu.Unlock()
 	pt, err = f.drv.PriceTable(context.Background(), "court-1")
-	if err != nil || pt.DatesTo != "2027-12-31" || len(pt.Dates) != 2 {
+	if err != nil || pt.DatesTo != "2027-01-08" || len(pt.Dates) != 2 {
 		t.Fatalf("in December: to %q dates %v: %v", pt.DatesTo, pt.Dates, err)
 	}
 	if code, total := quote(t, f, time.Date(2027, 1, 1, 10, 0, 0, 0, msk)); code != http.StatusOK || total != 4000 {

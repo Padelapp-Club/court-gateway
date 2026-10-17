@@ -19,11 +19,3 @@ func recorder(h http.Handler, last *[]byte) http.Handler {
 		_, _ = w.Write(rec.Body.Bytes())
 	})
 }
-
-// uaRecorder serves h and keeps the User-Agent of the last request.
-func uaRecorder(h http.Handler, ua *string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*ua = r.Header.Get("User-Agent")
-		h.ServeHTTP(w, r)
-	})
-}

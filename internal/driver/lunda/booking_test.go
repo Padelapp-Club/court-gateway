@@ -19,7 +19,9 @@ func loggedIn(t *testing.T) (*acctFixture, *lunda.Driver) {
 	f := newAcctFixture(t)
 	f.store.set(lunda.EncodeSession(f.stub.IssueSession(), clubUID, clubName))
 	a := f.account(t)
-	return f, f.driver(t, a)
+	d := f.driver(t, a)
+	waitKeepAlive(t, f.stub, 0)
+	return f, d
 }
 
 func createReq(day time.Time, hh int) driver.CreateRequest {

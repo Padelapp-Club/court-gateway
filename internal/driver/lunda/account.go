@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ var (
 	_ driver.Account          = (*Account)(nil)
 	_ driver.InteractiveLogin = (*Account)(nil)
 	_ driver.ClientPicker     = (*Account)(nil)
+	_ driver.SessionEnder     = (*Account)(nil)
 )
 
 // pending is a login in progress. Nothing of it is ever logged: the QR
@@ -58,15 +60,24 @@ const (
 // the installation-level keys and takes up the saved session, if any.
 func NewAccount(cfg driver.Config) (driver.Account, error) {
 	var errs []string
-	c, service := login(cfg, 30*time.Second, func(err error) {
+	c, service, _ := login(cfg, 30*time.Second, func(err error) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
 	})
 	if len(errs) > 0 {
+		c.stopKeepAlive()
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
 	return &Account{c: c, service: service}, nil
+}
+
+// EndSession implements driver.SessionEnder: it stops the keep-alive of the
+// session (keepalive.go) — the session itself stays, saved: Lunda has no
+// logout the admin calls, and the service goes on with it.
+func (a *Account) EndSession(context.Context) error {
+	a.c.stopKeepAlive()
+	return nil
 }
 
 // CheckLogin implements driver.Account: the session works.
@@ -331,7 +342,7 @@ func (a *Account) SelectClub(ctx context.Context, id string) error {
 		a.pend = nil
 	}
 	a.mu.Unlock()
-	return a.c.adopt(session{Token: clubTok, Club: id, ClubName: name})
+	return a.c.adopt(session{Token: clubTok, Club: id, ClubName: name}, true)
 }
 
 // callingCodes are the two-digit country calling codes (ITU-T E.164);
@@ -381,13 +392,12 @@ func (a *Account) ClientKey() string { return ServiceClientKey }
 // maxClients bounds the clients a search returns.
 const maxClients = 50
 
-// lundaVisitor is a client of the club as the visitor list shows it: only
-// what the person choosing needs. [UNVERIFIED] the fields (profileUid is
-// what visitor/add answers and a booking's customerUid takes).
+// lundaVisitor is a client of the club as the visitor list shows it
+// (result.items, seen live 2026-10-17): only what the person choosing
+// needs. profileUid is what a booking's customerUid takes.
 type lundaVisitor struct {
 	ProfileUID string `json:"profileUid"`
-	FirstName  string `json:"firstName"`
-	LastName   string `json:"lastName"`
+	Name       string `json:"name"`
 	Phone      string `json:"phone"`
 }
 
@@ -408,16 +418,18 @@ func (a *Account) FindClients(ctx context.Context, pattern string) ([]driver.Cli
 	if status != http.StatusOK {
 		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /%s answered HTTP %d", opVisitors, status))
 	}
-	var list []lundaVisitor
-	if decodeList(res, &list) != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "POST /"+opVisitors+": the answer is not a list of visitors")
+	var r struct {
+		Items *[]lundaVisitor `json:"items"`
+	}
+	if json.Unmarshal(res, &r) != nil || r.Items == nil {
+		return nil, driver.Upstream(driver.UpstreamInvalid, "POST /"+opVisitors+": the answer is not a list of visitors (result.items)")
 	}
 	var out []driver.Client
-	for _, v := range list {
+	for _, v := range *r.Items {
 		if !uidRe.MatchString(v.ProfileUID) {
 			continue
 		}
-		out = append(out, driver.Client{ID: v.ProfileUID, Name: strings.TrimSpace(strings.TrimSpace(v.FirstName) + " " + strings.TrimSpace(v.LastName)), Hint: maskPhone(v.Phone)})
+		out = append(out, driver.Client{ID: v.ProfileUID, Name: strings.TrimSpace(v.Name), Hint: maskPhone(v.Phone)})
 		if len(out) == maxClients {
 			break
 		}
@@ -440,10 +452,10 @@ func maskPhone(p string) string {
 }
 
 // Discover implements driver.Account: the session's club is the one club
-// of the account; its draft has every court (lunda_court, and lunda_tariff
-// when the club has one tariff), the hours by weekday from the schedule
-// of the next seven days, and the tariffs. The zone is not Lunda's to tell
-// (its times have none): the club's own. No client is read.
+// of the account; its draft has its name and zone (club/settings), every
+// court by number (lunda_court), and the hours by weekday from the schedule
+// of the next seven days. Prices need nothing in the draft: they are the
+// tariff of each court's category. No client is read.
 func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.Discovery, error) {
 	var out driver.Discovery
 	s, err := a.c.current()
@@ -455,36 +467,49 @@ func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.
 		return out, driver.Upstream(driver.UpstreamRejected, "the gateway is logged in to another Lunda club")
 	}
 	out.Studio, out.ClubName = s.Club, s.ClubName
-	out.Notices = append(out.Notices, driver.Notice{Code: "TIMEZONE_UNKNOWN",
-		Message: "Лунда не сообщает часовой пояс клуба (её время — местное без пояса): укажите пояс клуба сами"})
+	cs, err := readClubSettings(ctx, a.c)
+	if err != nil {
+		return out, err
+	}
+	if name := strings.TrimSpace(cs.Name); name != "" {
+		out.ClubName = name
+	}
+	zone := time.Local
+	if loc, ok := cs.zone(); ok {
+		out.Timezone, zone = cs.TimeZoneID, loc
+	} else {
+		out.Notices = append(out.Notices, driver.Notice{Code: "TIMEZONE_UNKNOWN",
+			Message: "Лунда не сообщила часовой пояс клуба: укажите его сами"})
+	}
 	courts, err := courtList(ctx, a.c)
 	if err != nil {
 		return out, err
 	}
-	tariffs, err := tariffList(ctx, a.c)
-	if err != nil {
-		return out, err
-	}
-	for _, t := range tariffs {
-		out.PriceLists = append(out.PriceLists, driver.PriceListInfo{ID: t.UID, Name: strings.TrimSpace(t.Name)})
-	}
-	for _, c := range courts {
-		dc := driver.DiscoveredCourt{Name: strings.TrimSpace(c.Name), Params: driver.Params{CourtKey: c.uid()}}
-		if len(tariffs) == 1 {
-			dc.Params[TariffKey] = tariffs[0].UID
+	sort.SliceStable(courts, func(i, j int) bool {
+		ni, nj := courts[i].Number, courts[j].Number
+		switch {
+		case ni != nil && nj != nil:
+			return *ni < *nj
+		case ni != nil || nj != nil:
+			return ni != nil
 		}
-		out.Courts = append(out.Courts, dc)
+		return false
+	})
+	noTariff := 0
+	for _, c := range courts {
+		out.Courts = append(out.Courts, driver.DiscoveredCourt{Name: strings.TrimSpace(c.Title), Params: driver.Params{CourtKey: c.CourtUID}})
+		if c.CategoryInfo == nil || c.CategoryInfo.HasActiveTariff == nil || !*c.CategoryInfo.HasActiveTariff {
+			noTariff++
+		}
 	}
 	switch {
 	case len(out.Courts) == 0:
 		out.Notices = append(out.Notices, driver.Notice{Code: "NO_COURTS_FOUND", Message: "в клубе Лунды нет кортов: добавьте корты вручную"})
-	case len(tariffs) == 0:
-		out.Notices = append(out.Notices, driver.Notice{Code: "NO_PRICE_LISTS", Message: "в клубе Лунды нет тарифов: цены партнёрам будут недоступны"})
-	case len(tariffs) > 1:
-		out.Notices = append(out.Notices, driver.Notice{Code: "PRICE_LIST_AMBIGUOUS",
-			Message: fmt.Sprintf("в клубе Лунды %d тарифов: впишите нужный каждому корту в %s", len(tariffs), TariffKey)})
+	case noTariff > 0:
+		out.Notices = append(out.Notices, driver.Notice{Code: "NO_PRICE_LISTS",
+			Message: fmt.Sprintf("у категории %d корт(ов) Лунды нет действующего тарифа: цены на них партнёрам будут недоступны", noTariff)})
 	}
-	hours, err := a.hours(ctx)
+	hours, err := a.hours(ctx, zone)
 	if err != nil {
 		return out, err
 	}
@@ -499,9 +524,9 @@ func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.
 // (availableHours): opening at the first hour, closing after the last.
 // [UNVERIFIED] that availableHours lists the hours a booking may start in
 // (8..22 for a club open 08:00–23:00).
-func (a *Account) hours(ctx context.Context) ([7]*[2]int, error) {
+func (a *Account) hours(ctx context.Context, zone *time.Location) ([7]*[2]int, error) {
 	var out [7]*[2]int
-	today := localDay(a.c.now(), time.Local)
+	today := localDay(a.c.now(), zone)
 	for i := 0; i < 7; i++ {
 		day := today.AddDate(0, 0, i)
 		ds, err := readSlots(ctx, a.c, day)

@@ -10,18 +10,25 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda/lundastub"
 )
 
-// The tariff's REGULAR rules price Monday to Friday, WEEKEND Saturday and
-// Sunday, in kopecks per hour, in the club's zone.
+// The tariff of the court's category: REGULAR prices Monday to Friday,
+// WEEKEND Saturday and Sunday, in kopecks per hour, joined over hours of
+// one price, in the club's zone; dates are priced from yesterday to today
+// plus the club's booking depth. It is asked as the admin asks it.
 func TestPriceTableByDayCategory(t *testing.T) {
-	_, d := loggedIn(t)
+	f, d := loggedIn(t)
 	pt, err := d.PriceTable(context.Background(), "court-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pt.Zone != nil || len(pt.Adjustments) != 0 {
+	if pt.Zone != nil || len(pt.Adjustments) != 0 || len(pt.Dates) != 0 {
 		t.Fatalf("table: %+v", pt)
+	}
+	today := localToday(f.clk.now())
+	if pt.DatesFrom != today.AddDate(0, 0, -1).Format("2006-01-02") || pt.DatesTo != today.AddDate(0, 0, f.stub.BookingDepth).Format("2006-01-02") {
+		t.Fatalf("range %s..%s", pt.DatesFrom, pt.DatesTo)
 	}
 	want := map[int][]driver.PriceRule{}
 	for iso := 0; iso < 7; iso++ {
@@ -51,24 +58,89 @@ func TestPriceTableByDayCategory(t *testing.T) {
 			}
 		}
 	}
-	// a court without a tariff has no prices
-	if _, err := d.PriceTable(context.Background(), "court-2"); !errors.Is(err, driver.ErrNotFound) {
-		t.Fatalf("court-2: %v", err)
+	var list, load *lundastub.Call
+	for _, c := range f.stub.Calls() {
+		switch c.Path {
+		case "/club/settings/tariff/load-list":
+			list = &c
+		case "/club/settings/tariff/load":
+			load = &c
+		}
+	}
+	if list == nil || list.Query != "courtCategoryId="+f.stub.Category || load == nil || load.Query != "beginDate=2020-01-01&courtCategoryId="+f.stub.Category {
+		t.Fatalf("tariff calls: %+v %+v", list, load)
+	}
+	// a court whose category has no tariff has no prices
+	f.stub.AddCourtIn("00000000-0000-4000-8000-0000000000c5", "Корт 5", "00000000-0000-4000-8000-00000000ca72")
+	cfg := f.config()
+	cfg.Courts = []driver.CourtConfig{{ID: "court-5", Params: driver.Params{lunda.CourtKey: "00000000-0000-4000-8000-0000000000c5"}}}
+	other, err := lunda.NewDriver(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(other.Close)
+	if _, err := other.PriceTable(context.Background(), "court-5"); !errors.Is(err, driver.ErrNotFound) {
+		t.Fatalf("court-5: %v", err)
+	}
+}
+
+func localToday(now time.Time) time.Time {
+	msk, _ := time.LoadLocation("Europe/Moscow")
+	n := now.In(msk)
+	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, msk)
+}
+
+// A version of the tariff that begins within the range prices from its
+// first day on (Dates); the one of today stays the weekly table.
+func TestTariffVersionWithinTheRange(t *testing.T) {
+	f, d := loggedIn(t)
+	begin := localToday(f.clk.now()).AddDate(0, 0, 5)
+	var cheaper []lundastub.TariffInfo
+	for h := 7; h < 23; h++ {
+		cheaper = append(cheaper, lundastub.TariffInfo{Category: "REGULAR", Hour: h, Price: 1000}, lundastub.TariffInfo{Category: "WEEKEND", Hour: h, Price: 1000})
+	}
+	f.stub.SetTariff(f.stub.Category, begin.Format("2006-01-02"), cheaper)
+	pt, err := d.PriceTable(context.Background(), "court-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pt.Dates[begin.AddDate(0, 0, -1).Format("2006-01-02")]; ok {
+		t.Fatalf("the day before the version is priced apart: %v", pt.Dates)
+	}
+	for day := begin; day.Format("2006-01-02") <= pt.DatesTo; day = day.AddDate(0, 0, 1) {
+		rules := pt.Dates[day.Format("2006-01-02")]
+		if len(rules) != 1 || rules[0].PerHour != 100000 || rules[0].From != 420 || rules[0].To != 1380 {
+			t.Fatalf("%s: %+v", day.Format("2006-01-02"), rules)
+		}
 	}
 }
 
 func TestMalformedTariffIsInvalid(t *testing.T) {
+	info := func(s string) string { return `{"result":{"view":{"infos":[` + s + `]}}}` }
 	for name, body := range map[string]string{
-		"no prices":     `{"result":{"uid":"x"}}`,
-		"bad price":     `{"result":{"prices":[{"dayCategory":"REGULAR","timeFrom":"07:00","timeTo":"23:00","price":"free"}]}}`,
-		"bad stretch":   `{"result":{"prices":[{"dayCategory":"REGULAR","timeFrom":"23:00","timeTo":"07:00","price":1}]}}`,
-		"no category":   `{"result":{"prices":[{"timeFrom":"07:00","timeTo":"23:00","price":1}]}}`,
-		"negative":      `{"result":{"prices":[{"dayCategory":"REGULAR","timeFrom":"07:00","timeTo":"23:00","price":-5}]}}`,
-		"not an object": `[]`,
+		"no view":          `{"result":{}}`,
+		"no infos":         `{"result":{"view":{}}}`,
+		"old shape":        `{"result":{"prices":[{"dayCategory":"REGULAR","timeFrom":"07:00","timeTo":"23:00","price":1}]}}`,
+		"bad price":        info(`{"tariffCategory":"REGULAR","hour":7,"price":"free"}`),
+		"bad hour":         info(`{"tariffCategory":"REGULAR","hour":24,"price":1}`),
+		"no hour":          info(`{"tariffCategory":"REGULAR","price":1}`),
+		"no category":      info(`{"hour":7,"price":1}`),
+		"negative":         info(`{"tariffCategory":"REGULAR","hour":7,"price":-5}`),
+		"two for one hour": info(`{"tariffCategory":"REGULAR","hour":7,"price":1},{"tariffCategory":"REGULAR","hour":7,"price":2}`),
+		"not an object":    `[]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
 			f.stub.FailNext(http.MethodGet, "/club/settings/tariff/load", http.StatusOK, body)
+			if _, err := d.PriceTable(context.Background(), "court-1"); upstreamKind(err) != driver.UpstreamInvalid {
+				t.Fatalf("price table: %v", err)
+			}
+		})
+	}
+	for name, body := range map[string]string{"old list shape": `{"result":[{"uid":"x","name":"y"}]}`, "bad beginDate": `{"result":{"infos":[{"beginDate":"soon"}]}}`} {
+		t.Run(name, func(t *testing.T) {
+			f, d := loggedIn(t)
+			f.stub.FailNext(http.MethodGet, "/club/settings/tariff/load-list", http.StatusOK, body)
 			if _, err := d.PriceTable(context.Background(), "court-1"); upstreamKind(err) != driver.UpstreamInvalid {
 				t.Fatalf("price table: %v", err)
 			}
@@ -88,10 +160,10 @@ func TestDiscover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Studio != clubUID || out.ClubName != clubName || len(out.Studios) != 1 || out.Timezone != "" || len(out.CRM) != 0 {
+	if out.Studio != clubUID || out.ClubName != clubName || len(out.Studios) != 1 || out.Timezone != "Europe/Moscow" || len(out.CRM) != 0 {
 		t.Fatalf("discovery: %+v", out)
 	}
-	if len(out.Courts) != 3 || out.Courts[0].Params[lunda.CourtKey] != court1 || out.Courts[0].Params[lunda.TariffKey] != tariffUID {
+	if len(out.Courts) != 3 || out.Courts[0].Params[lunda.CourtKey] != court1 || len(out.Courts[0].Params) != 1 {
 		t.Fatalf("courts: %+v", out.Courts)
 	}
 	for wd, h := range out.Hours {
@@ -103,8 +175,12 @@ func TestDiscover(t *testing.T) {
 	for _, n := range out.Notices {
 		codes[n.Code] = true
 	}
-	if !codes["TIMEZONE_UNKNOWN"] {
+	if codes["TIMEZONE_UNKNOWN"] {
 		t.Fatalf("notices: %+v", out.Notices)
+	}
+	f.stub.TimeZoneID = ""
+	if out, err := a.Discover(context.Background(), driver.DiscoverQuery{}); err != nil || out.Timezone != "" || len(out.Notices) == 0 || out.Notices[0].Code != "TIMEZONE_UNKNOWN" {
+		t.Fatalf("without a zone: %+v %v", out, err)
 	}
 	if _, err := a.Discover(context.Background(), driver.DiscoverQuery{Studio: "00000000-0000-4000-8000-0000000000ff"}); upstreamKind(err) != driver.UpstreamRejected {
 		t.Fatalf("another club: %v", err)
@@ -121,9 +197,9 @@ func TestDiscover(t *testing.T) {
 func TestFindClients(t *testing.T) {
 	f := newAcctFixture(t)
 	f.store.set(lunda.EncodeSession(f.stub.IssueSession(), clubUID, clubName))
-	f.stub.AddVisitor(map[string]any{"profileUid": serviceUID, "firstName": "Kosmos", "lastName": "PRIVACY-MARKER-LASTNAME-4be0",
+	f.stub.AddVisitor(map[string]any{"profileUid": serviceUID, "name": "Kosmos PRIVACY-MARKER-LASTNAME-4be0",
 		"phone": "+79990001267", "email": "privacy-marker-email-3d7e@example.test"})
-	f.stub.AddVisitor(map[string]any{"profileUid": clubClient, "firstName": "Иван", "lastName": "Петров", "phone": "+79990002233"})
+	f.stub.AddVisitor(map[string]any{"profileUid": clubClient, "name": "Иван Петров", "phone": "+79990002233"})
 	a := f.account(t)
 	if a.ClientKey() != "service_client" {
 		t.Fatalf("client key %q", a.ClientKey())
@@ -132,7 +208,7 @@ func TestFindClients(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].ID != serviceUID || got[0].Name != "Kosmos PRIVACY-MARKER-LASTNAME-4be0" || got[0].Hint != "телефон …67" {
 		t.Fatalf("clients: %+v %v", got, err)
 	}
-	if f.stub.Calls()[len(f.stub.Calls())-1].Params["freeTextPattern"] != "kosmos" {
+	if f.stub.Calls()[findCallOf(f.stub.Calls(), "/club/visitor/list")].Params["freeTextPattern"] != "kosmos" {
 		t.Fatalf("search: %+v", f.stub.Calls())
 	}
 	if logs := f.logs.String(); strings.Contains(logs, "PRIVACY-MARKER") || strings.Contains(logs, "1267") || strings.Contains(logs, "kosmos") {
@@ -205,4 +281,13 @@ func TestSetupRegistered(t *testing.T) {
 			t.Fatalf("field %+v", f)
 		}
 	}
+}
+
+func findCallOf(calls []lundastub.Call, path string) int {
+	for i, c := range calls {
+		if c.Path == path {
+			return i
+		}
+	}
+	return -1
 }

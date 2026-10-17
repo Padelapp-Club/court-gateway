@@ -7,20 +7,31 @@
 // {"result": ...}; requests carry {"parameters": {...}}.
 //
 // Serve it with httptest.NewServer(stub); the driver's api_url is then
-// <server>/api. Every request is logged (Calls), whatever its path, so a
-// test can assert that nothing outside the driver's operations was called.
+// <server>/api, and the admin's WebSocket is at <server>/api-ws/
+// websocket-listen. Every request is logged (Calls), whatever its path, so
+// a test can assert that nothing outside the driver's operations was
+// called; a WebSocket opening is logged with method "WS".
+//
+// As Lunda (seen 2026-10-17): a session's token is bound to the
+// User-Agent of its login (another one: 401 "missing auth token"), and a
+// club session that registers no CLUB_BOOKING ticket within
+// SecurityWindow of its switch-club is refused from then on (403 "missing
+// security details").
 package lundastub
 
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -40,17 +51,39 @@ type Club struct {
 
 // Call is one request the stub received.
 type Call struct {
-	Method string
-	Path   string // below APIPrefix, e.g. "/club/booking/booking-create"
-	Query  string
-	Token  string // X-Club-Auth-Token, "" when none
-	Params map[string]any
+	Method    string // "WS" for a WebSocket opening
+	Path      string // below APIPrefix, e.g. "/club/booking/booking-create"; WSPath for the WebSocket
+	Query     string
+	Token     string // X-Club-Auth-Token, "" when none
+	UserAgent string
+	Origin    string
+	Params    map[string]any
+}
+
+// WSPath is where the admin's WebSocket is served.
+const WSPath = "/api-ws/websocket-listen"
+
+// session is a club session (or a login before its club is chosen).
+type session struct {
+	club    string    // "" for a login before switch-club
+	ua      string    // the User-Agent it is bound to ("": bound at first use)
+	issued  time.Time // real time, for SecurityWindow
+	secured bool      // a ticket was registered with it
+}
+
+// TariffInfo is one price of a tariff version: a category of day, an hour
+// of the day, a price in rubles.
+type TariffInfo struct {
+	Category string  `json:"tariffCategory"`
+	Hour     int     `json:"hour"`
+	Price    float64 `json:"price"`
 }
 
 type qrLogin struct {
 	pub     *rsa.PublicKey
 	status  string
 	session string // the X_SESSION_ID cookie qr/start set
+	ua      string // the User-Agent of qr/start: the login is bound to it
 }
 
 type slot struct {
@@ -103,23 +136,44 @@ type Stub struct {
 	RefreshKeepsToken bool
 	// OmitNotesOnLoad leaves notes out of booking-load.
 	OmitNotesOnLoad bool
+	// Category is the court category of the courts AddCourt adds.
+	Category string
+	// TimeZoneID is the club's zone in club/settings ("": none).
+	TimeZoneID string
+	// SecurityWindow (real time) is how long a club session lives without
+	// a registered ticket; 0: forever.
+	SecurityWindow time.Duration
+	// WSPing is how often the WebSocket pings (default 50 ms).
+	WSPing time.Duration
+	// RefuseWS answers a WebSocket opening 403.
+	RefuseWS bool
 
 	mu       sync.Mutex
-	courts   []Club // uid, name
+	courts   []court
 	blocked  map[string]map[string]bool
 	slots    []slot
 	bookings map[string]*Booking
 	qr       map[string]*qrLogin
-	temporal map[string]string // temporal token -> phone
-	logins   map[string]bool   // login tokens before a club is chosen
-	tokens   map[string]string // club tokens -> club uid
-	due      map[string]bool   // club tokens whose answers carry refresh-required
-	tariffs  map[string]json.RawMessage
-	calendar map[int]json.RawMessage
+	temporal map[string]string                  // temporal token -> phone
+	tokens   map[string]*session                // live tokens, logins and club sessions
+	due      map[string]bool                    // club tokens whose answers carry refresh-required
+	tariffs  map[string]map[string][]TariffInfo // category -> begin date -> prices
+	calendar map[int]map[string][]string        // year -> category -> dates
 	visitors []map[string]any
 	fails    []failure
 	calls    []Call
 	renewals int
+	tickets  map[string]bool // registered, not used yet
+	issued   []string        // every ticket registered
+	wsOpen   int             // WebSockets open now
+	wsOpened int             // WebSockets opened in all
+	wsPongs  int
+	wsConns  []net.Conn
+}
+
+type court struct {
+	uid, name, category string
+	number              int
 }
 
 // New returns a stub of club.
@@ -128,8 +182,10 @@ func New(club Club) *Stub {
 		Club: club, Code: "246810", BookingDepth: 14, AvailableHours: []int{7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22},
 		PricePerHour: 1500, Zone: time.FixedZone("MSK", 3*3600),
 		blocked: map[string]map[string]bool{}, bookings: map[string]*Booking{}, qr: map[string]*qrLogin{},
-		temporal: map[string]string{}, logins: map[string]bool{}, tokens: map[string]string{}, due: map[string]bool{},
-		tariffs: map[string]json.RawMessage{}, calendar: map[int]json.RawMessage{},
+		temporal: map[string]string{}, tokens: map[string]*session{}, due: map[string]bool{},
+		tariffs: map[string]map[string][]TariffInfo{}, calendar: map[int]map[string][]string{},
+		Category: "00000000-0000-4000-8000-00000000ca71", TimeZoneID: "Europe/Moscow", SecurityWindow: 5 * time.Second,
+		tickets: map[string]bool{},
 	}
 }
 
@@ -157,11 +213,14 @@ func newToken() string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-// AddCourt adds a court to the club.
-func (s *Stub) AddCourt(uid, name string) {
+// AddCourt adds a court of Category to the club, numbered in order.
+func (s *Stub) AddCourt(uid, name string) { s.AddCourtIn(uid, name, s.Category) }
+
+// AddCourtIn adds a court of category to the club, numbered in order.
+func (s *Stub) AddCourtIn(uid, name, category string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.courts = append(s.courts, Club{UID: uid, Name: name})
+	s.courts = append(s.courts, court{uid: uid, name: name, category: category, number: len(s.courts) + 1})
 }
 
 // BlockCourt leaves the court out of the schedule of date (2006-01-02), as
@@ -236,23 +295,26 @@ func (s *Stub) Bookings() []Booking {
 	return out
 }
 
-// SetTariff stores the answer of tariff/load?uid= for uid (the result
-// object) and lists it.
-func (s *Stub) SetTariff(uid string, result string) {
+// SetTariff stores a version of the tariff of a court category, priced
+// from begin (2006-01-02) on.
+func (s *Stub) SetTariff(category, begin string, prices []TariffInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tariffs[uid] = json.RawMessage(result)
+	if s.tariffs[category] == nil {
+		s.tariffs[category] = map[string][]TariffInfo{}
+	}
+	s.tariffs[category][begin] = prices
 }
 
-// SetCalendar stores the answer of calendar/load?year= (the result object).
-func (s *Stub) SetCalendar(year int, result string) {
+// SetCalendar stores the calendar of a year: category -> dates.
+func (s *Stub) SetCalendar(year int, dates map[string][]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calendar[year] = json.RawMessage(result)
+	s.calendar[year] = dates
 }
 
-// AddVisitor adds a client of the club (profileUid, firstName, lastName,
-// phone, ...), as the visitor list answers it.
+// AddVisitor adds a client of the club (profileUid, name, phone, ...), as
+// the visitor list answers it.
 func (s *Stub) AddVisitor(v map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -284,8 +346,34 @@ func (s *Stub) IssueSession() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := newToken()
-	s.tokens[t] = s.Club.UID
+	s.tokens[t] = &session{club: s.Club.UID, issued: time.Now()}
 	return t
+}
+
+// Tickets returns every ticket registered.
+func (s *Stub) Tickets() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.issued...)
+}
+
+// WebSockets returns how many WebSockets are open now, were opened in all,
+// and how many pongs answered the stub's pings.
+func (s *Stub) WebSockets() (open, opened, pongs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wsOpen, s.wsOpened, s.wsPongs
+}
+
+// DropWebSockets closes every open WebSocket, as a restart of Lunda would.
+func (s *Stub) DropWebSockets() {
+	s.mu.Lock()
+	conns := s.wsConns
+	s.wsConns = nil
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
 }
 
 // RequireRefresh makes every answer to a live session carry
@@ -293,8 +381,10 @@ func (s *Stub) IssueSession() string {
 func (s *Stub) RequireRefresh() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for t := range s.tokens {
-		s.due[t] = true
+	for t, ss := range s.tokens {
+		if ss.club != "" {
+			s.due[t] = true
+		}
 	}
 }
 
@@ -302,7 +392,7 @@ func (s *Stub) RequireRefresh() {
 func (s *Stub) Revoke() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tokens, s.logins, s.due = map[string]string{}, map[string]bool{}, map[string]bool{}
+	s.tokens, s.due = map[string]*session{}, map[string]bool{}
 }
 
 // Sessions returns the live club tokens.
@@ -310,8 +400,10 @@ func (s *Stub) Sessions() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []string
-	for t := range s.tokens {
-		out = append(out, t)
+	for t, ss := range s.tokens {
+		if ss.club != "" {
+			out = append(out, t)
+		}
 	}
 	return out
 }
@@ -366,7 +458,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func result(w http.ResponseWriter, v any) { writeJSON(w, http.StatusOK, map[string]any{"result": v}) }
 
 func fail(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]any{"errors": []map[string]string{{"message": msg}}})
+	writeJSON(w, status, map[string]any{"developerErrorMessage": msg, "errorMessageType": "ERROR", "errorType": "BAD_REQUEST", "userErrorMessage": msg})
 }
 
 // encrypt cuts the token into chunks and encrypts each with pub, as Lunda
@@ -402,8 +494,13 @@ func str(p map[string]any, k string) string { s, _ := p[k].(string); return s }
 
 // ServeHTTP implements http.Handler.
 func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == WSPath {
+		s.serveWS(w, r)
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, APIPrefix)
 	tok := r.Header.Get("X-Club-Auth-Token")
+	ua := r.Header.Get("User-Agent")
 	var body struct {
 		Parameters map[string]any `json:"parameters"`
 	}
@@ -415,7 +512,7 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p = map[string]any{}
 	}
 	s.mu.Lock()
-	s.calls = append(s.calls, Call{Method: r.Method, Path: path, Query: r.URL.RawQuery, Token: tok, Params: p})
+	s.calls = append(s.calls, Call{Method: r.Method, Path: path, Query: r.URL.RawQuery, Token: tok, UserAgent: ua, Origin: r.Header.Get("Origin"), Params: p})
 	for i, f := range s.fails {
 		if f.method == r.Method && f.path == path && (f.query == "" || f.query == r.URL.RawQuery) {
 			s.fails = append(s.fails[:i], s.fails[i+1:]...)
@@ -432,30 +529,40 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type route struct{ method, path string }
-	open := map[route]func(http.ResponseWriter, map[string]any){
+	open := map[route]func(http.ResponseWriter, *http.Request, map[string]any){
 		{http.MethodPost, "/auth/qr/start"}:     s.qrStart,
+		{http.MethodPost, "/auth/qr/status"}:    s.qrStatus,
 		{http.MethodPost, "/profile/send-push"}: s.sendPush,
 		{http.MethodPost, "/profile/auth"}:      s.auth,
 	}
-	if r.Method == http.MethodPost && path == "/auth/qr/status" {
-		s.qrStatus(w, r, p)
-		return
-	}
 	if h, ok := open[route{r.Method, path}]; ok {
-		h(w, p)
+		h(w, r, p)
 		return
 	}
 	s.mu.Lock()
-	_, club := s.tokens[tok]
-	login := s.logins[tok]
+	ss, known := s.tokens[tok]
+	if known && ss.ua == "" {
+		ss.ua = ua // a session issued without a login: bound at first use
+	}
+	switch {
+	case !known || ss.ua != ua:
+		s.mu.Unlock()
+		fail(w, http.StatusUnauthorized, "missing auth token")
+		return
+	case ss.club != "" && !ss.secured && s.SecurityWindow > 0 && time.Since(ss.issued) > s.SecurityWindow:
+		s.mu.Unlock()
+		fail(w, http.StatusForbidden, "missing security details: "+NewID())
+		return
+	}
+	club := ss.club != ""
 	due := s.due[tok]
 	s.mu.Unlock()
-	if r.Method == http.MethodPost && path == "/profile/switch-club" && (club || login) {
-		s.switchClub(w, tok, p)
+	if r.Method == http.MethodPost && path == "/profile/switch-club" {
+		s.switchClub(w, r, tok, p)
 		return
 	}
 	if !club {
-		fail(w, http.StatusUnauthorized, "unauthorized")
+		fail(w, http.StatusUnauthorized, "missing auth token")
 		return
 	}
 	if due {
@@ -469,45 +576,78 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		result(w, map[string]any{"uid": "00000000-0000-4000-8000-00000000staf", "firstName": "Staff", "clubUid": s.Club.UID})
 	case route{http.MethodGet, "/court/settings/load-list"}:
 		s.mu.Lock()
-		list := []map[string]any{}
+		infos := []map[string]any{}
 		for _, c := range s.courts {
-			list = append(list, map[string]any{"uid": c.UID, "name": c.Name, "categoryName": "Падел", "onlineBookingDisabled": false})
+			_, priced := s.tariffs[c.category]
+			infos = append(infos, map[string]any{"active": true, "courtUid": c.uid, "title": c.name, "number": c.number, "description": "",
+				"categoryInfo": map[string]any{"active": true, "clubUid": s.Club.UID, "courtNumbers": []int{c.number}, "hasActiveTariff": priced,
+					"id": c.category, "name": "Падел", "sportType": "PADEL"}})
 		}
 		s.mu.Unlock()
-		result(w, list)
+		result(w, map[string]any{"closureTypes": map[string]string{"INDOOR": "Крытый", "OUTDOOR": "Открытый", "OUTDOOR_ROOFED": "Под крышей"}, "infos": infos})
+	case route{http.MethodGet, "/club/settings"}:
+		result(w, map[string]any{"clubUid": s.Club.UID, "name": s.Club.Name, "timeZoneId": s.TimeZoneID, "phone": "+70000000000",
+			"bookingSettings": map[string]any{"bookingDepth": s.BookingDepth, "cancellationDeadline": 24, "minDuration": 60, "maxDuration": 180},
+			"address":         map[string]any{"city": map[string]any{"caption": "Город", "code": "city", "type": "CITY"}}})
+	case route{http.MethodGet, "/club/websocket/ticket/register"}:
+		if q.Get("ticketType") != "CLUB_BOOKING" || !q.Has("relatedEntityUid") {
+			fail(w, http.StatusBadRequest, "ticketType is required")
+			return
+		}
+		b := make([]byte, 32)
+		_, _ = rand.Read(b)
+		t := hex.EncodeToString(b)
+		s.mu.Lock()
+		ss.secured = true
+		s.tickets[t] = true
+		s.issued = append(s.issued, t)
+		s.mu.Unlock()
+		result(w, map[string]any{"ticket": t, "expiredDate": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
 	case route{http.MethodGet, "/club/booking/slots-load"}:
 		s.slotsLoad(w, q.Get("date"))
 	case route{http.MethodGet, "/club/settings/tariff/load-list"}:
-		s.mu.Lock()
-		list := []map[string]any{}
-		ids := make([]string, 0, len(s.tariffs))
-		for id := range s.tariffs {
-			ids = append(ids, id)
+		if q.Get("courtCategoryId") == "" {
+			fail(w, http.StatusBadRequest, "court category id is required")
+			return
 		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			list = append(list, map[string]any{"uid": id, "name": "Тариф " + id[:4]})
+		s.mu.Lock()
+		infos := []map[string]any{}
+		var begins []string
+		for b := range s.tariffs[q.Get("courtCategoryId")] {
+			begins = append(begins, b)
+		}
+		sort.Strings(begins)
+		for _, b := range begins {
+			infos = append(infos, map[string]any{"beginDate": b})
 		}
 		s.mu.Unlock()
-		result(w, list)
+		result(w, map[string]any{"infos": infos})
 	case route{http.MethodGet, "/club/settings/tariff/load"}:
 		s.mu.Lock()
-		t, ok := s.tariffs[q.Get("uid")]
+		prices, ok := s.tariffs[q.Get("courtCategoryId")][q.Get("beginDate")]
 		s.mu.Unlock()
 		if !ok {
 			fail(w, http.StatusNotFound, "tariff not found")
 			return
 		}
-		result(w, t)
+		result(w, map[string]any{"view": map[string]any{"uid": NewID(), "courtCategoryId": q.Get("courtCategoryId"), "beginDate": q.Get("beginDate"),
+			"infos": prices, "modifications": []any{}}})
 	case route{http.MethodGet, "/club/settings/calendar/load"}:
-		y, _ := strconv.Atoi(q.Get("year"))
-		s.mu.Lock()
-		c, ok := s.calendar[y]
-		s.mu.Unlock()
-		if !ok {
-			c = json.RawMessage(`{"year":` + strconv.Itoa(y) + `,"days":[]}`)
+		y, err := strconv.Atoi(q.Get("year"))
+		if err != nil {
+			fail(w, http.StatusBadRequest, "year is required")
+			return
 		}
-		result(w, c)
+		s.mu.Lock()
+		cal := map[string]any{}
+		captions := map[string]string{}
+		for _, cat := range []string{"HOLIDAY", "PRE_HOLIDAY", "PRE_WEEKEND", "REGULAR", "SPECIAL", "WEEKEND"} {
+			dates := append([]string{}, s.calendar[y][cat]...)
+			cal[cat] = map[string]any{"dates": dates}
+			captions[cat] = strings.ToLower(cat)
+		}
+		s.mu.Unlock()
+		result(w, map[string]any{"clubUid": s.Club.UID, "tariffCategories": captions, "view": map[string]any{"tariffCalendar": cal}})
 	case route{http.MethodPost, "/club/visitor/list"}:
 		s.visitorList(w, p)
 	case route{http.MethodGet, "/club/booking/booking-load"}:
@@ -529,7 +669,7 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Stub) qrStart(w http.ResponseWriter, p map[string]any) {
+func (s *Stub) qrStart(w http.ResponseWriter, r *http.Request, p map[string]any) {
 	pub, ok := parseKey(p["publicKey"])
 	if !ok {
 		fail(w, http.StatusBadRequest, "publicKey is invalid")
@@ -540,7 +680,7 @@ func (s *Stub) qrStart(w http.ResponseWriter, p map[string]any) {
 	t := base64.RawURLEncoding.EncodeToString(b)
 	sid := newToken()
 	s.mu.Lock()
-	s.qr[t] = &qrLogin{pub: pub, status: "PENDING", session: sid}
+	s.qr[t] = &qrLogin{pub: pub, status: "PENDING", session: sid, ua: r.Header.Get("User-Agent")}
 	s.mu.Unlock()
 	// as Lunda: the login is tied to this cookie; qr/status without it
 	// answers EXPIRED
@@ -571,7 +711,7 @@ func (s *Stub) qrStatus(w http.ResponseWriter, r *http.Request, p map[string]any
 	out := map[string]any{"status": q.status, "token": []string{}, "clubs": []Club{}}
 	if q.status == "SUCCESSFUL" {
 		t := newToken()
-		s.logins[t] = true
+		s.tokens[t] = &session{ua: q.ua, issued: time.Now()}
 		out["token"], out["clubs"] = encrypt(q.pub, t), s.clubs()
 		delete(s.qr, str(p, "token"))
 	}
@@ -579,7 +719,7 @@ func (s *Stub) qrStatus(w http.ResponseWriter, r *http.Request, p map[string]any
 	result(w, out)
 }
 
-func (s *Stub) sendPush(w http.ResponseWriter, p map[string]any) {
+func (s *Stub) sendPush(w http.ResponseWriter, _ *http.Request, p map[string]any) {
 	if str(p, "countryCode") == "" || str(p, "phone") == "" {
 		fail(w, http.StatusBadRequest, "phone is required")
 		return
@@ -591,7 +731,7 @@ func (s *Stub) sendPush(w http.ResponseWriter, p map[string]any) {
 	result(w, map[string]any{"temporalToken": t})
 }
 
-func (s *Stub) auth(w http.ResponseWriter, p map[string]any) {
+func (s *Stub) auth(w http.ResponseWriter, r *http.Request, p map[string]any) {
 	pub, ok := parseKey(p["publicKey"])
 	s.mu.Lock()
 	phone, known := s.temporal[str(p, "temporalToken")]
@@ -602,13 +742,13 @@ func (s *Stub) auth(w http.ResponseWriter, p map[string]any) {
 	}
 	delete(s.temporal, str(p, "temporalToken"))
 	t := newToken()
-	s.logins[t] = true
+	s.tokens[t] = &session{ua: r.Header.Get("User-Agent"), issued: time.Now()}
 	clubs := s.clubs()
 	s.mu.Unlock()
 	result(w, map[string]any{"token": encrypt(pub, t), "clubs": clubs})
 }
 
-func (s *Stub) switchClub(w http.ResponseWriter, tok string, p map[string]any) {
+func (s *Stub) switchClub(w http.ResponseWriter, r *http.Request, tok string, p map[string]any) {
 	pub, ok := parseKey(p["publicKey"])
 	if !ok {
 		fail(w, http.StatusBadRequest, "publicKey is invalid")
@@ -625,8 +765,10 @@ func (s *Stub) switchClub(w http.ResponseWriter, tok string, p map[string]any) {
 	}
 	t := newToken()
 	s.mu.Lock()
-	delete(s.logins, tok)
-	s.tokens[t] = uid
+	if s.tokens[tok].club == "" {
+		delete(s.tokens, tok) // a login is used once
+	}
+	s.tokens[t] = &session{club: uid, ua: r.Header.Get("User-Agent"), issued: time.Now()}
 	s.mu.Unlock()
 	result(w, map[string]any{"token": encrypt(pub, t)})
 }
@@ -641,7 +783,8 @@ func (s *Stub) refresh(w http.ResponseWriter, tok string, p map[string]any) {
 	next := tok
 	if s.due[tok] && !s.RefreshKeepsToken {
 		next = newToken()
-		s.tokens[next] = s.tokens[tok]
+		renewed := *s.tokens[tok]
+		s.tokens[next] = &renewed
 		delete(s.tokens, tok) // the old token stops working
 	}
 	if s.due[tok] {
@@ -673,12 +816,12 @@ func (s *Stub) slotsLoad(w http.ResponseWriter, date string) {
 	defer s.mu.Unlock()
 	courts := []map[string]any{}
 	for _, c := range s.courts {
-		if s.blocked[c.UID][date] {
+		if s.blocked[c.uid][date] {
 			continue
 		}
 		slots := []map[string]any{}
 		for _, b := range s.bookings {
-			if b.Court != c.UID || b.Status == "CANCELLED" || !b.Begin.Before(next) || b.Begin.Before(day) {
+			if b.Court != c.uid || b.Status == "CANCELLED" || !b.Begin.Before(next) || b.Begin.Before(day) {
 				continue
 			}
 			m := map[string]any{"type": "BOOKING", "bookingId": b.ID, "begin": s.local(b.Begin), "end": s.local(b.End), "goal": b.Goal,
@@ -692,7 +835,7 @@ func (s *Stub) slotsLoad(w http.ResponseWriter, date string) {
 			slots = append(slots, m)
 		}
 		for _, sl := range s.slots {
-			if sl.court != c.UID || !sl.begin.Before(next) || sl.begin.Before(day) {
+			if sl.court != c.uid || !sl.begin.Before(next) || sl.begin.Before(day) {
 				continue
 			}
 			m := map[string]any{"type": sl.typ, "begin": s.local(sl.begin), "end": s.local(sl.end)}
@@ -701,7 +844,7 @@ func (s *Stub) slotsLoad(w http.ResponseWriter, date string) {
 			}
 			slots = append(slots, m)
 		}
-		courts = append(courts, map[string]any{"courtUid": c.UID, "courtName": c.Name, "categoryName": "Падел", "slots": slots})
+		courts = append(courts, map[string]any{"courtUid": c.uid, "courtName": c.name, "categoryName": "Падел", "slots": slots})
 	}
 	result(w, map[string]any{"timeFrameSize": 30, "beyondBookingDepth": day.After(today.AddDate(0, 0, s.BookingDepth)),
 		"availableHours": s.AvailableHours, "courts": courts})
@@ -713,11 +856,15 @@ func (s *Stub) visitorList(w http.ResponseWriter, p map[string]any) {
 	defer s.mu.Unlock()
 	items := []map[string]any{}
 	for _, v := range s.visitors {
-		if strings.Contains(strings.ToLower(fmt.Sprint(v["firstName"], " ", v["lastName"], " ", v["phone"])), pat) {
-			items = append(items, v)
+		if strings.Contains(strings.ToLower(fmt.Sprint(v["name"], " ", v["phone"])), pat) {
+			item := map[string]any{"banned": false, "category": "STANDARD", "tags": []any{}}
+			for k, val := range v {
+				item[k] = val
+			}
+			items = append(items, item)
 		}
 	}
-	result(w, map[string]any{"items": items, "total": len(items)})
+	result(w, map[string]any{"items": items, "totalCount": len(items)})
 }
 
 // bookingJSON is a booking as booking-load answers it (with the
@@ -767,7 +914,7 @@ func (s *Stub) create(w http.ResponseWriter, p map[string]any) {
 	defer s.mu.Unlock()
 	known := false
 	for _, c := range s.courts {
-		known = known || c.UID == court
+		known = known || c.uid == court
 	}
 	if !ok1 || !ok2 || !end.After(begin) || !known {
 		fail(w, http.StatusBadRequest, "invalid slot")
@@ -855,4 +1002,100 @@ func (s *Stub) addPayment(w http.ResponseWriter, p map[string]any) {
 	b.Payments = append(b.Payments, map[string]any{"type": "OFFLINE_PAYMENT", "amount": p["amount"]})
 	b.Status = "PAID"
 	result(w, s.bookingJSON(b))
+}
+
+// serveWS is the admin's WebSocket: a registered, unused ticket opens it
+// (101); the stub pings every WSPing and counts the pongs; frames of the
+// client are read and dropped.
+func (s *Stub) serveWS(w http.ResponseWriter, r *http.Request) {
+	t := r.URL.Query().Get("ticket")
+	s.mu.Lock()
+	s.calls = append(s.calls, Call{Method: "WS", Path: WSPath, UserAgent: r.Header.Get("User-Agent"), Origin: r.Header.Get("Origin")})
+	valid := s.tickets[t]
+	delete(s.tickets, t)
+	refuse := s.RefuseWS
+	s.mu.Unlock()
+	key := r.Header.Get("Sec-WebSocket-Key")
+	if refuse || !valid || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") || key == "" || r.Header.Get("Sec-WebSocket-Version") != "13" {
+		fail(w, http.StatusForbidden, "invalid ticket")
+		return
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		fail(w, http.StatusInternalServerError, "no hijack")
+		return
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC65B11"))
+	fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(sum[:]))
+	_ = rw.Flush()
+	s.mu.Lock()
+	s.wsOpen++
+	s.wsOpened++
+	s.wsConns = append(s.wsConns, conn)
+	ping := s.WSPing
+	s.mu.Unlock()
+	if ping <= 0 {
+		ping = 50 * time.Millisecond
+	}
+	done := make(chan struct{})
+	var wmu sync.Mutex
+	send := func(op byte, payload []byte) error { // a server's frames are not masked
+		wmu.Lock()
+		defer wmu.Unlock()
+		_, err := conn.Write(append([]byte{0x80 | op, byte(len(payload))}, payload...))
+		return err
+	}
+	go func() {
+		t := time.NewTicker(ping)
+		defer t.Stop()
+		_ = send(0x1, []byte(`{"type":"HELLO"}`))
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if send(0x9, []byte("ping")) != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(done)
+		conn.Close()
+		s.mu.Lock()
+		s.wsOpen--
+		s.mu.Unlock()
+	}()
+	br := rw.Reader
+	for {
+		var h [2]byte
+		if _, err := io.ReadFull(br, h[:]); err != nil {
+			return
+		}
+		if h[1]&0x80 == 0 { // a client's frame must be masked
+			return
+		}
+		n := int(h[1] & 0x7f)
+		if n > 125 {
+			return // the client sends control frames only
+		}
+		buf := make([]byte, 4+n)
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return
+		}
+		switch h[0] & 0x0f {
+		case 0xA:
+			s.mu.Lock()
+			s.wsPongs++
+			s.mu.Unlock()
+		case 0x8:
+			_ = send(0x8, nil)
+			return
+		}
+	}
 }

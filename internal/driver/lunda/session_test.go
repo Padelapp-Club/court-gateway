@@ -65,7 +65,7 @@ func TestRenewalOnRefreshRequired(t *testing.T) {
 		t.Fatalf("occupancy after the renewal: %v", err)
 	}
 	for _, c := range f.stub.Calls()[n:] {
-		if c.Token != renewed {
+		if c.Method != "WS" && c.Token != renewed {
 			t.Fatalf("%s went with another token after the renewal", c.Path)
 		}
 	}

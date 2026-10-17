@@ -11,9 +11,14 @@
 // driver never writes a payment to Lunda (no add-ext-payment, ever). Its
 // notes start with the ownership marker "[cg:<partner>]".
 //
-// Lunda's times are the club's local times without a zone; the zone is the
-// club's own config. Nothing about the club's clients is read but their
+// Lunda's times are the club's local times without a zone, read in the
+// club's own zone (its config); Lunda's own (club/settings timeZoneId) is
+// checked against it. Nothing about the club's clients is read but their
 // ids, and nothing of them leaves the driver.
+//
+// The gateway presents itself as the admin's browser does (userAgent) and
+// keeps the admin's WebSocket open while it has a session (keepalive.go):
+// Lunda binds a session to both.
 package lunda
 
 import (
@@ -40,9 +45,9 @@ const DefaultAPIURL = "https://club.lundapadel.ru/api"
 // CheckConfig refuses a court that is not in the session's club.
 var ClubCRMKeys = []string{}
 
-// CourtKey (of a court) is the Lunda court behind it (courtUid); TariffKey
-// the Lunda tariff its prices come from (optional: no prices without it).
-const CourtKey, TariffKey = "lunda_court", "lunda_tariff"
+// CourtKey (of a court) is the Lunda court behind it (courtUid). Its
+// prices are its court category's tariff, found through the court.
+const CourtKey = "lunda_court"
 
 // ServiceClientKey is the installation-level crm key holding the club's
 // service client (profileUid): every booking of the gateway is made on it.
@@ -68,8 +73,7 @@ func init() {
 }
 
 type court struct {
-	uid    string // Lunda courtUid
-	tariff string // Lunda tariff uid, "" when none
+	uid string // Lunda courtUid
 }
 
 // Driver implements driver.Driver for one club in Lunda.
@@ -83,6 +87,7 @@ type Driver struct {
 	first   string            // the first configured court
 	log     *slog.Logger
 	clock   driver.Clock
+	own     bool // the client is the driver's own, not its account's
 }
 
 var (
@@ -98,7 +103,7 @@ func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 // clubs' drivers, and builds the client (or takes the account's, so the
 // installation has one session); timeout applies when cfg has no HTTP
 // client.
-func login(cfg driver.Config, timeout time.Duration, add func(error)) (*client, string) {
+func login(cfg driver.Config, timeout time.Duration, add func(error)) (c *client, service string, own bool) {
 	p := cfg.CRM
 	add(p.RejectUnknown("crm", append([]string{ServiceClientKey, "api_url"}, ClubCRMKeys...)...))
 	service, err := p.String("crm", ServiceClientKey, false)
@@ -114,7 +119,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) (*client, 
 		add(core.CheckHTTPSURL("crm.api_url", apiURL))
 	}
 	if a, ok := cfg.Account.(*Account); ok {
-		return a.c, service // a club shares its account's session
+		return a.c, service, false // a club shares its account's session
 	}
 	hc := &http.Client{Timeout: timeout}
 	if cfg.HTTPClient != nil {
@@ -123,7 +128,8 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) (*client, 
 		hc.Transport = core.ProxyFunc(cfg.Proxy).Transport()
 	}
 	hc.CheckRedirect = core.RefuseRedirects // the token goes nowhere else
-	return newClient(strings.TrimRight(apiURL, "/"), hc, cfg.Sessions, cfg.Logger, cfg.Now), service
+	apiURL = strings.TrimRight(apiURL, "/")
+	return newClient(apiURL, wsURLOf(apiURL), hc, cfg.Sessions, cfg.Logger, cfg.Now), service, true
 }
 
 // NewDriver validates the driver-specific config and builds the driver.
@@ -135,9 +141,10 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 			errs = append(errs, err.Error())
 		}
 	}
-	c, service := login(cfg, 20*time.Second, add)
+	c, service, own := login(cfg, 20*time.Second, add)
 	d := &Driver{
 		c:       c,
+		own:     own,
 		service: service,
 		loc:     cfg.Timezone,
 		byCourt: map[string]court{},
@@ -156,7 +163,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	}
 	for i, cc := range cfg.Courts {
 		path := fmt.Sprintf("courts[%d]", i)
-		add(cc.Params.RejectUnknown(path, CourtKey, TariffKey))
+		add(cc.Params.RejectUnknown(path, CourtKey))
 		uid, err := cc.Params.String(path, CourtKey, true)
 		add(err)
 		if uid != "" && !uidRe.MatchString(uid) {
@@ -165,12 +172,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		if other, dup := d.byUID[uid]; dup && uid != "" {
 			add(fmt.Errorf("%s.%s: корт Лунды уже привязан к корту «%s»", path, CourtKey, other))
 		}
-		tariff, err := cc.Params.String(path, TariffKey, false)
-		add(err)
-		if tariff != "" && !uidRe.MatchString(tariff) {
-			add(fmt.Errorf("%s.%s: «%s» — ожидается идентификатор тарифа Лунды", path, TariffKey, tariff))
-		}
-		ct := court{uid: uid, tariff: tariff}
+		ct := court{uid: uid}
 		d.courts = append(d.courts, ct)
 		d.byCourt[cc.ID] = ct
 		d.byUID[uid] = cc.ID
@@ -182,9 +184,21 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		add(errors.New("services: у Лунды нет услуг для броней — уберите раздел services (бронь партнёра — обычная бронь корта)"))
 	}
 	if len(errs) > 0 {
+		if own {
+			c.stopKeepAlive()
+		}
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
 	return d, nil
+}
+
+// Close stops what the driver runs on its own (the keep-alive of a session
+// it does not share with an account; the account's stops with
+// Account.EndSession).
+func (d *Driver) Close() {
+	if d.own {
+		d.c.stopKeepAlive()
+	}
 }
 
 // Resource implements driver.Resourcer: the Lunda court behind the court.
@@ -214,9 +228,12 @@ func errNoServiceClient() error {
 }
 
 // CheckConfig implements driver.ConfigChecker: every configured court is a
-// court of the session's club (a *MisconfigError otherwise); without a
-// service client the club is served for reading, with a
-// SERVICE_CLIENT_MISSING *driver.ConfigAlert.
+// court of the session's club (a *MisconfigError otherwise). The club is
+// served, with a *driver.ConfigAlert, when its zone is not as far from UTC
+// as Lunda's own for the club (club/settings timeZoneId), now or on any day
+// of the booking horizon (TIMEZONE_MISMATCH: Lunda's local times are read
+// in the club's zone), and without a service client (SERVICE_CLIENT_MISSING:
+// it reads, but does not book).
 func (d *Driver) CheckConfig(ctx context.Context) error {
 	list, err := courtList(ctx, d.c)
 	if err != nil {
@@ -224,7 +241,7 @@ func (d *Driver) CheckConfig(ctx context.Context) error {
 	}
 	have := map[string]bool{}
 	for _, c := range list {
-		have[c.uid()] = true
+		have[c.CourtUID] = true
 	}
 	var problems []string
 	for i, c := range d.courts {
@@ -235,8 +252,28 @@ func (d *Driver) CheckConfig(ctx context.Context) error {
 	if len(problems) > 0 {
 		return &driver.MisconfigError{Problems: problems}
 	}
+	cs, err := readClubSettings(ctx, d.c)
+	if err != nil {
+		return err
+	}
+	var alert *driver.ConfigAlert
+	if zone, ok := cs.zone(); ok {
+		now, _ := d.clock()
+		if at, differ := driver.ZonesDiffer(d.loc, zone, now, driver.ZoneHorizon); differ {
+			alert = &driver.ConfigAlert{Code: "TIMEZONE_MISMATCH", Problems: []string{fmt.Sprintf(
+				"timezone: часовой пояс клуба %s с %s расходится с поясом клуба в Лунде (%s): время Лунды шлюз читает в поясе клуба — задайте клубу пояс %s",
+				d.loc, at.In(d.loc).Format("2006-01-02"), zone, zone)}}
+		}
+	}
 	if d.service == "" {
-		return serviceClientAlert()
+		sc := serviceClientAlert()
+		if alert == nil {
+			return sc
+		}
+		alert.Problems = append(alert.Problems, sc.Problems...)
+	}
+	if alert != nil {
+		return alert
 	}
 	return nil
 }

@@ -23,25 +23,36 @@ import (
 
 // Operations of the Lunda club admin API the driver calls.
 const (
-	opQRStart     = "auth/qr/start"
-	opQRStatus    = "auth/qr/status"
-	opRefresh     = "auth/refresh"
-	opSendPush    = "profile/send-push"
-	opAuth        = "profile/auth"
-	opSwitchClub  = "profile/switch-club"
-	opCurrent     = "profile/current"
-	opCourts      = "court/settings/load-list"
-	opSlots       = "club/booking/slots-load"
-	opTariffs     = "club/settings/tariff/load-list"
-	opTariff      = "club/settings/tariff/load"
-	opCalendar    = "club/settings/calendar/load"
-	opVisitors    = "club/visitor/list"
-	opBookingLoad = "club/booking/booking-load"
-	opCreate      = "club/booking/booking-create"
-	opAdjust      = "club/booking/update-courts-price-adjustment"
-	opNotes       = "club/booking/booking-notes-update"
-	opCancel      = "club/booking/booking-cancel"
+	opQRStart      = "auth/qr/start"
+	opQRStatus     = "auth/qr/status"
+	opRefresh      = "auth/refresh"
+	opSendPush     = "profile/send-push"
+	opAuth         = "profile/auth"
+	opSwitchClub   = "profile/switch-club"
+	opCurrent      = "profile/current"
+	opCourts       = "court/settings/load-list"
+	opSlots        = "club/booking/slots-load"
+	opTariffs      = "club/settings/tariff/load-list"
+	opTariff       = "club/settings/tariff/load"
+	opCalendar     = "club/settings/calendar/load"
+	opVisitors     = "club/visitor/list"
+	opBookingLoad  = "club/booking/booking-load"
+	opCreate       = "club/booking/booking-create"
+	opAdjust       = "club/booking/update-courts-price-adjustment"
+	opNotes        = "club/booking/booking-notes-update"
+	opCancel       = "club/booking/booking-cancel"
+	opClubSettings = "club/settings"
+	opTicket       = "club/websocket/ticket/register"
 )
+
+// userAgent is what the gateway sends as its User-Agent, on every call and
+// the WebSocket: the admin's own browser's. Lunda binds a session's token
+// to the User-Agent of its login — the same token with another one is
+// refused as unknown (401 "missing auth token", seen 2026-10-17) — so it
+// is one fixed string that must never change between versions; the staff
+// member confirming a login sees it as "Linux / Chrome". No marker of the
+// gateway in it (alex 2026-10-17).
+const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 // endpoint is one operation as the admin client calls it.
 type endpoint struct {
@@ -79,16 +90,20 @@ var endpoints = map[string]endpoint{
 	opAdjust: {http.MethodPost, true},
 	opNotes:  {http.MethodPost, true},
 	opCancel: {http.MethodDelete, true},
+	// the admin's settings page and its schedule's live updates
+	opClubSettings: {http.MethodGet, true},
+	opTicket:       {http.MethodGet, true},
 }
 
 // Operations returns the operations the driver may call, as
-// "METHOD /path" below the API base.
+// "METHOD /path" below the API base, and the admin's WebSocket as
+// "WS <path>" on its host.
 func Operations() []string {
-	out := make([]string, 0, len(endpoints))
+	out := make([]string, 0, len(endpoints)+1)
 	for op, ep := range endpoints {
 		out = append(out, ep.method+" /"+op)
 	}
-	return out
+	return append(out, "WS "+wsPath)
 }
 
 // maxBody caps how much of an answer is read.
@@ -114,8 +129,8 @@ type session struct {
 // no other no call at all is made — writes above all (REQ-395).
 type client struct {
 	apiURL string
+	wsURL  string // the admin's WebSocket (keepalive.go)
 	http   *http.Client
-	ua     string
 	store  driver.SessionStore // nil: the session lives in memory only
 	log    *slog.Logger
 	now    func() time.Time
@@ -126,9 +141,11 @@ type client struct {
 	renew string // the token Lunda asked to renew, while the renewal is not done
 
 	renewMu sync.Mutex // one renewal at a time
+
+	ka keepAlive
 }
 
-func newClient(apiURL string, hc *http.Client, store driver.SessionStore, log *slog.Logger, now func() time.Time) *client {
+func newClient(apiURL, wsURL string, hc *http.Client, store driver.SessionStore, log *slog.Logger, now func() time.Time) *client {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -143,22 +160,15 @@ func newClient(apiURL string, hc *http.Client, store driver.SessionStore, log *s
 	if jar, err := cookiejar.New(nil); err == nil {
 		jc.Jar = jar
 	}
-	c := &client{apiURL: apiURL, http: &jc, store: store, log: log, now: now,
-		ua: "PadelApp court-gateway/" + asciiOnly(driver.Version) + " (club gateway)"}
+	c := &client{apiURL: apiURL, wsURL: wsURL, http: &jc, store: store, log: log, now: now}
 	c.mu.Lock()
 	c.sess = c.loadLocked()
+	saved := c.sess != nil
 	c.mu.Unlock()
+	if saved {
+		c.startKeepAlive(false)
+	}
 	return c
-}
-
-// asciiOnly keeps a header value printable ASCII.
-func asciiOnly(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r > 0x7e {
-			return -1
-		}
-		return r
-	}, s)
 }
 
 // loadLocked reads the store's session (nil when there is none, or it does
@@ -185,7 +195,7 @@ func (c *client) loadLocked() *session {
 
 // adopt makes s the session and saves it. A session that cannot be saved
 // still serves this process; the error says the next one will not have it.
-func (c *client) adopt(s session) error {
+func (c *client) adopt(s session, relogin bool) error {
 	s.V = 1
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -193,6 +203,7 @@ func (c *client) adopt(s session) error {
 	if c.lost != "" && c.lost != s.Token {
 		c.lost = ""
 	}
+	c.startKeepAlive(relogin) // a session is kept as the admin keeps it
 	if c.store == nil {
 		return nil
 	}
@@ -230,6 +241,7 @@ func (c *client) current() (session, error) {
 			c.log.Info("a new Lunda session was found in the state directory: the gateway uses it")
 		}
 		c.sess, c.lost, c.renew = s, "", ""
+		c.startKeepAlive(true)
 		return *s, nil
 	}
 	if c.lost != "" {
@@ -248,6 +260,7 @@ func (c *client) replaced(tok string) bool {
 	}
 	if s := c.loadLocked(); s != nil && s.Token != tok && s.Token != c.lost {
 		c.sess, c.renew = s, ""
+		c.startKeepAlive(true)
 		c.log.Info("a new Lunda session was found in the state directory: the gateway uses it")
 		return true
 	}
@@ -433,7 +446,7 @@ func (c *client) send(ctx context.Context, op string, ep endpoint, query url.Val
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("User-Agent", c.ua)
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("X-Request-ID", requestID())
 	if tok != "" {
 		req.Header.Set("X-Club-Auth-Token", tok)
@@ -538,7 +551,7 @@ func (c *client) renewSession(ctx context.Context, tok string) {
 		return
 	}
 	cur.Token = next
-	if err := c.adopt(cur); err == nil {
+	if err := c.adopt(cur, false); err == nil {
 		c.log.Info("the Lunda session was renewed")
 	}
 }
@@ -555,20 +568,27 @@ func profileCurrent(ctx context.Context, c *client) error {
 	return nil
 }
 
-// lundaCourt is a court of the club as court/settings/load-list lists it.
-// [UNVERIFIED] the fields: uid (courtUid as the schedule names it) and
-// name; both spellings of the id are read.
+// lundaCourt is a court of the club as court/settings/load-list lists it
+// (result.infos, seen live 2026-10-17): its courtUid, title and number,
+// and its court category, whose tariff prices it.
 type lundaCourt struct {
-	UID      string `json:"uid"`
-	CourtUID string `json:"courtUid"`
-	Name     string `json:"name"`
+	CourtUID     string `json:"courtUid"`
+	Title        string `json:"title"`
+	Number       *int   `json:"number"`
+	Active       *bool  `json:"active"`
+	CategoryInfo *struct {
+		ID              string `json:"id"`
+		Name            string `json:"name"`
+		HasActiveTariff *bool  `json:"hasActiveTariff"`
+	} `json:"categoryInfo"`
 }
 
-func (c lundaCourt) uid() string {
-	if c.UID != "" {
-		return c.UID
+// category is the court's category id ("" when none).
+func (c lundaCourt) category() string {
+	if c.CategoryInfo == nil {
+		return ""
 	}
-	return c.CourtUID
+	return c.CategoryInfo.ID
 }
 
 // courtList reads the club's courts. A list that does not read is an
@@ -581,36 +601,63 @@ func courtList(ctx context.Context, c *client) ([]lundaCourt, error) {
 	if status != http.StatusOK {
 		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", opCourts, status))
 	}
-	var list []lundaCourt
-	if err := decodeList(res, &list); err != nil {
-		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCourts+": the answer is not a list of courts")
+	var r struct {
+		Infos *[]lundaCourt `json:"infos"`
 	}
-	for _, ct := range list {
-		if !uidRe.MatchString(ct.uid()) {
-			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCourts+": a court without a valid id")
+	if json.Unmarshal(res, &r) != nil || r.Infos == nil {
+		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCourts+": the answer is not a list of courts (result.infos)")
+	}
+	for _, ct := range *r.Infos {
+		if !uidRe.MatchString(ct.CourtUID) {
+			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCourts+": a court without a valid courtUid")
+		}
+		if cat := ct.category(); cat != "" && !uidRe.MatchString(cat) {
+			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCourts+": a court category without a valid id")
 		}
 	}
-	return list, nil
+	return *r.Infos, nil
 }
 
-// listKeys are where a list answer may hold its items when it is not a
-// bare array. [UNVERIFIED] which one Lunda uses for each list.
-var listKeys = []string{"items", "content", "list", "data"}
+// clubSettings is what the driver reads of club/settings (seen live
+// 2026-10-17): the club's name, its zone and its booking depth.
+type clubSettings struct {
+	Name            string `json:"name"`
+	TimeZoneID      string `json:"timeZoneId"`
+	BookingSettings *struct {
+		// [UNVERIFIED] in days (Kosmos: 14, its horizon of 14 days)
+		BookingDepth *float64 `json:"bookingDepth"`
+	} `json:"bookingSettings"`
+}
 
-// decodeList decodes a JSON array, or the array under one of listKeys.
-func decodeList(raw json.RawMessage, out any) error {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		return json.Unmarshal(trimmed, out)
+// zone is the club's zone as Lunda keeps it, when it names one Go knows.
+func (s clubSettings) zone() (*time.Location, bool) {
+	if s.TimeZoneID == "" {
+		return nil, false
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &obj); err != nil {
-		return err
+	loc, err := time.LoadLocation(s.TimeZoneID)
+	return loc, err == nil
+}
+
+// depthDays is the club's booking depth in whole days, or def.
+func (s clubSettings) depthDays(def int) int {
+	if s.BookingSettings == nil || s.BookingSettings.BookingDepth == nil || *s.BookingSettings.BookingDepth < 1 || *s.BookingSettings.BookingDepth > 366 {
+		return def
 	}
-	for _, k := range listKeys {
-		if v, ok := obj[k]; ok && len(bytes.TrimSpace(v)) > 0 && bytes.TrimSpace(v)[0] == '[' {
-			return json.Unmarshal(v, out)
-		}
+	return int(*s.BookingSettings.BookingDepth)
+}
+
+// readClubSettings reads club/settings.
+func readClubSettings(ctx context.Context, c *client) (clubSettings, error) {
+	var cs clubSettings
+	status, res, err := c.call(ctx, opClubSettings, nil, nil)
+	if err != nil {
+		return cs, err
 	}
-	return errors.New("no list in the answer")
+	if status != http.StatusOK {
+		return cs, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", opClubSettings, status))
+	}
+	if t := bytes.TrimSpace(res); len(t) == 0 || t[0] != '{' || json.Unmarshal(t, &cs) != nil {
+		return cs, driver.Upstream(driver.UpstreamInvalid, "GET /"+opClubSettings+": the answer is not the club's settings")
+	}
+	return cs, nil
 }

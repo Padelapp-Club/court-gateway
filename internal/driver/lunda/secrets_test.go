@@ -104,6 +104,13 @@ func TestSecretsNeverLoggedNorInErrors(t *testing.T) {
 			}
 		}
 	}
+	// every WebSocket ticket of the keep-alive
+	for i, tk := range f.stub.Tickets() {
+		secrets[fmt.Sprintf("ticket %d", i)] = tk
+	}
+	if len(f.stub.Tickets()) == 0 {
+		t.Fatal("no ticket registered: the check proves nothing about them")
+	}
 	logs := f.logs.String()
 	if !strings.Contains(logs, "renewed") || !strings.Contains(logs, "refused") {
 		t.Fatalf("the logs lack the renewal and the loss, so their check proves nothing: %s", logs)

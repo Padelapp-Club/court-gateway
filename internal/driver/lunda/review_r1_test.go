@@ -208,14 +208,16 @@ func TestHolidayPricedByItsCategory(t *testing.T) {
 		{"date": saturday.Format("2006-01-02"), "category": "REGULAR"},
 		{"date": plain.Format("2006-01-02"), "category": "REGULAR"},
 	}
-	byYear := map[int][]map[string]string{}
+	byYear := map[int]map[string][]string{}
 	for _, d := range days {
 		y, _ := strconv.Atoi(d["date"][:4])
-		byYear[y] = append(byYear[y], d)
+		if byYear[y] == nil {
+			byYear[y] = map[string][]string{}
+		}
+		byYear[y][d["category"]] = append(byYear[y][d["category"]], d["date"])
 	}
-	for year, ds := range byYear {
-		cal, _ := json.Marshal(map[string]any{"year": year, "days": ds})
-		f.stub.SetCalendar(year, string(cal))
+	for year, cal := range byYear {
+		f.stub.SetCalendar(year, cal)
 	}
 	pt, err := f.drv.PriceTable(context.Background(), "court-1")
 	if err != nil {
@@ -269,11 +271,22 @@ func TestUnreadableCalendarGivesNoPrices(t *testing.T) {
 		"refused": func(s *lundastub.Stub) {
 			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusBadRequest, `{}`)
 		},
-		"no days": func(s *lundastub.Stub) {
-			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK, `{"result":{"year":2026}}`)
+		"no calendar": func(s *lundastub.Stub) {
+			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK, `{"result":{"clubUid":"x","view":{}}}`)
 		},
-		"bad day": func(s *lundastub.Stub) {
-			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK, `{"result":{"days":[{"date":"soon","category":"HOLIDAY"}]}}`)
+		"old shape": func(s *lundastub.Stub) {
+			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK, `{"result":{"year":2026,"days":[]}}`)
+		},
+		"category without dates": func(s *lundastub.Stub) {
+			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK, `{"result":{"view":{"tariffCalendar":{"HOLIDAY":{}}}}}`)
+		},
+		"bad date": func(s *lundastub.Stub) {
+			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK, `{"result":{"view":{"tariffCalendar":{"HOLIDAY":{"dates":["soon"]}}}}}`)
+		},
+		"date of two categories": func(s *lundastub.Stub) {
+			d := futureDay().Format("2006-01-02")
+			s.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusOK,
+				`{"result":{"view":{"tariffCalendar":{"HOLIDAY":{"dates":["`+d+`"]},"REGULAR":{"dates":["`+d+`"]}}}}}`)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
