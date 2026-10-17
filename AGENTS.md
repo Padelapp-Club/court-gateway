@@ -14,13 +14,17 @@ human. Do not improvise around a failure.
    - for Viva: the administrator login (e-mail) and **password**. Lunda has no password: a member of
      the club's staff logs the gateway in themselves (step 3, «Lunda») — ask for nothing else;
    - for **1C:Fitness** (`--crm fitness1c`): the address of the club's 1C (from the card of the
-     external system, without `/hs/api/v3`; `--crm-base-url`), the 1C user (`--crm-username`) and its
+     external system, without `/hs/api/v3`; `--crm-base-url`), the 1C user (`--crm-username`) — one
+     with the roles «Удаленный доступ внешнее приложение» and «Запуск внешнего соединения» — and its
      **password** (`CRM_PASSWORD`), the **application key** from the same card (`FITNESS1C_APIKEY` —
      the club's key; never the "secret key", the gateway does not use it), and, for bookings, the
      phone of a technical client that **only the gateway** books on (`--crm-client-phone`; the
-     reception must never book on it) and the hub partner it books for (`--crm-partner`). The 1C
-     password and the application key are secrets exactly like the Viva password (rule 2): pass them
-     only as environment variables of the single `setup` command, then `unset` them;
+     reception must never book on it) and the hub partner it books for (`--crm-partner`) — both or
+     neither: without them the gateway only reads occupancy. Bookings also need, in the club's 1C, a
+     rental service «Аренда корта PadelApp» (price 0, no payment basis, 30-minute step, on every
+     court); the hub operator maps it, do not ask for its id. The 1C password and the application key
+     are secrets exactly like the Viva password (rule 2): pass them only as environment variables of
+     the single `setup` command, then `unset` them;
    - the hub URL and the hub key fingerprint (`XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX`, given with the
      join code) **only** if the binary is self-built (`version` says `selfbuilt`) or `setup`
      answers `MISSING_INPUT` naming `--hub-url` or `--hub-key-fingerprint`: a release knows its
@@ -259,7 +263,7 @@ If `"ok": false`, act on `error.code`:
 |---|---|
 | `MISSING_INPUT` | an input from step 0 is empty — ask the human again (`--hub-url` / `--hub-key-fingerprint`: the binary is self-built, ask for the hub URL and the fingerprint) |
 | `INVALID_INPUT` | an input is malformed (hub URL, CRM type) — the message says which |
-| `CRM_AUTH_FAILED` | wrong Viva login or password; for 1C: wrong 1C user, password or application key (the gateway then makes no request to 1C for 2 minutes) — ask the human to re-enter; the join code is **not** spent |
+| `CRM_AUTH_FAILED` | wrong Viva login or password; for 1C: wrong 1C user, password or application key, or a user without the two roles — ask the human to re-check (for 1C wait 2 minutes before running setup again: repeated refused logins may lock the 1C user); the join code is **not** spent |
 | `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later |
 | `JOIN_CODE_REJECTED` | code wrong, used or expired — ask the human for a new code |
 | `HUB_UNREACHABLE` | check the hub URL and outbound HTTPS; never open inbound ports |
