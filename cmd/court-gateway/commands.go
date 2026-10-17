@@ -99,6 +99,15 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		fmt.Fprintln(stderr, "Читаю CRM и подключаюсь к хабу…")
 	}
 	deps := setup.Deps{Version: version, ProtectSecrets: protectSecrets, Accounts: setupAccounts(getenv), Note: noteTo(stderr)}
+	if !*nonInteractive {
+		// a CRM a person logs in to: the login and the service client are
+		// asked in this terminal
+		stateDir := core.StateDir(cmp.Or(in.ConfigPath, "gateway.yaml"), getenv)
+		deps.Login = func(ctx context.Context, il driver.InteractiveLogin) error {
+			return loginInteractively(ctx, il, reader, stderr, "", "", stateDir)
+		}
+		deps.PickClient = pickClient(reader, stderr)
+	}
 	res, err := setup.Run(context.Background(), in, deps)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)

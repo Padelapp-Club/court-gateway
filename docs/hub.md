@@ -334,7 +334,7 @@ partners:
 
 | Запрос | Что делает |
 |---|---|
-| `GET /v1/clubs` · `GET /v1/clubs/{club}` | клубы партнёра (с признаком `online`) · клуб: часовой пояс, шаг сетки, часы, возможности |
+| `GET /v1/clubs` · `GET /v1/clubs/{club}` | клубы партнёра (с признаком `online`) · клуб: часовой пояс, шаг сетки, часы, возможности (`capabilities`: `payments` — отметка оплаты, `prices` — цены; без цен `prices` и `quote` отвечают `501 NOT_SUPPORTED`) |
 | `GET /v1/clubs/{club}/courts` | корты |
 | `GET /v1/clubs/{club}/occupancy?from=&to=[&court=]` | занятость кортов за период (до 31 дня) |
 | `GET /v1/clubs/{club}/prices?court=&date=` | цены корта на дату: периоды `start_at`–`end_at` (RFC 3339) и они же по часам клуба `start`–`end` (`HH:MM`, конец дня — `24:00`; в день перевода часов повторяются) |

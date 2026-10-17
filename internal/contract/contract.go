@@ -44,7 +44,8 @@ type Env struct {
 	// gateway) and returns its id as the API exposes it. Drivers that can
 	// should fill it with personal data containing PrivacyMarkers.
 	SeedForeign func(t *testing.T, court string, start, end time.Time) string
-	// Price is a quote the suite checks exactly. Its interval must be in
+	// Price is a quote the suite checks exactly; nil for a driver whose
+	// CRM gives no prices (Capabilities.NoPrices). Its interval must be in
 	// the future and free.
 	Price func(day time.Time) PriceCase
 	// Logs returns everything the gateway logged so far.
@@ -491,6 +492,20 @@ func testPayment(t *testing.T, env *Env) {
 func testPrices(t *testing.T, env *Env) {
 	c := &client{t: t, env: env}
 	d := day(env)
+	club := c.do(http.MethodGet, c.base(), env.ReadKey, nil)
+	expect(t, club, http.StatusOK, "")
+	caps, _ := club.JSON["capabilities"].(map[string]any)
+	if prices, _ := caps["prices"].(bool); prices != (env.Price != nil) {
+		t.Fatalf("capabilities.prices = %v, but the harness %s a price: %s", caps["prices"], map[bool]string{true: "gives", false: "gives no"}[env.Price != nil], club.Body)
+	}
+	if env.Price == nil {
+		// a CRM without prices says so, for every court and interval
+		s := at(d, 10, 0)
+		expect(t, c.do(http.MethodGet, fmt.Sprintf("%s/quote?court=%s&start=%s&end=%s", c.base(), env.Courts[0], urlQ(rfc(s)), urlQ(rfc(s.Add(time.Hour)))), env.ReadKey, nil),
+			http.StatusNotImplemented, "NOT_SUPPORTED")
+		expect(t, c.do(http.MethodGet, c.base()+"/prices?court="+env.Courts[0]+"&date="+d.Format("2006-01-02"), env.ReadKey, nil), http.StatusNotImplemented, "NOT_SUPPORTED")
+		return
+	}
 	pc := env.Price(d)
 	q := fmt.Sprintf("%s/quote?court=%s&start=%s&end=%s", c.base(), pc.Court, urlQ(rfc(pc.Start)), urlQ(rfc(pc.End)))
 	r := c.do(http.MethodGet, q, env.ReadKey, nil)
@@ -539,7 +554,10 @@ func testPrivacy(t *testing.T, env *Env) {
 
 	from, to := urlQ(rfc(d)), urlQ(rfc(d.AddDate(0, 0, 1)))
 	date := d.Format("2006-01-02")
-	pc := env.Price(d)
+	pc := PriceCase{Court: court, Start: at(d, 10, 0), End: at(d, 11, 0)}
+	if env.Price != nil {
+		pc = env.Price(d)
+	}
 	calls := []struct{ method, path, key string }{
 		{http.MethodGet, "/v1/clubs", env.ReadKey},
 		{http.MethodGet, c.base(), env.ReadKey},

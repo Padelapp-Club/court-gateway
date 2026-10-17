@@ -10,7 +10,9 @@ human. Do not improvise around a failure.
 1. **Ask the human, do not guess**, for exactly these inputs:
    - join code (one-time, format `XXXX-XXXX-XXXX-XXXX`) — the club gets ONE code from its partner,
      e.g. shown in the partner's admin panel;
-   - Viva administrator login (e-mail) and **password**;
+   - which CRM the club has: **Viva** (`--crm viva`, the default) or **Lunda** (`--crm lunda`);
+   - for Viva: the administrator login (e-mail) and **password**. Lunda has no password: a member of
+     the club's staff logs the gateway in themselves (step 3, «Lunda») — ask for nothing else;
    - the hub URL and the hub key fingerprint (`XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX`, given with the
      join code) **only** if the binary is self-built (`version` says `selfbuilt`) or `setup`
      answers `MISSING_INPUT` naming `--hub-url` or `--hub-key-fingerprint`: a release knows its
@@ -207,6 +209,24 @@ binary without the release key: it works but never updates itself — tell the h
 
 ## Step 3 — setup
 
+**Lunda: the human runs setup, not you.** Lunda is entered by a person: `setup` draws a QR code the
+staff member scans in the Lunda Padel app (or sends a code to their phone), then asks them to pick
+the club's service client. `--non-interactive` refuses it (`LOGIN_REQUIRED`). Give the human this
+command to run in a terminal they see, in the install folder, with `GATEWAY_JOIN_CODE` set as in
+step 0 (Windows: PowerShell as Administrator, `.\court-gateway.exe`):
+
+```sh
+./court-gateway setup --crm lunda --json --config "$PWD/gateway.yaml" > setup-result.json
+```
+
+The questions and the QR code go to the terminal (stderr), the result to `setup-result.json`. Then
+verify as below. A warning `NO_SERVICE_CLIENT` means no service client was chosen: the gateway reads
+but does not book — tell the human, and have them run setup again (a new join code) to choose one.
+In Docker the login of setup is lost with its throwaway container: after setup have the human run
+`docker compose run --rm -it court-gateway login` once (see «The Lunda session ended»).
+
+**Viva:**
+
 ```sh
 ./court-gateway setup --non-interactive --json \
   --crm-username "$CRM_USERNAME" --config "$PWD/gateway.yaml" > setup-result.json
@@ -242,6 +262,11 @@ If `"ok": false`, act on `error.code`:
 | `FOLDER_NOT_RESTRICTED` | Windows: the folder could not be closed to everyone but Administrators and SYSTEM — re-run setup in PowerShell as Administrator; nothing was written and the join code is **not** spent |
 | `WRITE_FAILED` | `gateway.yaml` or `.env` could not be written (the message names the file) — fix the folder's permissions or free disk space; if the code was already spent, ask for a new one |
 | `INTERNAL` | a bug: the config setup built does not load — stop and report the message to the human |
+| `LOGIN_REQUIRED` | the CRM has no password (Lunda): a member of the club's staff logs the gateway in — run setup **without** `--non-interactive` in a terminal the human sees, so they scan the QR code or type the code; nothing was written, the join code is **not** spent |
+| `CRM_LOGIN_EXPIRED` | the QR code or the code expired before the human confirmed — run setup again; the join code is **not** spent |
+| `CRM_LOGIN_DECLINED` | the human declined the login in the CRM's app, or the code was wrong three times — ask them, then run setup again |
+| `CRM_LOGIN_ABORTED` / `CRM_LOGIN_FAILED` | the login was interrupted or failed otherwise (the message says how) — run setup again; the join code is **not** spent |
+| `CLIENT_NOT_CHOSEN` | choosing the club's service client failed (the CRM did not answer the search) — run setup again; to skip the choice answer the search with an empty line (the gateway then reads and does not book: warning `NO_SERVICE_CLIENT`) |
 
 ## Step 4 — install the service
 
@@ -309,6 +334,21 @@ as it prints). After a rejected login the service tries again only three times (
 later, counted across restarts), then waits for `set-password`, which — even with the same
 password — makes it log in at once.
 Then `unset CRM_PASSWORD` and run step 5.
+
+## The Lunda session ended
+
+`doctor` shows `CRM_LOGIN` failing with `CRM_AUTH_FAILED` and the hint to log in again: Lunda ended
+the gateway's session (the staff member was signed out or removed). The gateway does not write to
+Lunda until a person logs it in again; no join code is needed. Give the human this command to run
+in a terminal they see, in the install folder (Windows: PowerShell as Administrator,
+`.\court-gateway.exe login -config "$PWD\gateway.yaml"`; Docker: `docker compose run --rm -it court-gateway login`):
+
+```sh
+./court-gateway login -config "$PWD/gateway.yaml"; echo "exit=$?"
+```
+
+**Expect:** `exit=0` and «Вход в CRM выполнен». The running service takes the new session by itself,
+no restart. Never use `set-password` for Lunda (it answers `NO_PASSWORD`). Then run step 5.
 
 ## Uninstall
 

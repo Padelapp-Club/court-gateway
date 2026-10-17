@@ -90,6 +90,10 @@ func Upstream(kind UpstreamKind, detail string) error {
 // Capabilities are reported to partners as-is.
 type Capabilities struct {
 	Payments bool
+	// NoPrices: the CRM gives the gateway no prices (PriceTable is
+	// ErrNotSupported); /prices and /quote answer NOT_SUPPORTED and the
+	// club says "prices": false. Partners then price bookings themselves.
+	NoPrices bool
 	// Currency is the ISO 4217 code of the CRM's prices (PriceTable
 	// amounts are its hundredths).
 	Currency string
