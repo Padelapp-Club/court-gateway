@@ -773,9 +773,12 @@ func TestD11ConfigCheck(t *testing.T) {
 	})
 	t.Run("hidden court", func(t *testing.T) {
 		f := newFixture(t, d11TileCourt(opts{}, func(s *yclientsstub.Staff) { s.Hidden = true }))
-		var ca *driver.ConfigAlert
-		if err := f.drv.CheckConfig(d11ctx); !errors.As(err, &ca) || ca.Code != "STAFF_HIDDEN" {
-			t.Fatalf("err = %v, want ConfigAlert STAFF_HIDDEN", err)
+		// served, with a warning in the log (not a ConfigAlert: RR-T10a-7)
+		if err := f.drv.CheckConfig(d11ctx); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if !strings.Contains(f.built.Logs.String(), "STAFF_HIDDEN") {
+			t.Fatalf("no STAFF_HIDDEN warning in the log")
 		}
 	})
 	t.Run("prepaid required", func(t *testing.T) {

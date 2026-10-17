@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -191,21 +190,23 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 			Datetime: yclientsTime(req.Start.Add(time.Duration(p.offset)*time.Second), d.loc),
 		})
 	}
+	// Once book_record is sent, any answer but a clean success may hide
+	// records it made (no answer, a 5xx, an unreadable or refusing 2xx, a
+	// 4xx): every such failure is undone before it is returned. Undoing
+	// what was never made costs one read.
 	r, err := d.c.do(ctx, http.MethodPost, "/book_record/"+d.company, nil, body, partnerAuth)
 	if err != nil {
-		// no answer, or a 5xx: the records may exist all the same
-		var ue *driver.UpstreamError
-		if errors.As(err, &ue) && ue.Kind == driver.UpstreamUnavailable || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			d.undo(ctx, staff, tag, req, nil)
-		}
+		d.undo(ctx, staff, tag, req, nil)
 		return driver.Booking{}, err
 	}
 	switch {
 	case r.status == http.StatusOK || r.status == http.StatusCreated:
 	case r.status == http.StatusUnprocessableEntity:
 		// YCLIENTS refuses a busy time with 422 (D11 R-9, probe)
+		d.undo(ctx, staff, tag, req, nil)
 		return driver.Booking{}, fmt.Errorf("POST /book_record: %w", driver.ErrSlotUnavailable)
 	default:
+		d.undo(ctx, staff, tag, req, nil)
 		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /book_record: HTTP %d", r.status))
 	}
 	var created []struct {
@@ -213,12 +214,14 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}
 	_ = json.Unmarshal(r.data, &created)
 	var ids []string
+	seen := map[string]bool{}
 	for _, c := range created {
-		if digitsRe.MatchString(c.RecordID.String()) {
-			ids = append(ids, c.RecordID.String())
+		if id := c.RecordID.String(); digitsRe.MatchString(id) && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
 		}
 	}
-	if len(ids) != len(plans) {
+	if len(ids) != len(plans) || len(created) != len(plans) { // one id per record, each its own
 		d.undo(ctx, staff, tag, req, ids)
 		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /book_record: %d record ids for %d records", len(ids), len(plans)))
 	}
@@ -226,40 +229,56 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	return driver.Booking{ID: "y-" + strings.Join(ids, "-"), Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
 }
 
-// undo deletes what a create that went wrong made: the records it named
-// and every live record of the court around the booking that carries its
-// set tag and the partner's marker (YCLIENTS may have made records it did
-// not name, or answered nothing). It works on after the caller's context
-// ends, within its own limit. What it cannot delete it logs.
+// undo deletes what a create that went wrong made, and nothing else. The
+// candidates are the records the answer named and the live records of the
+// court around the booking whose comment carries its set tag (YCLIENTS may
+// have made records it did not name, or answered nothing). Each is read
+// back by id and deleted only if it is the partner's own (marker and the
+// club's service client, as Cancel requires), carries this booking's tag
+// and lies within the booking's time: a club's copy of the record — the
+// comment kept, another client or another time — is not touched. It works
+// on after the caller's context ends, within its own limit; what it cannot
+// delete it logs.
 func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, named []string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
 	defer cancel()
-	left := 0
-	done := map[string]bool{}
-	for _, id := range named {
+	key := strings.TrimSuffix(strings.TrimPrefix(tag, "[cg-set:"), "]") // "<key>/<n>", as setOf reads it
+	candidates := append([]string(nil), named...)
+	records, err := d.fetchRecords(ctx, localDay(req.Start, d.loc).AddDate(0, 0, -1), localDay(req.End, d.loc))
+	if err != nil {
+		d.log.Error("yclients: a failed create could not look for its records: some may be left", "court", req.Court, "err", err)
+	}
+	for _, r := range records {
+		if k, _, ok := setOf(r.Comment); ok && k == key && !r.Deleted && r.StaffID.String() == staff {
+			candidates = append(candidates, r.ID.String())
+		}
+	}
+	left, done := 0, map[string]bool{}
+	for _, id := range candidates {
+		if done[id] {
+			continue
+		}
+		done[id] = true
+		rec, found, err := d.read(ctx, id)
+		if err != nil {
+			left++
+			d.log.Error("yclients: a record of a failed create could not be read: it may be left", "record", id, "err", err)
+			continue
+		}
+		if !found || rec.Deleted {
+			continue
+		}
+		start, end, ok := rec.span()
+		k, _, tagged := setOf(rec.Comment)
+		if !ok || !tagged || k != key || rec.StaffID.String() != staff || !d.owned(rec, req.Partner) || start.Before(req.Start) || end.After(req.End) {
+			continue // not this booking's record
+		}
 		if err := d.deleteRecord(ctx, id); err != nil {
 			left++
 			d.log.Error("yclients: a record of a failed create is left", "record", id, "err", err)
 		}
-		done[id] = true
 	}
-	records, err := d.fetchRecords(ctx, localDay(req.Start, d.loc).AddDate(0, 0, -1), localDay(req.End, d.loc))
-	if err != nil {
-		d.log.Error("yclients: a failed create could not look for its records: some may be left", "court", req.Court, "err", err)
-		return
-	}
-	key := strings.TrimSuffix(strings.TrimPrefix(tag, "[cg-set:"), "]") // "<key>/<n>", as setOf reads it
-	for _, r := range records {
-		k, _, ok := setOf(r.Comment)
-		if r.Deleted || !ok || k != key || r.StaffID.String() != staff || !hasMarker(*r.Comment, req.Partner) || done[r.ID.String()] {
-			continue
-		}
-		if err := d.deleteRecord(ctx, r.ID.String()); err != nil {
-			left++
-			d.log.Error("yclients: a record of a failed create is left", "record", r.ID.String(), "err", err)
-		}
-	}
-	if left == 0 {
+	if left == 0 && err == nil {
 		d.log.Warn("yclients: a failed create was undone", "court", req.Court)
 	}
 }

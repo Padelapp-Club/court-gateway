@@ -98,6 +98,9 @@ type Stub struct {
 	failNext  map[string]int             // path prefix -> status, once
 	failMsg   map[string]string          // path prefix -> meta.message of that failure
 	bookFail  int                        // book_record makes the records, then answers this
+	bookRaw   string                     // book_record makes the records, then answers this body (201)
+	dupIDs    bool                       // book_record names its first record for every record
+	copyAfter *clubCopy                  // book_record: the club copies the first record at once
 	shortIDs  bool                       // book_record names one record fewer
 	pageSize  int                        // 0 = as asked
 	totalLies int                        // added to total_count
@@ -192,6 +195,27 @@ func (s *Stub) FailNextWith(prefix string, status int, message string) {
 // BookThenFail makes book_record create its records and answer status
 // (0: answer as usual), as a 5xx after the write would.
 func (s *Stub) BookThenFail(status int) { s.mu.Lock(); s.bookFail = status; s.mu.Unlock() }
+
+type clubCopy struct {
+	offset time.Duration
+	phone  string
+}
+
+// BookThenRaw makes book_record create its records and answer 201 with
+// body as it is ("" = as usual).
+func (s *Stub) BookThenRaw(body string) { s.mu.Lock(); s.bookRaw = body; s.mu.Unlock() }
+
+// DupIDs makes book_record name its first record for every record.
+func (s *Stub) DupIDs(on bool) { s.mu.Lock(); s.dupIDs = on; s.mu.Unlock() }
+
+// CopyAfterBook makes the club copy the first record book_record creates,
+// before its answer: the same court and comment, offset later, for the
+// client phone (digits).
+func (s *Stub) CopyAfterBook(offset time.Duration, phone string) {
+	s.mu.Lock()
+	s.copyAfter = &clubCopy{offset, phone}
+	s.mu.Unlock()
+}
 
 // SetServices replaces a court's catalog.
 func (s *Stub) SetServices(staff string, svc []Service) {
@@ -645,8 +669,26 @@ func (s *Stub) book(w http.ResponseWriter, body []byte) {
 		}
 		out = append(out, map[string]any{"id": in.Appointments[i].ID, "record_id": s.nextID, "record_hash": "h"})
 	}
+	if c := s.copyAfter; c != nil && len(plans) > 0 {
+		first := s.records[s.nextID-int64(len(plans))+1]
+		s.nextID++
+		cp := *first
+		cp.ID, cp.Start, cp.ClientPhone, cp.ClientName = s.nextID, first.Start.Add(c.offset), c.phone, "Клиент клуба"
+		s.records[cp.ID] = &cp
+	}
+	if s.dupIDs {
+		for i := range out {
+			out[i].(map[string]any)["record_id"] = out[0].(map[string]any)["record_id"]
+		}
+	}
 	if s.bookFail != 0 {
 		fail(w, s.bookFail, "injected failure after the write")
+		return
+	}
+	if s.bookRaw != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, s.bookRaw)
 		return
 	}
 	writeJSON(w, http.StatusCreated, true, out, nil)

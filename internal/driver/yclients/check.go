@@ -88,22 +88,18 @@ func (d *Driver) readStaff(ctx context.Context) ([]staffMember, error) {
 // schedule times are read in the club's —, a court that is no staff of
 // the branch, fired, closed for booking, without a schedule, or with
 // prepayment required, which lets the branch drop an unpaid record by
-// itself); what may refuse some calls is a *ConfigAlert (a court hidden
-// from online booking, a schedule shorter than the selling horizon); the
-// rest is logged.
+// itself). What may refuse some calls — a court hidden from online
+// booking, a schedule shorter than the selling horizon — and the rest is
+// logged as a warning, not a *driver.ConfigAlert: doctor trusts only the
+// readiness codes the core knows, and an alert code of this driver's own
+// would read there as an unknown answer of the service (D28 RR-T10a-7).
 func (d *Driver) CheckConfig(ctx context.Context) error {
 	co, err := d.readCompany(ctx)
 	if err != nil {
 		return err
 	}
-	var problems, alerts []string
-	var alertCode string
-	alert := func(code, msg string) {
-		if alertCode == "" {
-			alertCode = code
-		}
-		alerts = append(alerts, msg)
-	}
+	var problems []string
+	alert := func(code, msg string) { d.log.Warn("yclients config: "+msg, "code", code) }
 	title := cmpOr(co.Title, d.company)
 	if len(co.Active) > 0 && !truthy(co.Active) {
 		problems = append(problems, fmt.Sprintf("филиал «%s» в YCLIENTS неактивен — брони в него не принимаются", title))
@@ -170,9 +166,6 @@ func (d *Driver) CheckConfig(ctx context.Context) error {
 	}
 	if len(problems) > 0 {
 		return &driver.MisconfigError{Problems: problems}
-	}
-	if len(alerts) > 0 {
-		return &driver.ConfigAlert{Code: alertCode, Problems: alerts}
 	}
 	return nil
 }
