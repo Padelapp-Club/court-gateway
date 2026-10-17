@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -242,6 +243,16 @@ type wsConn struct {
 	wmu  sync.Mutex
 }
 
+// wsDialer and wsRoots are the WebSocket's TCP dial and TLS roots: the
+// system's, replaced only by tests.
+var (
+	wsDialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	wsRoots *x509.CertPool
+)
+
 // dialWS opens the WebSocket at rawURL with the ticket, as the admin's
 // browser does (its Origin and User-Agent).
 func dialWS(ctx context.Context, rawURL, ticket string) (*wsConn, error) {
@@ -255,17 +266,19 @@ func dialWS(ctx context.Context, rawURL, ticket string) (*wsConn, error) {
 	}
 	hctx, cancel := context.WithTimeout(ctx, wsHandshake)
 	defer cancel()
-	var d net.Dialer
-	conn, err := d.DialContext(hctx, "tcp", addr)
+	raw, err := wsDialer(hctx, "tcp", addr)
 	if err != nil {
 		return nil, errors.New("the WebSocket host cannot be reached")
 	}
 	// until the upgrade is done, the end of ctx (a stop) closes the
-	// connection at once: no waiting out wsHandshake on a stalled peer
-	unwatch := context.AfterFunc(hctx, func() { conn.Close() })
+	// connection at once: no waiting out wsHandshake on a stalled peer.
+	// It closes the raw connection it was given, never conn, which the
+	// TLS wrapper replaces concurrently.
+	unwatch := context.AfterFunc(hctx, func() { raw.Close() })
 	defer unwatch()
+	conn := raw
 	if u.Scheme == "wss" {
-		tc := tls.Client(conn, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
+		tc := tls.Client(raw, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12, RootCAs: wsRoots})
 		if err := tc.HandshakeContext(hctx); err != nil {
 			conn.Close()
 			return nil, errors.New("the WebSocket TLS handshake failed")
