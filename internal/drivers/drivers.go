@@ -8,6 +8,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
+	_ "github.com/Padelapp-Club/court-gateway/internal/driver/fitness1c"
 	_ "github.com/Padelapp-Club/court-gateway/internal/driver/lunda"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 )
