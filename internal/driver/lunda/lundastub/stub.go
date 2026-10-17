@@ -971,6 +971,10 @@ func (s *Stub) adjust(w http.ResponseWriter, p map[string]any) {
 }
 
 func (s *Stub) notes(w http.ResponseWriter, p map[string]any) {
+	if str(p, "bookingType") != "COURT" { // as Lunda: the type is required
+		fail(w, http.StatusBadRequest, "bookingType is required")
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, ok := s.bookings[str(p, "bookingId")]

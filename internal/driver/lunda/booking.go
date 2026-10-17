@@ -282,7 +282,7 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		}
 	}
 	// [UNVERIFIED] the parameter's name: notes
-	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "notes": buildNotes(req.Note, req.Partner)}); err != nil {
+	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "bookingType": "COURT", "notes": buildNotes(req.Note, req.Partner)}); err != nil {
 		return driver.Booking{}, d.rollback(ctx, uid, req, err)
 	}
 	got, found, err := d.load(ctx, uid)
