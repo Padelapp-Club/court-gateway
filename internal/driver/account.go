@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -157,6 +158,10 @@ type SetupSpec struct {
 	Secrets []SetupSecret
 	// Hidden types are never offered to a club (the demo CRM).
 	Hidden bool
+	// Interactive: the CRM has no password; a person logs the gateway in
+	// (InteractiveLogin), at setup and again with `court-gateway login`
+	// whenever the CRM ends the session.
+	Interactive bool
 }
 
 var setups = map[string]SetupSpec{}
@@ -183,4 +188,106 @@ func SecretEnvs(crmType string) []string {
 		out = append(out, s.Env)
 	}
 	return out
+}
+
+// LoginMethod is a way a person logs an interactive account in.
+type LoginMethod string
+
+const (
+	// LoginQR: a member of the club's staff scans a QR code in the CRM's
+	// mobile app and confirms there.
+	LoginQR LoginMethod = "qr"
+	// LoginCode: the CRM sends a one-time code to the staff member's phone
+	// (by its own channel), and it is typed in.
+	LoginCode LoginMethod = "code"
+)
+
+// Errors of an interactive login.
+var (
+	// ErrLoginExpired: the QR code or the code expired before the person
+	// acted; start again (a QR is reissued).
+	ErrLoginExpired = errors.New("the login challenge expired")
+	// ErrLoginDeclined: the person declined the login in the CRM's app, or
+	// the code was wrong.
+	ErrLoginDeclined = errors.New("the login was declined")
+	// ErrNoSession: an interactive account has no session: nobody logged
+	// the gateway in yet, or the CRM ended the session. Wrapped in an
+	// *UpstreamError of kind UpstreamAuth where a call needs one.
+	ErrNoSession = errors.New("no CRM session: log the gateway in (court-gateway login)")
+)
+
+// Challenge is what the person logging the gateway in acts on. It is shown
+// to that person only: neither the QR payload nor anything typed is ever
+// logged.
+type Challenge struct {
+	Method LoginMethod
+	// QR is the exact text the QR code encodes (LoginQR).
+	QR string
+	// Sent says, in Russian, where the code went (LoginCode), e.g. «в
+	// Telegram или пушем в приложение».
+	Sent string
+	// Expires is when the challenge stops working (zero: unknown).
+	Expires time.Time
+}
+
+// LoginState is where an interactive login stands.
+type LoginState struct {
+	// Done: the CRM accepted the login. With several clubs the session is
+	// not usable before SelectClub.
+	Done bool
+	// Clubs the person may act for, when the CRM tells (more than one
+	// needs SelectClub).
+	Clubs []Studio
+}
+
+// InteractiveLogin is implemented by accounts whose CRM has no password and
+// is entered by a person. A successful login (and every renewal of the
+// session the CRM asks for later) is saved to Config.Sessions, so the
+// session survives restarts; an account built with a saved session uses it
+// without a person.
+type InteractiveLogin interface {
+	// LoginMethods the CRM offers, the preferred first.
+	LoginMethods() []LoginMethod
+	// StartLogin starts a login: for LoginCode, phone is the staff
+	// member's number in international form (+7…); ignored for LoginQR.
+	StartLogin(ctx context.Context, method LoginMethod, phone string) (Challenge, error)
+	// PollLogin (LoginQR) asks whether the person confirmed; not Done
+	// while waiting, ErrLoginExpired or ErrLoginDeclined when it is over.
+	PollLogin(ctx context.Context) (LoginState, error)
+	// ConfirmLogin (LoginCode) sends the code the person typed.
+	ConfirmLogin(ctx context.Context, code string) (LoginState, error)
+	// SelectClub picks the club of the session (LoginState.Clubs), then
+	// saves it.
+	SelectClub(ctx context.Context, id string) error
+	// HasSession: a session is saved (it may still be refused).
+	HasSession() bool
+}
+
+// SessionStore keeps an interactive account's CRM session between
+// processes: setup and `court-gateway login` save it, the service uses and
+// renews it. The bytes are the driver's own (a secret: the store keeps
+// them readable by the owner only). Load of nothing saved is nil, nil;
+// Save(nil) removes the session.
+type SessionStore interface {
+	LoadSession() ([]byte, error)
+	SaveSession([]byte) error
+}
+
+// Client is a client of the club as a person choosing it sees it. It is
+// shown in the terminal of the person setting the gateway up and never
+// logged.
+type Client struct {
+	ID   string
+	Name string
+	// Hint tells clients of one name apart (a masked phone), may be empty.
+	Hint string
+}
+
+// ClientPicker is implemented by accounts whose bookings are made on a
+// client of the club the club chooses at setup (a service client): its id
+// is the crm key ClientKey of the installation. Without it the driver
+// reads, but does not book.
+type ClientPicker interface {
+	ClientKey() string
+	FindClients(ctx context.Context, pattern string) ([]Client, error)
 }

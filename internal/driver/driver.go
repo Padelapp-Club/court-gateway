@@ -205,6 +205,9 @@ type Config struct {
 	// Account is the installation's CRM account, if any: its clubs' drivers
 	// may share its session, so they all log in once.
 	Account Account
+	// Sessions, when set, keeps an interactive account's CRM session
+	// (InteractiveLogin) in the service's state directory.
+	Sessions SessionStore
 	// Rejections, when set, keeps the account's rejected logins across
 	// restarts (the service's state directory): the retry budget after a
 	// rejection is the installation's, not one process's.
