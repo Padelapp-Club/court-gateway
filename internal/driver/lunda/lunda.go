@@ -100,10 +100,12 @@ var (
 func New(cfg driver.Config) (driver.Driver, error) { return NewDriver(cfg) }
 
 // login reads the installation-level keys shared by the account and its
-// clubs' drivers, and builds the client (or takes the account's, so the
-// installation has one session); timeout applies when cfg has no HTTP
-// client.
-func login(cfg driver.Config, timeout time.Duration, add func(error)) (c *client, service string, own bool) {
+// clubs' drivers and returns how to build the client (or take the
+// account's, so the installation has one session); timeout applies when
+// cfg has no HTTP client. The client is built only once the whole config
+// is valid (build): nothing — no saved token above all — may go anywhere
+// from a constructor that returns an error.
+func login(cfg driver.Config, timeout time.Duration, add func(error)) (build func() *client, service string, own bool) {
 	p := cfg.CRM
 	add(p.RejectUnknown("crm", append([]string{ServiceClientKey, "api_url"}, ClubCRMKeys...)...))
 	service, err := p.String("crm", ServiceClientKey, false)
@@ -119,17 +121,21 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) (c *client
 		add(core.CheckHTTPSURL("crm.api_url", apiURL))
 	}
 	if a, ok := cfg.Account.(*Account); ok {
-		return a.c, service, false // a club shares its account's session
+		return func() *client { return a.c }, service, false // a club shares its account's session
 	}
-	hc := &http.Client{Timeout: timeout}
-	if cfg.HTTPClient != nil {
-		*hc = *cfg.HTTPClient
-	} else if cfg.Proxy != nil {
-		hc.Transport = core.ProxyFunc(cfg.Proxy).Transport()
-	}
-	hc.CheckRedirect = core.RefuseRedirects // the token goes nowhere else
-	apiURL = strings.TrimRight(apiURL, "/")
-	return newClient(apiURL, wsURLOf(apiURL), hc, cfg.Sessions, cfg.Logger, cfg.Now), service, true
+	return func() *client {
+		hc := &http.Client{Timeout: timeout}
+		if cfg.HTTPClient != nil {
+			*hc = *cfg.HTTPClient
+		} else if cfg.Proxy != nil {
+			hc.Transport = core.ProxyFunc(cfg.Proxy).Transport()
+		}
+		hc.CheckRedirect = core.RefuseRedirects // the token goes nowhere else
+		u := strings.TrimRight(apiURL, "/")
+		c := newClient(u, wsURLOf(u), hc, cfg.Sessions, cfg.Logger, cfg.Now)
+		c.keepSaved()
+		return c
+	}, service, true
 }
 
 // NewDriver validates the driver-specific config and builds the driver.
@@ -141,9 +147,8 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 			errs = append(errs, err.Error())
 		}
 	}
-	c, service, own := login(cfg, 20*time.Second, add)
+	build, service, own := login(cfg, 20*time.Second, add)
 	d := &Driver{
-		c:       c,
 		own:     own,
 		service: service,
 		loc:     cfg.Timezone,
@@ -184,11 +189,9 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		add(errors.New("services: у Лунды нет услуг для броней — уберите раздел services (бронь партнёра — обычная бронь корта)"))
 	}
 	if len(errs) > 0 {
-		if own {
-			c.stopKeepAlive()
-		}
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
+	d.c = build() // valid: only now is a client (and its keep-alive) made
 	return d, nil
 }
 

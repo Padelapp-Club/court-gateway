@@ -163,12 +163,19 @@ func newClient(apiURL, wsURL string, hc *http.Client, store driver.SessionStore,
 	c := &client{apiURL: apiURL, wsURL: wsURL, http: &jc, store: store, log: log, now: now}
 	c.mu.Lock()
 	c.sess = c.loadLocked()
+	c.mu.Unlock()
+	return c
+}
+
+// keepSaved starts the keep-alive of a saved session the client took up.
+// It is called once the config the client was built from is known valid.
+func (c *client) keepSaved() {
+	c.mu.Lock()
 	saved := c.sess != nil
 	c.mu.Unlock()
 	if saved {
 		c.startKeepAlive(false)
 	}
-	return c
 }
 
 // loadLocked reads the store's session (nil when there is none, or it does

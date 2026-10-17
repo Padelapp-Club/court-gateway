@@ -60,25 +60,22 @@ const (
 // the installation-level keys and takes up the saved session, if any.
 func NewAccount(cfg driver.Config) (driver.Account, error) {
 	var errs []string
-	c, service, _ := login(cfg, 30*time.Second, func(err error) {
+	build, service, _ := login(cfg, 30*time.Second, func(err error) {
 		if err != nil {
 			errs = append(errs, err.Error())
 		}
 	})
 	if len(errs) > 0 {
-		c.stopKeepAlive()
 		return nil, errors.New(strings.Join(errs, "\n"))
 	}
-	return &Account{c: c, service: service}, nil
+	return &Account{c: build(), service: service}, nil // valid: only now is a client made
 }
 
 // EndSession implements driver.SessionEnder: it stops the keep-alive of the
 // session (keepalive.go) — the session itself stays, saved: Lunda has no
-// logout the admin calls, and the service goes on with it.
-func (a *Account) EndSession(context.Context) error {
-	a.c.stopKeepAlive()
-	return nil
-}
+// logout the admin calls, and the service goes on with it. It waits for
+// the keep-alive to end no longer than ctx allows.
+func (a *Account) EndSession(ctx context.Context) error { return a.c.stopKeepAliveCtx(ctx) }
 
 // CheckLogin implements driver.Account: the session works.
 func (a *Account) CheckLogin(ctx context.Context) error { return profileCurrent(ctx, a.c) }

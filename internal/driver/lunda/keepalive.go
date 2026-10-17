@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
@@ -119,15 +120,25 @@ func (c *client) startKeepAlive(relogin bool) {
 }
 
 // stopKeepAlive stops the keep-alive for good and waits for it to end.
-func (c *client) stopKeepAlive() {
+func (c *client) stopKeepAlive() { _ = c.stopKeepAliveCtx(context.Background()) }
+
+// stopKeepAliveCtx stops the keep-alive for good and waits for it to end,
+// no longer than ctx allows (its error then).
+func (c *client) stopKeepAliveCtx(ctx context.Context) error {
 	k := &c.ka
 	k.mu.Lock()
 	k.stopped = true
 	cancel, done := k.cancel, k.done
 	k.mu.Unlock()
-	if cancel != nil {
-		cancel()
-		<-done
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -249,6 +260,10 @@ func dialWS(ctx context.Context, rawURL, ticket string) (*wsConn, error) {
 	if err != nil {
 		return nil, errors.New("the WebSocket host cannot be reached")
 	}
+	// until the upgrade is done, the end of ctx (a stop) closes the
+	// connection at once: no waiting out wsHandshake on a stalled peer
+	unwatch := context.AfterFunc(hctx, func() { conn.Close() })
+	defer unwatch()
 	if u.Scheme == "wss" {
 		tc := tls.Client(conn, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
 		if err := tc.HandshakeContext(hctx); err != nil {
@@ -290,12 +305,33 @@ func dialWS(ctx context.Context, rawURL, ticket string) (*wsConn, error) {
 		conn.Close()
 		return nil, errors.New("the WebSocket answer is not an upgrade to this key")
 	}
+	if !unwatch() { // ctx ended during the upgrade: the connection is closed
+		return nil, errors.New("the WebSocket opening was stopped")
+	}
 	_ = conn.SetDeadline(time.Time{})
 	return &wsConn{conn: conn, r: br}, nil
 }
 
+// errProtocol is a frame RFC 6455 forbids: it is answered with Close 1002
+// (protocol error) and the connection is dropped.
+var errProtocol = errors.New("the WebSocket sent a frame the protocol forbids")
+
+// closeCodeOK: a Close status a peer may send (RFC 6455 §7.4): the defined
+// 1000–1003 and 1007–1011, those registered since (1012–1014), and the
+// ones for libraries and applications (3000–4999). 1004–1006 and 1015
+// are reserved, never on the wire.
+func closeCodeOK(code uint16) bool {
+	switch {
+	case code >= 1000 && code <= 1003, code >= 1007 && code <= 1014, code >= 3000 && code <= 4999:
+		return true
+	}
+	return false
+}
+
 // run reads frames until the connection ends or ctx is done (then it says
-// goodbye with a close frame).
+// goodbye with a close frame). A ping is answered with a pong; a valid
+// close is answered with its status; anything RFC 6455 forbids with Close
+// 1002, and the connection is dropped.
 func (w *wsConn) run(ctx context.Context) error {
 	ended := make(chan struct{})
 	defer close(ended)
@@ -308,80 +344,103 @@ func (w *wsConn) run(ctx context.Context) error {
 		}
 	}()
 	defer w.conn.Close()
+	inMessage := false // a fragmented data message is being read
 	for {
-		op, payload, err := w.readFrame()
+		fin, op, payload, err := w.readFrame()
+		if errors.Is(err, errProtocol) {
+			_ = w.write(0x8, []byte{0x03, 0xea}) // 1002: protocol error
+			return err
+		}
 		if err != nil {
 			return err
 		}
 		switch op {
-		case 0x8: // close: echo its code, then end
-			if len(payload) > 2 {
-				payload = payload[:2]
+		case 0x8: // close: a valid status is echoed, none answered with none
+			var reply []byte
+			if len(payload) >= 2 {
+				code := binary.BigEndian.Uint16(payload)
+				if !closeCodeOK(code) || !utf8.Valid(payload[2:]) {
+					_ = w.write(0x8, []byte{0x03, 0xea})
+					return errProtocol
+				}
+				reply = payload[:2]
+			} else if len(payload) == 1 {
+				_ = w.write(0x8, []byte{0x03, 0xea})
+				return errProtocol
 			}
-			_ = w.write(0x8, payload)
+			_ = w.write(0x8, reply)
 			return errors.New("the WebSocket was closed by Lunda")
 		case 0x9: // ping
 			if err := w.write(0xA, payload); err != nil {
 				return errors.New("the WebSocket pong could not be sent")
 			}
-		case 0x0, 0x1, 0x2, 0xA: // data and pongs: dropped
-		default:
-			_ = w.write(0x8, []byte{0x03, 0xea}) // 1002: protocol error
-			return errors.New("the WebSocket sent an unknown frame")
+		case 0xA: // pong: dropped
+		case 0x1, 0x2: // data, dropped: a new message only after the last one ended
+			if inMessage {
+				_ = w.write(0x8, []byte{0x03, 0xea})
+				return errProtocol
+			}
+			inMessage = !fin
+		case 0x0: // continuation of a message begun before
+			if !inMessage {
+				_ = w.write(0x8, []byte{0x03, 0xea})
+				return errProtocol
+			}
+			inMessage = !fin
 		}
 	}
 }
 
 // readFrame reads one frame; data frames are discarded unread, control
-// frames returned with their payload. The error never holds a frame.
-func (w *wsConn) readFrame() (op byte, payload []byte, err error) {
+// frames returned with their payload. A frame RFC 6455 forbids is
+// errProtocol: reserved bits set, a reserved opcode, a masked frame (a
+// server's never are), a fragmented control frame or one longer than
+// 125. The error never holds a frame.
+func (w *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
+	ended := errors.New("the WebSocket connection ended")
 	var h [2]byte
 	if _, err := io.ReadFull(w.r, h[:]); err != nil {
-		return 0, nil, errors.New("the WebSocket connection ended")
+		return false, 0, nil, ended
 	}
-	op = h[0] & 0x0f
-	masked := h[1]&0x80 != 0
+	fin, op = h[0]&0x80 != 0, h[0]&0x0f
+	control := op&0x8 != 0
 	n := uint64(h[1] & 0x7f)
+	switch {
+	case h[0]&0x70 != 0, // RSV1–3: no extension was agreed
+		op > 0x2 && op < 0x8, op > 0xA, // reserved opcodes
+		h[1]&0x80 != 0,     // masked: a server's frames never are
+		control && !fin,    // control frames are never fragmented
+		control && n > 125: // nor longer than 125
+		return false, 0, nil, errProtocol
+	}
 	switch n {
 	case 126:
 		var b [2]byte
 		if _, err := io.ReadFull(w.r, b[:]); err != nil {
-			return 0, nil, errors.New("the WebSocket connection ended")
+			return false, 0, nil, ended
 		}
 		n = uint64(binary.BigEndian.Uint16(b[:]))
 	case 127:
 		var b [8]byte
 		if _, err := io.ReadFull(w.r, b[:]); err != nil {
-			return 0, nil, errors.New("the WebSocket connection ended")
+			return false, 0, nil, ended
 		}
 		n = binary.BigEndian.Uint64(b[:])
 	}
-	control := op&0x8 != 0
-	if n > wsMaxFrame || control && n > 125 {
-		return 0, nil, errors.New("the WebSocket sent a frame too long")
-	}
-	var mask [4]byte
-	if masked {
-		if _, err := io.ReadFull(w.r, mask[:]); err != nil {
-			return 0, nil, errors.New("the WebSocket connection ended")
-		}
+	if n > wsMaxFrame {
+		return false, 0, nil, errors.New("the WebSocket sent a frame too long")
 	}
 	if !control {
 		if _, err := io.CopyN(io.Discard, w.r, int64(n)); err != nil {
-			return 0, nil, errors.New("the WebSocket connection ended")
+			return false, 0, nil, ended
 		}
-		return op, nil, nil
+		return fin, op, nil, nil
 	}
 	payload = make([]byte, n)
 	if _, err := io.ReadFull(w.r, payload); err != nil {
-		return 0, nil, errors.New("the WebSocket connection ended")
+		return false, 0, nil, ended
 	}
-	if masked {
-		for i := range payload {
-			payload[i] ^= mask[i%4]
-		}
-	}
-	return op, payload, nil
+	return fin, op, payload, nil
 }
 
 // write sends one final frame, masked as a client's must be.

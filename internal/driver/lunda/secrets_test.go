@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda/lundastub"
 )
 
 // No secret of a login or a session — the QR payload, the code, the
@@ -42,7 +43,13 @@ func TestSecretsNeverLoggedNorInErrors(t *testing.T) {
 	b := f.account(t)
 	_, err = b.StartLogin(ctx, "code", stubPhone)
 	keep(err)
-	push := f.stub.Calls()[len(f.stub.Calls())-1]
+	// the send-push itself, by its operation: the keep-alive may call in between
+	var push lundastub.Call
+	for _, c := range f.stub.Calls() {
+		if c.Path == "/profile/send-push" {
+			push = c
+		}
+	}
 	_, err = b.ConfirmLogin(ctx, "135790")
 	keep(err)
 	st, err := b.ConfirmLogin(ctx, f.stub.Code)
