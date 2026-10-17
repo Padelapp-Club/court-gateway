@@ -16,9 +16,11 @@
 // checked against it. Nothing about the club's clients is read but their
 // ids, and nothing of them leaves the driver.
 //
-// The gateway presents itself as the admin's browser does (userAgent) and
-// keeps the admin's WebSocket open while it has a session (keepalive.go):
-// Lunda binds a session to both.
+// The gateway presents itself as the admin's browser does (userAgent: Lunda
+// binds a session's token to it) and, while it has a session, registers a
+// WebSocket ticket and keeps the WebSocket open as the admin does
+// (keepalive.go: without a ticket Lunda refused sessions ~20 s after the
+// login; which of the two keeps one is not separated).
 package lunda
 
 import (

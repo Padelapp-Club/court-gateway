@@ -11,9 +11,9 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/testkit"
 )
 
-// Lunda refuses a session that keeps no CLUB_BOOKING ticket ~20 s after
-// its login (seen live 2026-10-17: 403 "missing security details"); the
-// stub does too, after SecurityWindow. The gateway keeps the session as
+// Live (2026-10-17), sessions that registered no CLUB_BOOKING ticket were
+// refused ~20 s after the login (403 "missing security details"); the
+// stub refuses one after SecurityWindow. The gateway keeps the session as
 // the admin does — after a login, and when it starts with a saved one —
 // so it is still served past that window, and the WebSocket answers the
 // pings.

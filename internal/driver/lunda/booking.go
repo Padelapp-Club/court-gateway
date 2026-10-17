@@ -64,9 +64,9 @@ func parseID(id string) (string, bool) {
 }
 
 // lundaBooking is the subset of a booking the driver reads (booking-load,
-// booking-create). Nothing about the customer but the id is decoded.
-// [UNVERIFIED] customerUid, notes and slots as booking-load answers them
-// (observed: id, bookingType, placeholder, price, status, payments).
+// booking-create). Nothing about the customer but the id is decoded. Seen
+// live (Kosmos, 2026-10-17): a gateway booking read back with its status,
+// payments, notes and service client, and its cancel read its slots.
 type lundaBooking struct {
 	ID          string `json:"id"`
 	Status      string `json:"status"`
@@ -165,8 +165,8 @@ func (d *Driver) span(b *lundaBooking) (court string, start, end time.Time, err 
 }
 
 // load reads a booking; found=false when Lunda answers 404. [UNVERIFIED]
-// the query parameter (bookingId) and what Lunda answers for an unknown
-// booking: anything but 404 is not taken for "gone".
+// what Lunda answers for an unknown booking: anything but 404 is not taken
+// for "gone".
 func (d *Driver) load(ctx context.Context, uid string) (b lundaBooking, found bool, err error) {
 	// bookingType is required: without it Lunda answers 400 (seen live)
 	status, res, err := d.c.call(ctx, opBookingLoad, url.Values{"bookingId": {uid}, "bookingType": {"COURT"}}, nil)
@@ -224,31 +224,27 @@ var (
 	signedRe  = regexp.MustCompile(`^-?[0-9]{1,9}(\.[0-9]{1,2})?$`)
 )
 
-// Create implements driver.Driver, as alex decided on 2026-10-17: an
-// ordinary court booking on the club's service client
-// (booking-create, placeholder false), its price adjusted by minus the
-// price Lunda computed for the booked court (update-courts-price-adjustment),
-// so it is PAID without any payment, and its notes starting with the
-// partner's marker (booking-notes-update). Read back, it must be PAID, list
-// no payment, have courts[] prices (the discount entry included) that sum
-// to 0, and carry the marker and the service client; if any step after
-// the create fails, the booking is cancelled and the partner gets an
-// error — never a half-made booking (an unpaid debt of the service client
-// in the club's books); a booking that has started meanwhile is not
-// cancelled (rollback). A create whose outcome is unknown — no answer, a
-// 5xx, an answer that does not read or has no id — cancels nothing: the
-// club books its own tournaments on the same service client, so a booking
-// found there without the marker may be the club's (unknownOutcome).
-// Without a service client nothing is sent.
-//
-// Every booking of the gateway, a game or a tournament block, is of goal
-// GENERAL ("other" in Lunda's own labels, club/global-form-config): a
-// GAME or TOURNAMENT may surface in Lunda's app to players (alex,
-// 2026-10-17: «все наши записи надо создавать как Other … чтобы не дай бог
-// что-то не ушло в приложку лунды пользователям»).
-// bookingGoal is the goal of every booking the gateway makes in Lunda.
+// bookingGoal is the goal of every booking the gateway makes in Lunda, a
+// game or a tournament block alike: GENERAL ("other" in Lunda's own
+// labels, club/global-form-config), since a GAME or TOURNAMENT may surface
+// in Lunda's app to players (alex, 2026-10-17: «все наши записи надо
+// создавать как Other … чтобы не дай бог что-то не ушло в приложку лунды
+// пользователям»).
 const bookingGoal = "GENERAL"
 
+// Create implements driver.Driver, as alex decided on 2026-10-17: an
+// ordinary court booking of goal bookingGoal on the club's service client
+// (booking-create, placeholder false), adjusted by minus the booked court's
+// price (update-courts-price-adjustment) so it is PAID without any payment,
+// its notes starting with the partner's marker (booking-notes-update). Read
+// back, it must be PAID, list no payment, have courts[] prices (the
+// discount entry included) that sum to 0, and carry the marker and the
+// service client. If a step after the create fails, the booking is
+// cancelled unless it has started (rollback) and the partner gets an
+// error: never a half-made booking, an unpaid debt of the service client.
+// A create of unknown outcome (no answer, a 5xx, no readable id) cancels
+// nothing: the club books its own tournaments on the same service client
+// (unknownOutcome). Without a service client nothing is sent.
 func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
 	c, ok := d.byCourt[req.Court]
 	if !ok {
@@ -295,7 +291,6 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 			return driver.Booking{}, d.rollback(ctx, uid, req, err)
 		}
 	}
-	// [UNVERIFIED] the parameter's name: notes
 	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "bookingType": "COURT", "notes": buildNotes(req.Note, req.Partner)}); err != nil {
 		return driver.Booking{}, d.rollback(ctx, uid, req, err)
 	}

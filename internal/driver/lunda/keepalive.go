@@ -29,19 +29,15 @@ import (
 // registers a CLUB_BOOKING ticket (club/websocket/ticket/register) and
 // listens on wss://app.lundapadel.ru/api-ws/websocket-listen?ticket=…,
 // reconnecting every 3 s up to 10 times with a new ticket each time
-// (react-use-websocket, reconnectInterval 3e3, reconnectAttempts 10, in its
-// bundle). Seen live 2026-10-17: a session that registered no ticket was
-// refused ~20 s after the login (403 "missing security details"); one that
-// did lived. So the gateway does the same for as long as it has a session:
-// it is a keep-alive. Its frames are read and dropped (the second wave
-// will use them); neither a ticket nor a frame is ever logged. It never
-// holds up a call, and its failure fails none: it is logged at WARN once
-// per outage.
-//
-// [UNVERIFIED] whether the ticket alone or the open WebSocket keeps the
-// session (a run with the ticket and no WebSocket lived 4 minutes); both
-// are done, as the admin does. Through a proxy (Config.Proxy) the
-// WebSocket is dialled directly: no CONNECT tunnel.
+// (react-use-websocket, in its bundle). Seen live 2026-10-17: sessions
+// that registered no ticket were refused ~20 s after the login (403
+// "missing security details"); one with a ticket and the WebSocket open
+// lived 5 minutes, one with a ticket and no WebSocket 4+ minutes. Which of
+// the two is necessary is not separated, so the gateway does both, as the
+// admin does, for as long as it has a session: a keep-alive. Its frames
+// are dropped (the second wave will use them); neither a ticket nor a
+// frame is logged; its failure fails no call (WARN once per outage).
+// Through a proxy (Config.Proxy) the WebSocket is dialled directly.
 
 const (
 	// wsPath is the admin's WebSocket on its host.
