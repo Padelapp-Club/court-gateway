@@ -178,11 +178,18 @@ func (r *roomGrid) busySpans(day string, loc *time.Location, step int, mine []sp
 	return out, nil
 }
 
+// covered reports whether mine cover all of h: a half-hour only partly
+// covered (a rental moved off the grid by the club) may hold someone else
+// in the rest, so it stays busy as the club's.
 func covered(h half, mine []span) bool {
-	for _, m := range mine {
-		if m.Start.Before(h.End) && m.End.After(h.Start) {
-			return true
+	at := h.Start
+	for progress := true; progress && at.Before(h.End); {
+		progress = false
+		for _, m := range mine {
+			if !m.Start.After(at) && m.End.After(at) {
+				at, progress = m.End, true
+			}
 		}
 	}
-	return false
+	return !at.Before(h.End)
 }

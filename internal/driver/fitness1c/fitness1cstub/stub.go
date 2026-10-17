@@ -155,6 +155,27 @@ func (s *Stub) SeedRental(roomID string, start, end time.Time, temporary bool, p
 	return r.id
 }
 
+// SeedClientRental plants a rental of the client with phone on service, as
+// someone other than the gateway would make it (the club moving or adding
+// one at the reception).
+func (s *Stub) SeedClientRental(phone, roomID, serviceID string, start, end time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := &rentalRec{id: NewID(), room: strings.ToLower(roomID), service: strings.ToLower(serviceID), client: s.clients[phone].id, start: start, end: end}
+	s.rentals[r.id] = r
+	return r.id
+}
+
+// MoveRental moves a rental to another room, service and time, as the
+// club's admin would.
+func (s *Stub) MoveRental(id, roomID, serviceID string, start, end time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.rentals[id]; r != nil {
+		r.room, r.service, r.start, r.end = strings.ToLower(roomID), strings.ToLower(serviceID), start, end
+	}
+}
+
 // SeedBlock plants occupancy that is no rental (a class, a closed hour):
 // missing from the grid, in no client's appointments.
 func (s *Stub) SeedBlock(roomID string, start, end time.Time) {

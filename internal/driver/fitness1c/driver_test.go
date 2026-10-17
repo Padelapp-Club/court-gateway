@@ -466,3 +466,61 @@ func TestATimeoutDoesNotCarryThePhone(t *testing.T) {
 		}
 	}
 }
+
+// The club moves the gateway's rental off the grid (10:15–11:15) next to
+// a class at 10:00–10:15: the 10:00 half-hour is only partly the gateway's,
+// so it stays busy (clean-room round 2).
+func TestAPartlyOwnHalfHourStaysBusy(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	d := day()
+	f.stub.SeedClientRental(clientPhone, room1, padelSvc, at(d, 10, 15), at(d, 11, 15))
+	f.stub.SeedBlock(room1, at(d, 10, 0), at(d, 10, 15))
+	if o := occupancy(t, f, at(d, 10, 0), at(d, 10, 15), "court-1"); len(o.Intervals) == 0 {
+		t.Fatalf("10:00–10:15, taken by a class, reads free: %+v", o)
+	}
+}
+
+// The club moves the gateway's rental to a room no court of this club is
+// on, under another service: it is not gone (clean-room round 2).
+func TestAMovedOwnRentalIsNotGone(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	d := day()
+	b, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.stub.MoveRental(strings.TrimPrefix(b.ID, "f-"), roomOther, gridSvc, at(d, 12, 0), at(d, 13, 0))
+	if _, err := f.drv.Get(ctx, b.ID); !errors.Is(err, driver.ErrCourtNotConfigured) {
+		t.Fatalf("get of a moved rental: %v, want ErrCourtNotConfigured", err)
+	}
+}
+
+// A rental of the gateway that has ended is no longer listed as planned:
+// cancelling it is BOOKING_STARTED, not NOT_OWNED (clean-room round 2).
+func TestCancelOfAnEndedRentalIsStarted(t *testing.T) {
+	clock := newClock()
+	f := newFixture(t, fixtureOpts{now: clock.Now})
+	d := day()
+	b, err := create(f, "court-1", at(d, 10, 0), at(d, 11, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(at(d, 12, 0).Sub(clock.Now()))
+	if err := f.drv.Cancel(ctx, b.ID, partner); !errors.Is(err, driver.ErrStarted) {
+		t.Fatalf("cancel of an ended rental: %v, want ErrStarted", err)
+	}
+	if len(f.stub.Rentals()) != 1 {
+		t.Fatal("the ended rental was cancelled")
+	}
+}
+
+// A booking service with a price would leave the technical client a debt
+// at the club for every partner booking (clean-room round 2).
+func TestCheckConfigRefusesAPricedBookingService(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	f.stub.Fail("GET /rental_services/", fitness1cstub.Failure{Body: `{"result":true,"data":[{"id":"` + gridSvc + `","seance_length":30,"price":"875","payment_required":true},{"id":"` + padelSvc + `","seance_length":30,"price":"875","payment_required":false}]}`})
+	var me *driver.MisconfigError
+	if err := f.drv.CheckConfig(ctx); !errors.As(err, &me) || !strings.Contains(err.Error(), "цена не 0") {
+		t.Fatalf("a priced booking service: %v", err)
+	}
+}

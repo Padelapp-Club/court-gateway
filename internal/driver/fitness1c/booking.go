@@ -182,13 +182,16 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		d.log.Info("rental cancelled")
 		return nil
 	}
-	// not among ours: gone already, or not ours
-	r, _, err := d.readRental(ctx, rid, loc)
+	// not among the planned and running: gone already, ended, or not ours
+	r, s, err := d.readRental(ctx, rid, loc)
 	if err != nil {
 		return err
 	}
 	if *r.Canceled {
 		return nil
+	}
+	if now, known := d.clock(); known && !s.Start.After(now) && r.Service != nil && d.ours(r.Service.ID) {
+		return driver.ErrStarted // an ended rental is not listed; started is the answer either way
 	}
 	if !complete {
 		return driver.Upstream(driver.UpstreamInvalid, "the technical client's appointments were not all read: ownership unknown")

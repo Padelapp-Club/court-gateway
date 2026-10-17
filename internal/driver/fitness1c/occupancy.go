@@ -368,10 +368,9 @@ func (d *Driver) Get(ctx context.Context, id string) (driver.Booking, error) {
 	}
 	courtID, ok := d.byRoom[strings.ToLower(r.Room.ID)]
 	if !ok {
-		if r.Service != nil && d.ours(r.Service.ID) {
-			return driver.Booking{}, driver.ErrCourtNotConfigured
-		}
-		return driver.Booking{}, driver.ErrNotFound
+		// the club may have moved the gateway's rental to another room and
+		// service: still not gone
+		return driver.Booking{}, driver.ErrCourtNotConfigured
 	}
 	status := driver.StatusActive
 	if *r.Canceled {

@@ -68,6 +68,8 @@ func (d *Driver) CheckConfig(ctx context.Context) error {
 			problems = append(problems, fmt.Sprintf("services.%s.service: услуги %s нет среди услуг аренды клуба в 1С", name, svc))
 		case s.PaymentRequired == nil || *s.PaymentRequired:
 			problems = append(problems, fmt.Sprintf("services.%s.service: услуга «%s» требует основания оплаты — 1С сделала бы 15-минутный резерв, а не бронь; нужна услуга аренды с ценой 0 без основания", name, s.Title))
+		case !free(s.Price):
+			problems = append(problems, fmt.Sprintf("services.%s.service: у услуги «%s» цена не 0 — в 1С по брони партнёра остался бы долг; нужна услуга аренды с ценой 0", name, s.Title))
 		case s.step() != seance:
 			problems = append(problems, fmt.Sprintf("services.%s.service: шаг услуги «%s» — %d мин, поддержан только %d", name, s.Title, s.step(), seance))
 		}
@@ -115,4 +117,10 @@ func (d *Driver) Ready(ctx context.Context) error {
 		return err
 	}
 	return alert
+}
+
+// free reports whether a service's price is zero.
+func free(price any) bool {
+	k, ok := kopecks(price)
+	return ok && k == 0
 }
