@@ -45,10 +45,16 @@ func ClubCRMKeys(crmType string) []string { return clubCRMKeys[crmType] }
 
 // ResourceKeys returns the keys of every driver that hold the CRM
 // resources a club takes — crm keys of a whole studio, court params of one
-// room: what the hub keeps for one club, not knowing the CRM type.
+// room: what the hub keeps for one club, not knowing the CRM type. Each
+// key is its own namespace (the hub keeps key and value), so ids of two
+// CRMs never collide.
 func ResourceKeys() (studio, room []string) {
-	return []string{viva.StudioKey}, []string{viva.RoomKey} // demo's studio key is the same
+	return []string{viva.StudioKey}, // demo's studio key is the same; a Lunda installation is one club
+		[]string{viva.RoomKey, lundaCourtKey}
 }
+
+// lundaCourtKey is the Lunda driver's court key (its courtUid).
+const lundaCourtKey = "lunda_court"
 
 // AllClubCRMKeys returns the club-level crm keys of every driver: what the
 // hub accepts in a club, not knowing the installation's CRM type.

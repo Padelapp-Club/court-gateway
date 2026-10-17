@@ -941,7 +941,7 @@ func clubResources(c core.ClubSpec) (studios, rooms []string) {
 	add := func(out *[]string, params map[string]any, keys []string) {
 		for _, k := range keys {
 			if v, _ := params[k].(string); strings.TrimSpace(v) != "" {
-				*out = append(*out, strings.ToLower(strings.TrimSpace(v)))
+				*out = append(*out, k+":"+strings.ToLower(strings.TrimSpace(v)))
 			}
 		}
 	}
