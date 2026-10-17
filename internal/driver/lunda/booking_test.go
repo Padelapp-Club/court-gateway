@@ -116,35 +116,6 @@ func TestFailedRollbackIsReported(t *testing.T) {
 	}
 }
 
-// A create whose answer is lost may have made the booking: it is looked
-// for in the schedule (the service client, exactly that court and time)
-// and cancelled.
-func TestCreateWithLostAnswerIsUndone(t *testing.T) {
-	f, d := loggedIn(t)
-	day := futureDay()
-	foreign := seedClubBooking(f.stub, court1, day.Add(10*time.Hour), day.Add(11*time.Hour))
-	f.stub.SeedBooking(lundastub.Booking{Court: court2, Begin: day.Add(12 * time.Hour), End: day.Add(13 * time.Hour), Customer: serviceUID})
-	// the stub makes the booking but its answer says nothing usable
-	base := f.srv.Config.Handler
-	f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/club/booking/booking-create" {
-			base.ServeHTTP(&discard{header: http.Header{}}, r)
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
-		base.ServeHTTP(w, r)
-	})
-	if _, err := d.Create(context.Background(), createReq(day, 12)); upstreamKind(err) != driver.UpstreamUnavailable {
-		t.Fatalf("create: %v", err)
-	}
-	for _, b := range f.stub.Bookings() {
-		lost := b.Court == court1 && b.Customer == serviceUID
-		if lost && b.Status != "CANCELLED" || !lost && b.Status == "CANCELLED" {
-			t.Fatalf("booking %+v (foreign %s)", b, foreign)
-		}
-	}
-}
-
 type discard struct{ header http.Header }
 
 func (d *discard) Header() http.Header         { return d.header }

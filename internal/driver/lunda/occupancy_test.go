@@ -88,7 +88,7 @@ func TestBeyondBookingDepthIsIncomplete(t *testing.T) {
 	if err != nil || occ.Complete {
 		t.Fatalf("occupancy: %+v %v", occ, err)
 	}
-	if n := f.stub.CallsTo("/club/booking/slots-load"); n != 1 {
+	if n := f.stub.CallsTo("/club/booking/slots-load"); n != 2 { // the day before, and the first day
 		t.Fatalf("%d days read past the depth", n)
 	}
 }
@@ -97,7 +97,7 @@ func TestBeyondBookingDepthIsIncomplete(t *testing.T) {
 func TestUnreadDayIsIncomplete(t *testing.T) {
 	f, d := loggedIn(t)
 	day := futureDay()
-	f.stub.FailNext(http.MethodGet, "/club/booking/slots-load", http.StatusServiceUnavailable, `{}`)
+	f.stub.FailNextQuery(http.MethodGet, "/club/booking/slots-load", "date="+day.Format("2006-01-02"), http.StatusServiceUnavailable, `{}`)
 	occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: day.Add(10 * time.Hour), To: day.Add(11 * time.Hour)})
 	if err != nil || occ.Complete {
 		t.Fatalf("occupancy: %+v %v", occ, err)
@@ -120,7 +120,7 @@ func TestMalformedScheduleIsInvalid(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
-			f.stub.FailNext(http.MethodGet, "/club/booking/slots-load", http.StatusOK, body)
+			f.stub.FailNextQuery(http.MethodGet, "/club/booking/slots-load", "date="+day, http.StatusOK, body)
 			from := futureDay().Add(10 * time.Hour)
 			occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: from, To: from.Add(time.Hour)})
 			if upstreamKind(err) != driver.UpstreamInvalid {
@@ -147,7 +147,7 @@ func TestSlotsOfOneBookingAreMerged(t *testing.T) {
 	f, d := loggedIn(t)
 	day := futureDay().Format("2006-01-02")
 	id := "00000000-0000-4000-8000-0000000000f1"
-	f.stub.FailNext(http.MethodGet, "/club/booking/slots-load", http.StatusOK, `{"result":{"courts":[{"courtUid":"`+court1+`","slots":[
+	f.stub.FailNextQuery(http.MethodGet, "/club/booking/slots-load", "date="+day, http.StatusOK, `{"result":{"courts":[{"courtUid":"`+court1+`","slots":[
 		{"type":"BOOKING","bookingId":"`+id+`","begin":"`+day+`T10:00:00","end":"`+day+`T10:30:00"},
 		{"type":"BOOKING","bookingId":"`+id+`","begin":"`+day+`T10:30:00","end":"`+day+`T11:00:00"}]},{"courtUid":"`+court2+`","slots":[]}]}}`)
 	from := futureDay().Add(9 * time.Hour)

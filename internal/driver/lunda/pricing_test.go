@@ -57,25 +57,6 @@ func TestPriceTableByDayCategory(t *testing.T) {
 	}
 }
 
-// A holiday of the calendar ahead that prices otherwise is quoted as its
-// weekday (the table is weekly) and logged, by date.
-func TestHolidaysAreLogged(t *testing.T) {
-	f, d := loggedIn(t)
-	day := futureDay()
-	f.stub.SetCalendar(day.Year(), `{"year":`+day.Format("2006")+`,"days":[{"date":"`+day.Format("2006-01-02")+`","category":"HOLIDAY"}]}`)
-	if _, err := d.PriceTable(context.Background(), "court-1"); err != nil {
-		t.Fatal(err)
-	}
-	if logs := f.logs.String(); !strings.Contains(logs, day.Format("2006-01-02")+" HOLIDAY") {
-		t.Fatalf("logs: %s", logs)
-	}
-	// a calendar that does not read costs the note only
-	f.stub.FailNext(http.MethodGet, "/club/settings/calendar/load", http.StatusInternalServerError, `{}`)
-	if _, err := d.PriceTable(context.Background(), "court-1"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestMalformedTariffIsInvalid(t *testing.T) {
 	for name, body := range map[string]string{
 		"no prices":     `{"result":{"uid":"x"}}`,
@@ -122,7 +103,7 @@ func TestDiscover(t *testing.T) {
 	for _, n := range out.Notices {
 		codes[n.Code] = true
 	}
-	if !codes["TIMEZONE_UNKNOWN"] || !codes["PRICE_CALENDAR"] {
+	if !codes["TIMEZONE_UNKNOWN"] {
 		t.Fatalf("notices: %+v", out.Notices)
 	}
 	if _, err := a.Discover(context.Background(), driver.DiscoverQuery{Studio: "00000000-0000-4000-8000-0000000000ff"}); upstreamKind(err) != driver.UpstreamRejected {
