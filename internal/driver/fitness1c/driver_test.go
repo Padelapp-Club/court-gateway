@@ -331,17 +331,19 @@ func TestConfigErrors(t *testing.T) {
 		t.Fatalf("a valid config: %v", err)
 	}
 	for name, mutate := range map[string]func(*driver.Config){
-		"no key":              func(c *driver.Config) { c.Secrets = nil },
-		"no password":         func(c *driver.Config) { c.Password = "" },
-		"http":                func(c *driver.Config) { c.CRM["base_url"] = "http://1c.example.test" },
-		"phone, no partner":   func(c *driver.Config) { c.CRM["client_phone"] = clientPhone },
-		"bad phone":           func(c *driver.Config) { c.CRM["client_phone"], c.CRM["partner"] = "12", partner },
-		"room not an id":      func(c *driver.Config) { c.Courts[0].Params[fitness1c.RoomKey] = "Корт 1" },
-		"unknown key":         func(c *driver.Config) { c.CRM["break_title"] = "x" },
-		"service not an id":   func(c *driver.Config) { c.Services = map[string]driver.Params{"booking": {"service": "PadelApp"}} },
-		"unknown service":     func(c *driver.Config) { c.Services = map[string]driver.Params{"party": {"service": padelSvc}} },
-		"studio missing":      func(c *driver.Config) { delete(c.CRM, "studio") },
-		"two courts one room": func(c *driver.Config) { c.Courts = append(c.Courts, driver.CourtConfig{ID: "c2", Params: driver.Params{fitness1c.RoomKey: room1}}) },
+		"no key":            func(c *driver.Config) { c.Secrets = nil },
+		"no password":       func(c *driver.Config) { c.Password = "" },
+		"http":              func(c *driver.Config) { c.CRM["base_url"] = "http://1c.example.test" },
+		"phone, no partner": func(c *driver.Config) { c.CRM["client_phone"] = clientPhone },
+		"bad phone":         func(c *driver.Config) { c.CRM["client_phone"], c.CRM["partner"] = "12", partner },
+		"room not an id":    func(c *driver.Config) { c.Courts[0].Params[fitness1c.RoomKey] = "Корт 1" },
+		"unknown key":       func(c *driver.Config) { c.CRM["break_title"] = "x" },
+		"service not an id": func(c *driver.Config) { c.Services = map[string]driver.Params{"booking": {"service": "PadelApp"}} },
+		"unknown service":   func(c *driver.Config) { c.Services = map[string]driver.Params{"party": {"service": padelSvc}} },
+		"studio missing":    func(c *driver.Config) { delete(c.CRM, "studio") },
+		"two courts one room": func(c *driver.Config) {
+			c.Courts = append(c.Courts, driver.CourtConfig{ID: "c2", Params: driver.Params{fitness1c.RoomKey: room1}})
+		},
 	} {
 		c := base()
 		mutate(&c)
@@ -404,7 +406,6 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("notices %v", codes)
 	}
 }
-
 
 // The club cancels between the gateway's read and its DELETE: 1037
 // "already cancelled" is the cancel done.
