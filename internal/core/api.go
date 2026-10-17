@@ -26,6 +26,7 @@ type hoursDTO struct {
 
 type capabilitiesDTO struct {
 	Payments bool `json:"payments"`
+	Prices   bool `json:"prices"`
 }
 
 type clubDTO struct {
@@ -122,7 +123,7 @@ func (s *Server) handleClub(w http.ResponseWriter, _ *http.Request) {
 		Timezone:     s.cfg.TimezoneName,
 		SlotMinutes:  s.cfg.SlotMinutes,
 		Hours:        hours,
-		Capabilities: capabilitiesDTO{Payments: s.caps.Payments},
+		Capabilities: capabilitiesDTO{Payments: s.caps.Payments, Prices: !s.caps.NoPrices},
 	})
 }
 
@@ -223,9 +224,17 @@ func (s *Server) priceTable(ctx context.Context, court string) (driver.PriceTabl
 	return s.drv.PriceTable(ctx, court)
 }
 
+// noPrices answers NOT_SUPPORTED for a CRM that gives no prices.
+func (s *Server) noPrices(w http.ResponseWriter, r *http.Request) bool {
+	if s.caps.NoPrices {
+		WriteError(w, r, http.StatusNotImplemented, "NOT_SUPPORTED", "the club's CRM gives no prices")
+	}
+	return s.caps.NoPrices
+}
+
 func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 	court, ok := s.courtParam(w, r, true)
-	if !ok {
+	if !ok || s.noPrices(w, r) {
 		return
 	}
 	date, err := time.Parse("2006-01-02", r.URL.Query().Get("date"))
@@ -254,7 +263,7 @@ func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 	court, ok := s.courtParam(w, r, true)
-	if !ok {
+	if !ok || s.noPrices(w, r) {
 		return
 	}
 	q := r.URL.Query()
