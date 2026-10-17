@@ -87,14 +87,19 @@ func TestUnknownOutcomeNeverCancelsAForeignBooking(t *testing.T) {
 // outcome too — the booking may have been made: it is named, not
 // cancelled, and not left unmentioned.
 func TestMalformedCreateAnswerIsUnknownOutcome(t *testing.T) {
-	for name, body := range map[string]string{"truncated": `{"result":`, "no id": `{"result":{"status":"NOT_PAID"}}`} {
+	type answer struct {
+		status int
+		body   string
+	}
+	for name, a := range map[string]answer{"truncated": {200, `{"result":`}, "no id": {200, `{"result":{"status":"NOT_PAID"}}`},
+		"another 2xx": {http.StatusAccepted, `{}`}} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
 			stub := f.srv.Config.Handler
 			intercept(f, "/club/booking/booking-create", func(w http.ResponseWriter, r *http.Request) {
 				stub.ServeHTTP(httptest.NewRecorder(), r) // Lunda makes it
-				w.WriteHeader(http.StatusOK)
-				fmt.Fprint(w, body)
+				w.WriteHeader(a.status)
+				fmt.Fprint(w, a.body)
 			})
 			_, err := d.Create(context.Background(), createReq(futureDay(), 10))
 			bs := f.stub.Bookings()

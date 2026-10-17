@@ -233,6 +233,8 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	case status == http.StatusOK || status == http.StatusCreated:
 	case status == http.StatusConflict:
 		return driver.Booking{}, fmt.Errorf("POST /%s: %w", opCreate, driver.ErrSlotUnavailable)
+	case status >= 200 && status < 300: // accepted, but not as observed: it may exist
+		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /%s answered HTTP %d", opCreate, status)))
 	default:
 		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /%s answered HTTP %d", opCreate, status))
 	}
