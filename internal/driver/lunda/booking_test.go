@@ -158,7 +158,7 @@ func TestNoServiceClientReadsButDoesNotBook(t *testing.T) {
 	ctx := context.Background()
 	_, err := f.drv.Create(ctx, createReq(futureDay(), 10))
 	var ca *driver.ConfigAlert
-	if !errors.Is(err, driver.ErrNotSupported) || !errors.As(err, &ca) || ca.Code != "SERVICE_CLIENT_MISSING" {
+	if !errors.Is(err, driver.ErrBookingNotConfigured) || errors.Is(err, driver.ErrNotSupported) || !errors.As(err, &ca) || ca.Code != "SERVICE_CLIENT_MISSING" {
 		t.Fatalf("create: %v", err)
 	}
 	if f.stub.CallsTo("/club/booking/booking-create") != 0 {

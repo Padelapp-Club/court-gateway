@@ -11,6 +11,7 @@ import (
 	_ "time/tzdata" // the binary must know time zones on hosts without a zoneinfo database
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
+	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 	"github.com/Padelapp-Club/court-gateway/internal/update"
 )
@@ -41,6 +42,8 @@ func build() string {
 	}
 	return tunnel.BuildRelease
 }
+
+func init() { driver.Version = version }
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))

@@ -31,7 +31,15 @@ var (
 	ErrCourtNotConfigured = errors.New("booking is on a court that is not configured")
 	// ErrClockUnknown: the time now is not known (Clock): no decision on it.
 	ErrClockUnknown = errors.New("the hub's time is not known yet")
+	// ErrBookingNotConfigured: the CRM takes bookings, but the club has
+	// not finished setting them up for the gateway (e.g. no service client
+	// chosen); unlike ErrNotSupported it passes once the club does.
+	ErrBookingNotConfigured = errors.New("booking through the gateway is not set up in the club's CRM yet")
 )
+
+// Version is the binary's version (main sets it), for drivers that name
+// the gateway to their CRM (a User-Agent).
+var Version = "dev"
 
 // Clock is the time of every booking decision: the hub's, as last signed
 // (tunnel.Verifier.Now), so a club computer whose clock is off decides as

@@ -135,7 +135,7 @@ func newClient(apiURL string, hc *http.Client, store driver.SessionStore, log *s
 		now = time.Now
 	}
 	c := &client{apiURL: apiURL, http: hc, store: store, log: log, now: now,
-		ua: "PadelApp court-gateway/" + asciiOnly(Version) + " (club gateway)"}
+		ua: "PadelApp court-gateway/" + asciiOnly(driver.Version) + " (club gateway)"}
 	c.mu.Lock()
 	c.sess = c.loadLocked()
 	c.mu.Unlock()

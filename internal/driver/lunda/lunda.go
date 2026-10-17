@@ -48,11 +48,6 @@ const CourtKey, TariffKey = "lunda_court", "lunda_tariff"
 // service client (profileUid): every booking of the gateway is made on it.
 const ServiceClientKey = "service_client"
 
-// Version is the gateway's version as the User-Agent names it to Lunda
-// (the staff member confirming a login sees it); the build may set it
-// with -X.
-var Version = "dev"
-
 // uidRe is what the driver accepts as a Lunda id (a court, a client, a
 // booking, a club): Lunda's are UUIDs as observed, the driver takes any
 // short id of URL-safe characters so "l-"+id stays a gateway booking id.
@@ -215,7 +210,7 @@ func serviceClientAlert() *driver.ConfigAlert {
 // is made. It is a NOT_SUPPORTED to the partner and carries the readiness
 // alert's code.
 func errNoServiceClient() error {
-	return fmt.Errorf("%w (%w)", serviceClientAlert(), driver.ErrNotSupported)
+	return fmt.Errorf("%w (%w)", serviceClientAlert(), driver.ErrBookingNotConfigured)
 }
 
 // CheckConfig implements driver.ConfigChecker: every configured court is a

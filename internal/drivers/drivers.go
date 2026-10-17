@@ -8,6 +8,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/demo"
+	_ "github.com/Padelapp-Club/court-gateway/internal/driver/lunda"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva"
 )
 
@@ -61,12 +62,8 @@ func ResourceKeys() (studio, room []string) {
 		s = append(s, c.StudioKeys...)
 		r = append(r, c.CourtKeys...)
 	}
-	return unique(s), unique(append(r, lundaCourtKey))
+	return unique(s), unique(r)
 }
-
-// lundaCourtKey is the Lunda driver's court key (its courtUid), until its
-// package registers it.
-const lundaCourtKey = "lunda_court"
 
 // AllClubCRMKeys returns the club-level crm keys of every driver: what the
 // hub accepts in a club, not knowing the installation's CRM type.
