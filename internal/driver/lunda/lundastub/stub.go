@@ -651,6 +651,10 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case route{http.MethodPost, "/club/visitor/list"}:
 		s.visitorList(w, p)
 	case route{http.MethodGet, "/club/booking/booking-load"}:
+		if q.Get("bookingType") != "COURT" { // as Lunda: the type is required
+			fail(w, http.StatusBadRequest, "bookingType is required")
+			return
+		}
 		s.bookingLoad(w, q.Get("bookingId"))
 	case route{http.MethodPost, "/club/booking/booking-create"}:
 		s.create(w, p)
@@ -870,7 +874,10 @@ func (s *Stub) visitorList(w http.ResponseWriter, p map[string]any) {
 // bookingJSON is a booking as booking-load answers it (with the
 // customer's data, which the driver must never pass on).
 func (s *Stub) bookingJSON(b *Booking) map[string]any {
-	m := map[string]any{"id": b.ID, "bookingType": "COURT", "placeholder": false, "price": b.Price + b.Adjustment, "status": b.Status,
+	// as Lunda: no top-level price — each court of the booking carries its
+	// own (rubles)
+	m := map[string]any{"id": b.ID, "bookingType": "COURT", "placeholder": false, "status": b.Status,
+		"courts":     []map[string]any{{"courtUid": b.Court, "price": b.Price + b.Adjustment}},
 		"datasource": "CLUB_APP", "goal": b.Goal, "customerUid": b.Customer, "payments": b.Payments, "financialItems": []any{},
 		"cancellationDeadline": s.local(b.Begin.Add(-24 * time.Hour)),
 		"slots":                []map[string]any{{"courtUid": b.Court, "begin": s.local(b.Begin), "end": s.local(b.End), "pinned": false}}}

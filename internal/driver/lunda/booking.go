@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -77,11 +78,37 @@ type lundaBooking struct {
 	} `json:"customer"`
 	Notes    *string         `json:"notes"`
 	Payments json.RawMessage `json:"payments"`
-	Slots    []struct {
+	// Courts carry the price of each court of the booking (rubles): Lunda
+	// answers no top-level price (seen live at Kosmos, 2026-10-17).
+	Courts []struct {
+		CourtUID string          `json:"courtUid"`
+		Price    json.RawMessage `json:"price"`
+	} `json:"courts"`
+	Slots []struct {
 		CourtUID string `json:"courtUid"`
 		Begin    string `json:"begin"`
 		End      string `json:"end"`
 	} `json:"slots"`
+}
+
+// price is the booking's price in rubles: the sum of its courts' prices,
+// or the top-level price if Lunda gives one; ok is false when a price
+// does not read (never taken for 0).
+func (b *lundaBooking) price() (string, bool) {
+	if len(b.Courts) == 0 {
+		p := strings.TrimSpace(string(b.Price))
+		return p, decimalRe.MatchString(p)
+	}
+	sum := new(big.Rat)
+	for _, c := range b.Courts {
+		p := strings.TrimSpace(string(c.Price))
+		r, ok := new(big.Rat).SetString(p)
+		if !decimalRe.MatchString(p) || !ok {
+			return "", false
+		}
+		sum.Add(sum, r)
+	}
+	return strings.TrimRight(strings.TrimRight(sum.FloatString(2), "0"), "."), true
 }
 
 func (b *lundaBooking) customer() string {
@@ -136,7 +163,8 @@ func (d *Driver) span(b *lundaBooking) (court string, start, end time.Time, err 
 // the query parameter (bookingId) and what Lunda answers for an unknown
 // booking: anything but 404 is not taken for "gone".
 func (d *Driver) load(ctx context.Context, uid string) (b lundaBooking, found bool, err error) {
-	status, res, err := d.c.call(ctx, opBookingLoad, url.Values{"bookingId": {uid}}, nil)
+	// bookingType is required: without it Lunda answers 400 (seen live)
+	status, res, err := d.c.call(ctx, opBookingLoad, url.Values{"bookingId": {uid}, "bookingType": {"COURT"}}, nil)
 	if err != nil {
 		return b, false, err
 	}
@@ -244,8 +272,8 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
 	}
 	uid := b.ID
-	price := strings.TrimSpace(string(b.Price))
-	if !decimalRe.MatchString(price) {
+	price, ok := b.price()
+	if !ok {
 		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price"))
 	}
 	if strings.Trim(price, "0.") != "" { // a booking of price 0 needs no adjustment
