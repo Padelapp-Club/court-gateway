@@ -101,7 +101,7 @@ func TestFailedRenewalIsTriedAgain(t *testing.T) {
 	ctx := context.Background()
 	f.stub.RequireRefresh()
 	f.stub.FailNext(http.MethodPost, "/auth/refresh", http.StatusBadGateway, `{}`)
-	if _, err := d.Occupancy(ctx, occQuery(futureDay())); err != nil {
+	if err := a.CheckLogin(ctx); err != nil { // one call
 		t.Fatalf("the call itself must pass: %v", err)
 	}
 	if f.stub.Renewals() != 0 || f.stub.CallsTo("/auth/refresh") != 1 {
@@ -201,7 +201,7 @@ func TestRefusedRenewalLosesTheSession(t *testing.T) {
 	ctx := context.Background()
 	f.stub.RequireRefresh()
 	f.stub.FailNext(http.MethodPost, "/auth/refresh", http.StatusUnauthorized, `{}`)
-	if _, err := d.Occupancy(ctx, occQuery(futureDay())); err != nil {
+	if err := a.CheckLogin(ctx); err != nil { // one call
 		t.Fatalf("the call itself passed: %v", err)
 	}
 	writes := f.writes()

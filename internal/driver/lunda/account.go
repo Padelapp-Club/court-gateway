@@ -484,8 +484,6 @@ func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.
 		out.Notices = append(out.Notices, driver.Notice{Code: "PRICE_LIST_AMBIGUOUS",
 			Message: fmt.Sprintf("в клубе Лунды %d тарифов: впишите нужный каждому корту в %s", len(tariffs), TariffKey)})
 	}
-	out.Notices = append(out.Notices, driver.Notice{Code: "PRICE_CALENDAR",
-		Message: "праздничные и предпраздничные дни календаря Лунды шлюз пока считает по дню недели: цены на них проверьте"})
 	hours, err := a.hours(ctx)
 	if err != nil {
 		return out, err

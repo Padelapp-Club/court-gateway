@@ -76,6 +76,7 @@ type Booking struct {
 
 type failure struct {
 	method, path string
+	query        string // "" matches any
 	status       int
 	body         string
 }
@@ -320,6 +321,14 @@ func (s *Stub) FailNext(method, path string, status int, body string) {
 	s.fails = append(s.fails, failure{method: method, path: path, status: status, body: body})
 }
 
+// FailNextQuery is FailNext for a request whose raw query is query (e.g.
+// "date=2026-10-20").
+func (s *Stub) FailNextQuery(method, path, query string, status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fails = append(s.fails, failure{method: method, path: path, query: query, status: status, body: body})
+}
+
 // Calls returns every request so far.
 func (s *Stub) Calls() []Call {
 	s.mu.Lock()
@@ -398,7 +407,7 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls = append(s.calls, Call{Method: r.Method, Path: path, Query: r.URL.RawQuery, Token: tok, Params: p})
 	for i, f := range s.fails {
-		if f.method == r.Method && f.path == path {
+		if f.method == r.Method && f.path == path && (f.query == "" || f.query == r.URL.RawQuery) {
 			s.fails = append(s.fails[:i], s.fails[i+1:]...)
 			s.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")

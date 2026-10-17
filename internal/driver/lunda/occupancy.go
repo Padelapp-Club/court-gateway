@@ -40,8 +40,9 @@ type daySchedule struct {
 	BeyondBookingDepth bool      `json:"beyondBookingDepth"`
 	AvailableHours     []int     `json:"availableHours"`
 	Courts             *[]struct {
-		CourtUID string       `json:"courtUid"`
-		Slots    []*lundaSlot `json:"slots"`
+		CourtUID string `json:"courtUid"`
+		// nil when absent or null: an unreadable court, never a free one
+		Slots *[]*lundaSlot `json:"slots"`
 	} `json:"courts"`
 }
 
@@ -108,7 +109,8 @@ func syntheticID(parts ...string) string {
 
 // dayIntervals turns one day's schedule into the intervals of the courts
 // in want (courtUid -> court). Anything structurally wrong makes the whole
-// answer invalid — dropping a slot would show a busy court as free. A
+// answer invalid — dropping a slot would show a busy court as free; so is
+// a court whose slots are absent or null (only an empty list is free). A
 // court of want that the day does not list at all (Lunda leaves out a
 // court blocked for the day) is occupied the whole day.
 func (d *Driver) dayIntervals(ds daySchedule, want map[string]string) ([]driver.Interval, error) {
@@ -126,7 +128,10 @@ func (d *Driver) dayIntervals(ds daySchedule, want map[string]string) ([]driver.
 		if !ok {
 			continue
 		}
-		for _, s := range ct.Slots {
+		if ct.Slots == nil {
+			return bad("a court without its list of slots")
+		}
+		for _, s := range *ct.Slots {
 			if s == nil || s.Type == "" {
 				return bad("a slot without a type")
 			}
@@ -162,17 +167,14 @@ func truncate(s string, n int) string {
 	return s
 }
 
-// crossMidnight: a range starting this early in its local day may meet a
-// booking of the day before running past midnight, so that day is read
-// too (a slot is listed under the day it begins on).
-const crossMidnight = 6 * time.Hour
-
 // Occupancy implements driver.Driver: the schedule of every local day the
-// range touches (and the day before, early in the morning). The answer is
-// incomplete from the first day beyond the club's booking depth on (Lunda
-// may not show it all), and from the first day that cannot be read; an
-// answer that does not parse, or a lost session, is an error. A booking
-// cut into several slots of one court is one interval.
+// range touches, and of the day before it: a slot is listed under the day
+// it begins on, so a booking running past midnight, however far into the
+// morning, is only there. Intervals are clipped to the range. The answer
+// is incomplete from the first day beyond the club's booking depth on
+// (Lunda may not show it all), and from the first day that cannot be
+// read; an answer that does not parse, or a lost session, is an error. A
+// booking cut into several slots of one court is one interval.
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
 	want := map[string]string{}
 	for _, cid := range q.Courts {
@@ -182,10 +184,7 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		want[c.uid] = cid
 	}
-	first := localDay(q.From, d.loc)
-	if q.From.Sub(first) < crossMidnight {
-		first = first.AddDate(0, 0, -1)
-	}
+	first := localDay(q.From, d.loc).AddDate(0, 0, -1)
 	last := localDay(q.To.Add(-time.Nanosecond), d.loc)
 	occ := driver.Occupancy{Complete: true}
 	var all []driver.Interval

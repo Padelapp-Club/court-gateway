@@ -20,14 +20,17 @@ import (
 // day, by category of day. A date's category comes from the club's
 // calendar (calendar/load?year=): REGULAR and WEEKEND are what working
 // days and weekends are by default, HOLIDAY and the PRE_* categories mark
-// dates. The gateway's price table is weekly, so it takes REGULAR for
-// Monday to Friday and WEEKEND for Saturday and Sunday; a date the
-// calendar gives another category that prices differently is priced as
-// its weekday, and is logged.
+// dates (a working Saturday may be marked REGULAR). The price table takes
+// REGULAR for Monday to Friday and WEEKEND for Saturday and Sunday, and,
+// for every date of the horizon the calendar gives a category priced
+// otherwise than its weekday, that category's rules (PriceTable.Dates; a
+// category without prices is no price that date). A calendar that does
+// not read is an error: never weekday prices on a holiday.
 //
 // [UNVERIFIED] the whole model: tariff/load?uid= answering {uid, name,
 // prices: [{dayCategory, timeFrom, timeTo, price}]} with price in rubles
-// per hour, and calendar/load answering {days: [{date, category}]}.
+// per hour, and calendar/load answering {days: [{date, category}]} with
+// the dates set apart from their weekday's category.
 // Observed only: a 30-minute slot of 750 ₽ in a club whose hour is 1500 ₽.
 
 type lundaTariffRef struct {
@@ -53,8 +56,10 @@ func defaultCategory(iso int) string {
 	return "REGULAR"
 }
 
-// calendarHorizon is how far ahead special dates are looked for.
-const calendarHorizon = 31 * 24 * time.Hour
+// priceHorizon is how far ahead dates are priced apart: the core's
+// booking horizon (beyond a club's bookingDepth of 14 days, which the
+// driver cannot read).
+const priceHorizon = driver.ZoneHorizon
 
 // tariffList reads the club's tariffs.
 func tariffList(ctx context.Context, c *client) ([]lundaTariffRef, error) {
@@ -86,7 +91,7 @@ type rule struct {
 
 // PriceTable implements driver.Driver: the court's tariff (lunda_tariff;
 // driver.ErrNotFound without one), REGULAR on working days and WEEKEND on
-// weekends, in the club's zone.
+// weekends, and the dates of the calendar priced apart, in the club's zone.
 func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTable, error) {
 	c, ok := d.byCourt[courtID]
 	if !ok || c.tariff == "" {
@@ -111,13 +116,34 @@ func (d *Driver) PriceTable(ctx context.Context, courtID string) (driver.PriceTa
 	for iso := 0; iso < 7; iso++ {
 		var days driver.Weekdays
 		days[iso] = true
-		for _, r := range byCat[defaultCategory(iso)] {
-			t.Base = append(t.Base, driver.PriceRule{Days: days, From: r.from, To: r.to, PerHour: r.perHour})
-		}
+		t.Base = append(t.Base, priceRules(byCat[defaultCategory(iso)], days)...)
 	}
-	d.noteSpecialDates(ctx, byCat)
+	special, err := d.specialDates(ctx)
+	if err != nil {
+		return driver.PriceTable{}, err
+	}
+	for date, cat := range special {
+		day, _ := time.Parse("2006-01-02", date)
+		if sameRules(byCat[cat], byCat[defaultCategory(isoWeekday(day))]) {
+			continue
+		}
+		if t.Dates == nil {
+			t.Dates = map[string][]driver.PriceRule{}
+		}
+		t.Dates[date] = append([]driver.PriceRule{}, priceRules(byCat[cat], driver.AllWeekdays)...) // none: no price that date
+	}
 	return t, nil
 }
+
+func priceRules(rs []rule, days driver.Weekdays) []driver.PriceRule {
+	var out []driver.PriceRule
+	for _, r := range rs {
+		out = append(out, driver.PriceRule{Days: days, From: r.from, To: r.to, PerHour: r.perHour})
+	}
+	return out
+}
+
+func isoWeekday(t time.Time) int { return (int(t.Weekday()) + 6) % 7 }
 
 // parseTariff reads a tariff's rules by category. A rule the driver
 // cannot read makes the whole tariff invalid: one wrong price would make
@@ -167,13 +193,14 @@ func kopecks(r json.RawMessage) (int64, bool) {
 	return int64(math.Round(f * 100)), true
 }
 
-// specialDates reads the calendar of the years the next calendarHorizon
+// specialDates reads the calendar of the years the next priceHorizon
 // touches and returns its dates in that window (local "2006-01-02" ->
-// category) whose category is not their weekday's.
+// category) whose category is not their weekday's. A calendar that does
+// not read is an error.
 func (d *Driver) specialDates(ctx context.Context) (map[string]string, error) {
 	now, _ := d.clock()
 	from := localDay(now, d.loc)
-	to := from.Add(calendarHorizon)
+	to := from.Add(priceHorizon)
 	out := map[string]string{}
 	for year := from.Year(); year <= to.Year(); year++ {
 		status, res, err := d.c.call(ctx, opCalendar, url.Values{"year": {strconv.Itoa(year)}}, nil)
@@ -184,49 +211,29 @@ func (d *Driver) specialDates(ctx context.Context) (map[string]string, error) {
 			return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("GET /%s answered HTTP %d", opCalendar, status))
 		}
 		var cal struct {
-			Days []struct {
+			Days *[]struct {
 				Date     string `json:"date"`
 				Category string `json:"category"`
 			} `json:"days"`
 		}
-		if json.Unmarshal(res, &cal) != nil {
+		if json.Unmarshal(res, &cal) != nil || cal.Days == nil {
 			return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCalendar+": the answer is not a calendar")
 		}
-		for _, day := range cal.Days {
+		for _, day := range *cal.Days {
 			t, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(day.Date), d.loc)
 			cat := strings.ToUpper(strings.TrimSpace(day.Category))
-			if err != nil || cat == "" || t.Before(from) || t.After(to) {
+			if err != nil || cat == "" {
+				return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opCalendar+": a day without a valid date and category")
+			}
+			if t.Before(from) || t.After(to) {
 				continue
 			}
-			if cat != defaultCategory((int(t.Weekday())+6)%7) {
+			if cat != defaultCategory(isoWeekday(t)) {
 				out[t.Format("2006-01-02")] = cat
 			}
 		}
 	}
 	return out, nil
-}
-
-// noteSpecialDates logs the dates of the next calendarHorizon that the
-// weekly table prices wrong: their category prices differently from their
-// weekday's. The table cannot say a date (driver.PriceTable is weekly); a
-// calendar that does not read only costs the note.
-func (d *Driver) noteSpecialDates(ctx context.Context, byCat map[string][]rule) {
-	dates, err := d.specialDates(ctx)
-	if err != nil {
-		d.log.Warn("the Lunda price calendar could not be read: holidays are priced as their weekday", "error", err)
-		return
-	}
-	var wrong []string
-	for date, cat := range dates {
-		t, _ := time.Parse("2006-01-02", date)
-		if !sameRules(byCat[cat], byCat[defaultCategory((int(t.Weekday())+6)%7)]) {
-			wrong = append(wrong, date+" "+cat)
-		}
-	}
-	if len(wrong) > 0 {
-		sort.Strings(wrong)
-		d.log.Warn("the Lunda price calendar has dates priced otherwise than their weekday: the gateway quotes them as their weekday", "dates", strings.Join(wrong, ", "))
-	}
 }
 
 func sameRules(a, b []rule) bool {

@@ -195,9 +195,12 @@ var decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
 // payment and carry the marker and the service client; if any step after
 // the create fails, the booking is cancelled and the partner gets an
 // error — never a half-made booking (an unpaid debt of the service client
-// in the club's books). A create whose answer is lost is looked for in
-// the schedule and cancelled the same way. Without a service client
-// nothing is sent.
+// in the club's books); a booking that has started meanwhile is not
+// cancelled (rollback). A create whose outcome is unknown — no answer, a
+// 5xx, an answer that does not read or has no id — cancels nothing: the
+// club books its own tournaments on the same service client, so a booking
+// found there without the marker may be the club's (unknownOutcome).
+// Without a service client nothing is sent.
 //
 // A tournament is a booking of goal TOURNAMENT: the club's own tournaments
 // are such bookings of its service client (seen in its schedule).
@@ -221,8 +224,8 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	})
 	if err != nil {
 		var ue *driver.UpstreamError
-		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ue) && ue.Kind == driver.UpstreamUnavailable {
-			return driver.Booking{}, d.recoverLost(ctx, req, c, err) // the booking may exist
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ue) && (ue.Kind == driver.UpstreamUnavailable || ue.Kind == driver.UpstreamInvalid) {
+			return driver.Booking{}, d.unknownOutcome(ctx, req, c, err) // the booking may exist
 		}
 		return driver.Booking{}, err // refused before it was made (or not sent at all)
 	}
@@ -235,32 +238,32 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}
 	var b lundaBooking
 	if json.Unmarshal(res, &b) != nil || !uidRe.MatchString(b.ID) {
-		return driver.Booking{}, d.recoverLost(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
+		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
 	}
 	uid := b.ID
 	price := strings.TrimSpace(string(b.Price))
 	if !decimalRe.MatchString(price) {
-		return driver.Booking{}, d.rollback(ctx, uid, req.Court, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price"))
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price"))
 	}
 	if strings.Trim(price, "0.") != "" { // a booking of price 0 needs no adjustment
 		if err := d.write(ctx, opAdjust, map[string]any{"bookingId": uid, "priceAdjustment": json.Number("-" + price)}); err != nil {
-			return driver.Booking{}, d.rollback(ctx, uid, req.Court, err)
+			return driver.Booking{}, d.rollback(ctx, uid, req, err)
 		}
 	}
 	// [UNVERIFIED] the parameter's name: notes
 	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "notes": buildNotes(req.Note, req.Partner)}); err != nil {
-		return driver.Booking{}, d.rollback(ctx, uid, req.Court, err)
+		return driver.Booking{}, d.rollback(ctx, uid, req, err)
 	}
 	got, found, err := d.load(ctx, uid)
 	switch {
 	case err != nil:
-		return driver.Booking{}, d.rollback(ctx, uid, req.Court, err)
+		return driver.Booking{}, d.rollback(ctx, uid, req, err)
 	case !found:
-		return driver.Booking{}, d.rollback(ctx, uid, req.Court, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
 	case !strings.EqualFold(got.Status, "PAID") || !got.noPayments():
-		return driver.Booking{}, d.rollback(ctx, uid, req.Court, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
 	case got.Notes == nil || !hasMarker(*got.Notes, req.Partner) || got.customer() != d.service:
-		return driver.Booking{}, d.rollback(ctx, uid, req.Court, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
+		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
 	}
 	d.log.Info("booking created in Lunda", "booking", "l-"+uid, "court", req.Court)
 	return driver.Booking{ID: "l-" + uid, Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
@@ -295,39 +298,56 @@ func (d *Driver) cancel(ctx context.Context, uid, reason string) error {
 }
 
 // rollback cancels the booking a failed Create made and returns cause, or,
-// when the cancel fails too (a lost session sends none), an error that
-// says the booking stays in Lunda: the core reports it.
-func (d *Driver) rollback(ctx context.Context, uid, court string, cause error) error {
+// when it cannot be cancelled, an error that says the booking stays in
+// Lunda (logged at ERROR: the core reports it). Like Cancel, it goes by
+// the decision clock: a booking that has started (or with the time not
+// known) is not cancelled; nor is anything sent on a lost session.
+func (d *Driver) rollback(ctx context.Context, uid string, req driver.CreateRequest, cause error) error {
+	stays := func(why error) error {
+		d.log.Error("a booking the gateway made in Lunda could not be cancelled after a failed step: it stays in Lunda, unpaid, until the club cancels it",
+			"booking", "l-"+uid, "court", req.Court, "error", why)
+		return fmt.Errorf("%w; the booking l-%s it made STAYS IN LUNDA: it could not be cancelled (%v)", cause, uid, why)
+	}
+	now, known := d.clock()
+	switch {
+	case !known:
+		return stays(driver.ErrClockUnknown)
+	case !req.Start.After(now):
+		return stays(driver.ErrStarted)
+	}
 	rctx, stop := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer stop()
 	if err := d.cancel(rctx, uid, reasonRollback); err != nil {
-		d.log.Error("a booking the gateway made in Lunda could not be cancelled after a failed step: it stays in Lunda, unpaid, until the club cancels it",
-			"booking", "l-"+uid, "court", court, "error", err)
-		return fmt.Errorf("%w; the booking l-%s it made STAYS IN LUNDA: it could not be cancelled (%v)", cause, uid, err)
+		return stays(err)
 	}
-	d.log.Warn("a booking the gateway made in Lunda was cancelled after a failed step", "booking", "l-"+uid, "court", court, "error", cause)
+	d.log.Warn("a booking the gateway made in Lunda was cancelled after a failed step", "booking", "l-"+uid, "court", req.Court, "error", cause)
 	return cause
 }
 
-// recoverLost looks for the booking a create whose answer was lost may
-// have made — a booking of the service client exactly on the court and
-// interval asked, which the core found free just before under its lock —
-// and cancels it. cause stays the error; the booking found and not
-// cancelled is said too.
-func (d *Driver) recoverLost(ctx context.Context, req driver.CreateRequest, c court, cause error) error {
+// unknownOutcome is the error of a create whose outcome is unknown. It
+// cancels nothing — a booking of the service client on that court and
+// time may as well be the club's own, made meanwhile — but looks for one
+// and names it: the club must check it (it may stay in Lunda, unpaid). The
+// lookup is logged at ERROR, the alarm; neither names a client.
+func (d *Driver) unknownOutcome(ctx context.Context, req driver.CreateRequest, c court, cause error) error {
 	rctx, stop := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer stop()
+	at := req.Start.UTC().Format(time.RFC3339)
 	ids, err := d.findOwnSlot(rctx, req, c)
-	if err != nil {
-		d.log.Error("the answer of a create in Lunda was lost and the schedule could not be read: a booking may stay in Lunda", "court", req.Court, "error", err)
-		return fmt.Errorf("%w; a booking it may have made could not be looked for (%v): check the court in Lunda", cause, err)
+	switch {
+	case err != nil:
+		d.log.Error("the outcome of a create in Lunda is unknown and the court could not be checked: a booking may stay in Lunda, unpaid; the club must check the court",
+			"court", req.Court, "start", at, "error", cause, "lookup", err)
+		return fmt.Errorf("%w; the outcome of the booking is unknown and the court could not be checked (%v): the club must check it in Lunda", cause, err)
+	case len(ids) == 0:
+		d.log.Error("the outcome of a create in Lunda is unknown; no booking of the service client was found on the court",
+			"court", req.Court, "start", at, "error", cause)
+		return fmt.Errorf("%w; the outcome of the booking is unknown: no booking of the service client was found on the court", cause)
 	}
-	for _, uid := range ids {
-		if err := d.rollback(rctx, uid, req.Court, cause); err != cause {
-			return err
-		}
-	}
-	return cause
+	named := "l-" + strings.Join(ids, ", l-")
+	d.log.Error("the outcome of a create in Lunda is unknown: a booking of the service client on that court and time may stay in Lunda, unpaid; the club must check it",
+		"court", req.Court, "start", at, "bookings", named, "error", cause)
+	return fmt.Errorf("%w; the outcome of the booking is unknown: %s on the court may stay in Lunda unpaid, the club must check it", cause, named)
 }
 
 // slotOwner is the client of a slot, read only to find the gateway's own.
@@ -340,7 +360,7 @@ type slotOwner struct {
 }
 
 // findOwnSlot lists the bookings of the service client exactly on the
-// court and interval of req.
+// court and interval of req: candidates to name, never to cancel.
 func (d *Driver) findOwnSlot(ctx context.Context, req driver.CreateRequest, c court) ([]string, error) {
 	day := localDay(req.Start, d.loc)
 	status, res, err := d.c.call(ctx, opSlots, url.Values{"date": {day.Format("2006-01-02")}}, nil)
