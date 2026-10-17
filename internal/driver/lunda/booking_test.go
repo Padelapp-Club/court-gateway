@@ -41,7 +41,7 @@ func TestCreateIsPaidWithoutPayment(t *testing.T) {
 	}
 	uid := strings.TrimPrefix(b.ID, "l-")
 	got := f.stub.Booking(uid)
-	if got == nil || got.Status != "PAID" || len(got.Payments) != 0 || got.Customer != serviceUID || got.Goal != "GAME" ||
+	if got == nil || got.Status != "PAID" || len(got.Payments) != 0 || got.Customer != serviceUID || got.Goal != "GENERAL" ||
 		got.Price+got.Adjustment != 0 || got.Notes != "[cg:booker] PadelApp 123" {
 		t.Fatalf("booking in Lunda: %+v", got)
 	}
@@ -54,11 +54,12 @@ func TestCreateIsPaidWithoutPayment(t *testing.T) {
 	if b.Court != "court-1" || !b.Start.Equal(day.Add(10*time.Hour)) {
 		t.Fatalf("booking: %+v", b)
 	}
-	// a tournament is a booking of goal TOURNAMENT
+	// a tournament block too is of goal GENERAL ("other"): neither GAME nor
+	// TOURNAMENT, which Lunda's app may show to players
 	req := createReq(day, 14)
 	req.Kind = driver.KindTournament
 	tb, err := d.Create(context.Background(), req)
-	if err != nil || f.stub.Booking(strings.TrimPrefix(tb.ID, "l-")).Goal != "TOURNAMENT" {
+	if err != nil || f.stub.Booking(strings.TrimPrefix(tb.ID, "l-")).Goal != "GENERAL" {
 		t.Fatalf("tournament: %v", err)
 	}
 }

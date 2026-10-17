@@ -202,9 +202,14 @@ var decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
 // found there without the marker may be the club's (unknownOutcome).
 // Without a service client nothing is sent.
 //
-// A tournament is a booking of goal TOURNAMENT: the club's own tournaments
-// are such bookings of its service client (seen in its schedule).
-// [UNVERIFIED] that booking-create takes goal TOURNAMENT.
+// Every booking of the gateway, a game or a tournament block, is of goal
+// GENERAL ("other" in Lunda's own labels, club/global-form-config): a
+// GAME or TOURNAMENT may surface in Lunda's app to players (alex,
+// 2026-10-17: «все наши записи надо создавать как Other … чтобы не дай бог
+// что-то не ушло в приложку лунды пользователям»).
+// bookingGoal is the goal of every booking the gateway makes in Lunda.
+const bookingGoal = "GENERAL"
+
 func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
 	c, ok := d.byCourt[req.Court]
 	if !ok {
@@ -213,13 +218,9 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	if d.service == "" {
 		return driver.Booking{}, errNoServiceClient()
 	}
-	goal := "GAME"
-	if req.Kind == driver.KindTournament {
-		goal = "TOURNAMENT"
-	}
 	begin, end := formatLocal(req.Start, d.loc), formatLocal(req.End, d.loc)
 	status, res, err := d.c.call(ctx, opCreate, nil, map[string]any{
-		"customerUid": d.service, "placeholder": false, "goal": goal, "addPromisedPayment": false,
+		"customerUid": d.service, "placeholder": false, "goal": bookingGoal, "addPromisedPayment": false,
 		"slots": []map[string]any{{"courtUid": c.uid, "begin": begin, "end": end, "pinned": false}},
 	})
 	if err != nil {
