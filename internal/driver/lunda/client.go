@@ -46,7 +46,6 @@ const (
 type endpoint struct {
 	method string
 	auth   bool // sent with the session token (X-Club-Auth-Token)
-	write  bool // changes the club's data: never sent without a live session
 }
 
 // endpoints are every call the driver makes, and the only ones it can make
@@ -60,24 +59,25 @@ type endpoint struct {
 // login and polled by it, but is not among the bundle's generated
 // operations; its method is taken to be GET.
 var endpoints = map[string]endpoint{
-	opQRStart:     {http.MethodPost, false, false},
-	opQRStatus:    {http.MethodPost, false, false},
-	opRefresh:     {http.MethodPost, true, false},
-	opSendPush:    {http.MethodPost, false, false},
-	opAuth:        {http.MethodPost, false, false},
-	opSwitchClub:  {http.MethodPost, true, false},
-	opCurrent:     {http.MethodGet, true, false},
-	opCourts:      {http.MethodGet, true, false},
-	opSlots:       {http.MethodGet, true, false},
-	opTariffs:     {http.MethodGet, true, false},
-	opTariff:      {http.MethodGet, true, false},
-	opCalendar:    {http.MethodGet, true, false},
-	opVisitors:    {http.MethodPost, true, false}, // a search: POST, but reads
-	opBookingLoad: {http.MethodGet, true, false},
-	opCreate:      {http.MethodPost, true, true},
-	opAdjust:      {http.MethodPost, true, true},
-	opNotes:       {http.MethodPost, true, true},
-	opCancel:      {http.MethodDelete, true, true},
+	opQRStart:     {http.MethodPost, false},
+	opQRStatus:    {http.MethodPost, false},
+	opRefresh:     {http.MethodPost, true},
+	opSendPush:    {http.MethodPost, false},
+	opAuth:        {http.MethodPost, false},
+	opSwitchClub:  {http.MethodPost, true},
+	opCurrent:     {http.MethodGet, true},
+	opCourts:      {http.MethodGet, true},
+	opSlots:       {http.MethodGet, true},
+	opTariffs:     {http.MethodGet, true},
+	opTariff:      {http.MethodGet, true},
+	opCalendar:    {http.MethodGet, true},
+	opVisitors:    {http.MethodPost, true}, // a search: POST, but reads
+	opBookingLoad: {http.MethodGet, true},
+	// the writes: the only operations that change the club's data
+	opCreate: {http.MethodPost, true},
+	opAdjust: {http.MethodPost, true},
+	opNotes:  {http.MethodPost, true},
+	opCancel: {http.MethodDelete, true},
 }
 
 // Operations returns the operations the driver may call, as
