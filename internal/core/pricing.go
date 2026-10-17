@@ -17,6 +17,21 @@ var (
 
 func isoWeekday(t time.Time) int { return (int(t.Weekday()) + 6) % 7 }
 
+// onDate is the table that prices the local date of lt (in the rules'
+// zone): its Dates entry if it has one, else the weekly table.
+func onDate(t driver.PriceTable, lt time.Time) driver.PriceTable {
+	rules, ok := t.Dates[lt.Format("2006-01-02")]
+	if !ok {
+		return t
+	}
+	out := driver.PriceTable{Zone: t.Zone}
+	for _, r := range rules {
+		r.Days = driver.AllWeekdays
+		out.Base = append(out.Base, r)
+	}
+	return out
+}
+
 // segments splits the local stretch [from, to) minutes of an ISO weekday
 // at every boundary of a rule or adjustment that applies to that day, and
 // prices each piece: the first base rule that contains it plus every
@@ -91,7 +106,7 @@ func quote(ctx context.Context, t driver.PriceTable, loc *time.Location, slot in
 		}
 		lc := c.In(rz)
 		from := lc.Hour()*60 + lc.Minute()
-		for _, p := range segments(t, isoWeekday(lc), from, from+int(next.Sub(c)/time.Minute)) {
+		for _, p := range segments(onDate(t, lc), isoWeekday(lc), from, from+int(next.Sub(c)/time.Minute)) {
 			if !p.ok {
 				return 0, errNoPrice
 			}
@@ -161,7 +176,7 @@ func datePeriods(t driver.PriceTable, loc *time.Location, date time.Time) []date
 		rc := c.In(rz)
 		from := rc.Hour()*60 + rc.Minute()
 		at := func(m int) time.Time { return c.Add(time.Duration(m-from) * time.Minute) }
-		for _, p := range segments(t, isoWeekday(rc), from, from+int(next.Sub(c)/time.Minute)) {
+		for _, p := range segments(onDate(t, rc), isoWeekday(rc), from, from+int(next.Sub(c)/time.Minute)) {
 			switch n := len(out); {
 			case !p.ok:
 			case n > 0 && out[n-1].End.Equal(at(p.From)) && out[n-1].PerHour == p.PerHour:
