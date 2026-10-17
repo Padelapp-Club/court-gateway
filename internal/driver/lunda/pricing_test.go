@@ -208,9 +208,13 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
-// The setup of crm.type lunda is registered: interactive, two keys set by
-// flag only.
+// crm.type lunda is registered: the driver, its court key, and an
+// interactive setup with two keys set by flag only.
 func TestSetupRegistered(t *testing.T) {
+	c, ok := driver.Registered()["lunda"]
+	if !ok || c.Driver == nil || c.Account == nil || len(c.ClubCRMKeys) != 0 || len(c.CourtKeys) != 1 || c.CourtKeys[0] != "lunda_court" {
+		t.Fatalf("registration: %+v", c)
+	}
 	s, ok := driver.SetupFor("lunda")
 	if !ok || !s.Interactive || s.Name != "Лунда" || len(s.Secrets) != 0 || len(s.Fields) != 2 {
 		t.Fatalf("setup: %+v", s)

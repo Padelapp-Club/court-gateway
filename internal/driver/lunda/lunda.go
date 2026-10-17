@@ -59,6 +59,7 @@ var Version = "dev"
 var uidRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func init() {
+	driver.Register("lunda", driver.CRM{Driver: New, Account: NewAccount, ClubCRMKeys: ClubCRMKeys, CourtKeys: []string{CourtKey}})
 	driver.RegisterSetup("lunda", driver.SetupSpec{
 		Name:  "Лунда",
 		Needs: "сотрудник клуба с приложением Lunda Padel (вход по QR-коду или по коду из Telegram или пуша)",
