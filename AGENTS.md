@@ -10,7 +10,8 @@ human. Do not improvise around a failure.
 1. **Ask the human, do not guess**, for exactly these inputs:
    - join code (one-time, format `XXXX-XXXX-XXXX-XXXX`) — the club gets ONE code from its partner,
      e.g. shown in the partner's admin panel;
-   - which CRM the club has: **Viva** (`--crm viva`, the default) or **Lunda** (`--crm lunda`);
+   - which CRM the club has: **Viva** (`--crm viva`, the default), **Lunda** (`--crm lunda`) or
+     **1C:Fitness** (`--crm fitness1c`);
    - for Viva: the administrator login (e-mail) and **password**. Lunda has no password: a member of
      the club's staff logs the gateway in themselves (step 3, «Lunda») — ask for nothing else;
    - for **1C:Fitness** (`--crm fitness1c`): the address of the club's 1C (from the card of the
@@ -75,6 +76,28 @@ $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva passw
 # only for a self-built binary: $env:GATEWAY_HUB_URL = Read-Host 'Hub URL'
 #   $env:GATEWAY_HUB_KEY_FINGERPRINT = Read-Host 'Hub key fingerprint'
 ```
+
+**1C:Fitness** instead of the two Viva lines (the address, the user, then the two secrets):
+
+```sh
+printf '1C address (without /hs/api/v3): '; read -r CRM_BASE_URL
+printf '1C user: ';                         read -r CRM_USERNAME
+printf '1C password: ';        stty -echo; read -r CRM_PASSWORD; stty echo; echo
+printf '1C application key: '; stty -echo; read -r FITNESS1C_APIKEY; stty echo; echo
+export CRM_BASE_URL CRM_USERNAME CRM_PASSWORD FITNESS1C_APIKEY
+# for bookings (both or neither): printf 'Technical client phone: '; read -r CRM_CLIENT_PHONE
+#   printf 'Hub partner: '; read -r CRM_PARTNER; export CRM_CLIENT_PHONE CRM_PARTNER
+```
+
+```powershell
+$env:CRM_BASE_URL     = Read-Host '1C address (without /hs/api/v3)'
+$env:CRM_USERNAME     = Read-Host '1C user'
+$env:CRM_PASSWORD     = [Net.NetworkCredential]::new('', (Read-Host '1C password' -AsSecureString)).Password
+$env:FITNESS1C_APIKEY = [Net.NetworkCredential]::new('', (Read-Host '1C application key' -AsSecureString)).Password
+# for bookings (both or neither): $env:CRM_CLIENT_PHONE = Read-Host 'Technical client phone'; $env:CRM_PARTNER = Read-Host 'Hub partner'
+```
+
+Check that the secrets are not empty without printing them: `[ -n "$CRM_PASSWORD" ] && [ -n "$FITNESS1C_APIKEY" ] && echo set`.
 
 If the human can only give you the values in the conversation, put them into these environment
 variables of the `setup` command in step 3 and nowhere else; never repeat them back.
@@ -249,6 +272,21 @@ In Docker the login of setup is lost with its throwaway container: after setup h
 it in **PowerShell as Administrator**, `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
 continuation with a backtick. There are no flags for a club id, studio, time zone or grid.)
 
+**1C:Fitness** (`CRM_PASSWORD`, `FITNESS1C_APIKEY` and `GATEWAY_JOIN_CODE` are read from the environment;
+the address, the user and, for bookings, the technical client and its partner are flags — the two
+booking flags both or neither):
+
+```sh
+./court-gateway setup --non-interactive --json --crm fitness1c \
+  --crm-base-url "$CRM_BASE_URL" --crm-username "$CRM_USERNAME" \
+  --crm-client-phone "$CRM_CLIENT_PHONE" --crm-partner "$CRM_PARTNER" \
+  --config "$PWD/gateway.yaml" > setup-result.json
+```
+
+(read-only club: leave out the `--crm-client-phone` and `--crm-partner` line. Windows: as for Viva,
+PowerShell as Administrator, `$env:…` instead of `"$…"`.) Then also `unset FITNESS1C_APIKEY`
+(PowerShell: `Remove-Item Env:FITNESS1C_APIKEY`).
+
 Then remove the secrets from your shell: `unset CRM_PASSWORD GATEWAY_JOIN_CODE`
 (PowerShell: `Remove-Item Env:CRM_PASSWORD, Env:GATEWAY_JOIN_CODE`).
 
@@ -264,7 +302,7 @@ If `"ok": false`, act on `error.code`:
 | `MISSING_INPUT` | an input from step 0 is empty — ask the human again (`--hub-url` / `--hub-key-fingerprint`: the binary is self-built, ask for the hub URL and the fingerprint) |
 | `INVALID_INPUT` | an input is malformed (hub URL, CRM type) — the message says which |
 | `CRM_AUTH_FAILED` | wrong Viva login or password; for 1C: wrong 1C user, password or application key, or a user without the two roles — ask the human to re-check (for 1C wait 2 minutes before running setup again: repeated refused logins may lock the 1C user); the join code is **not** spent |
-| `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later |
+| `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later; for 1C: the club's 1C address answers oddly or not at all — check `curl -sI "$CRM_BASE_URL/"` (the web client must answer), have the human check the address from the external system's card, retry later |
 | `JOIN_CODE_REJECTED` | code wrong, used or expired — ask the human for a new code |
 | `HUB_UNREACHABLE` | check the hub URL and outbound HTTPS; never open inbound ports |
 | `HUB_REDIRECTED` | the hub URL redirects elsewhere and setup follows no redirect — ask the human for the hub's exact URL |
