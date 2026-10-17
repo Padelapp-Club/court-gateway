@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -154,5 +156,24 @@ func TestLoginRefusesAPasswordCRM(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := run([]string{"login", "-config", cfg}, &out, &errOut, func(string) string { return "" }); code == 0 || !strings.Contains(errOut.String(), "set-password") {
 		t.Fatalf("login: %d %s", code, errOut.String())
+	}
+}
+
+// With several CRMs offered, interactive setup asks which one: Enter takes
+// Viva, an unknown answer is asked again; hidden types are not offered.
+func TestSetupAsksWhichCRM(t *testing.T) {
+	drivers.Accounts["logintest"] = newFakeLogin
+	t.Cleanup(func() { delete(drivers.Accounts, "logintest") })
+	offered := setupTypes(func(string) string { return "" })
+	if len(offered) < 2 || offered[0] != drivers.DefaultCRM || !slices.Contains(offered, "logintest") || slices.Contains(offered, "demo") {
+		t.Fatalf("offered: %v", offered)
+	}
+	var w bytes.Buffer
+	if got, err := askCRM(bufio.NewReader(strings.NewReader("\n")), &w, offered); err != nil || got != drivers.DefaultCRM {
+		t.Fatalf("Enter: %q %v", got, err)
+	}
+	w.Reset()
+	if got, err := askCRM(bufio.NewReader(strings.NewReader("nope\nLoginTest\n")), &w, offered); err != nil || got != "logintest" || !strings.Contains(w.String(), "Нет такой CRM: nope") {
+		t.Fatalf("choice: %q %v\n%s", got, err, w.String())
 	}
 }

@@ -262,8 +262,12 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	defer func() { stdin = old }()
 	isTerminal = func() bool { return false }
 
-	// password, join code: nothing about clubs, nor the CRM type
+	// password, join code: nothing about clubs; the CRM type only when
+	// several are offered (Enter takes the default, Viva)
 	answers := strings.Join([]string{crmPass, s.hub.JoinCode("club-two", "Клуб Два")}, "\n") + "\n"
+	if len(setupTypes(env{}.get)) > 1 {
+		answers = "\n" + answers
+	}
 	stdin = strings.NewReader(answers)
 	var out, errb bytes.Buffer
 	args := []string{"setup", "--config", filepath.Join(s.dir, "gateway.yaml"), "--hub-url", s.hub.URL(), "--hub-ca-file", s.hub.CAFile,
