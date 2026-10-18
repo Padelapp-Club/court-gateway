@@ -1,0 +1,121 @@
+{
+  "success": true,
+  "data": [
+    {
+      "id": 2017166322,
+      "company_id": 2270517,
+      "staff_id": 6121440,
+      "datetime": "2026-10-06T16:00:00+05:00",
+      "date": "2026-10-06 16:00:00",
+      "length": 7200,
+      "seance_length": 7200,
+      "deleted": false,
+      "paid_full": 1,
+      "payment_status": 1,
+      "attendance": 1,
+      "comment": "",
+      "resource_instances": [
+        {
+          "id": 306930,
+          "title": "Синг Корт 3 #1",
+          "resource_id": 187398
+        }
+      ],
+      "services": [
+        {
+          "id": 31981905,
+          "title": "Аренда синг корта 2 часа",
+          "cost": 1500
+        }
+      ]
+    },
+    {
+      "id": 2017166247,
+      "company_id": 2270517,
+      "staff_id": 6121446,
+      "datetime": "2026-10-06T16:00:00+05:00",
+      "date": "2026-10-06 16:00:00",
+      "length": 5400,
+      "seance_length": 5400,
+      "deleted": false,
+      "paid_full": 0,
+      "payment_status": 0,
+      "attendance": 1,
+      "comment": "",
+      "resource_instances": [
+        {
+          "id": 306936,
+          "title": "Корт 5 #1",
+          "resource_id": 187404
+        }
+      ],
+      "services": [
+        {
+          "id": 31981887,
+          "title": "Аренда корта 1.5 ч",
+          "cost": 1500
+        }
+      ]
+    },
+    {
+      "id": 2017166136,
+      "company_id": 2270517,
+      "staff_id": 6121434,
+      "datetime": "2026-10-06T16:00:00+05:00",
+      "date": "2026-10-06 16:00:00",
+      "length": 3600,
+      "seance_length": 3600,
+      "deleted": false,
+      "paid_full": 0,
+      "payment_status": 0,
+      "attendance": 0,
+      "comment": "",
+      "resource_instances": [
+        {
+          "id": 306927,
+          "title": "Корт 2 #1",
+          "resource_id": 187395
+        }
+      ],
+      "services": [
+        {
+          "id": 31981893,
+          "title": "Аренда корта 1 ч",
+          "cost": 1000
+        }
+      ]
+    },
+    {
+      "id": 2017166070,
+      "company_id": 2270517,
+      "staff_id": 6121443,
+      "datetime": "2026-10-06T16:00:00+05:00",
+      "date": "2026-10-06 16:00:00",
+      "length": 3600,
+      "seance_length": 3600,
+      "deleted": false,
+      "paid_full": 0,
+      "payment_status": 0,
+      "attendance": 0,
+      "comment": "",
+      "resource_instances": [
+        {
+          "id": 306933,
+          "title": "Сингл Корт 4 #1",
+          "resource_id": 187401
+        }
+      ],
+      "services": [
+        {
+          "id": 31981899,
+          "title": "Аренда синг-корта",
+          "cost": 750
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "total_count": 4
+  }
+}

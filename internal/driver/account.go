@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -121,4 +122,211 @@ type Discovery struct {
 	// Hours per ISO weekday (0 = Monday) in minutes; nil where unknown.
 	Hours   [7]*[2]int
 	Notices []Notice
+}
+
+// SetupField is an installation-level key of the `crm` section that setup
+// asks for (or takes from a flag or the environment) and writes to
+// gateway.yaml. It is never a secret: secrets are SetupSecrets.
+type SetupField struct {
+	Key  string // the crm key, e.g. "username"
+	Flag string // the setup flag without dashes, e.g. "crm-username"
+	Env  string // optional environment fallback, e.g. "CRM_USERNAME"
+	// Prompt is the interactive question, in Russian; empty: flag only
+	// (an endpoint override for test doubles).
+	Prompt   string
+	Required bool
+}
+
+// SetupSecret is a CRM secret setup writes to .env (mode 0600), never to
+// gateway.yaml. The gateway reads it from the environment, keeps it out of
+// logs and hands it to the driver in Config.Secrets.
+type SetupSecret struct {
+	Env      string // e.g. "CRM_PASSWORD"
+	Prompt   string // the interactive question, in Russian
+	Required bool
+}
+
+// SetupSpec is what setup needs for one crm.type: the driver's own words
+// for the administrator, the keys and the secrets. Drivers register theirs
+// with RegisterSetup, so setup and the config loader know no CRM by name.
+type SetupSpec struct {
+	// Name is the CRM as a club knows it ("Viva").
+	Name string
+	// Needs completes «Понадобятся … и код подключения.», in Russian.
+	Needs   string
+	Fields  []SetupField
+	Secrets []SetupSecret
+	// Hidden types are never offered to a club (the demo CRM).
+	Hidden bool
+	// Interactive: the CRM has no password; a person logs the gateway in
+	// (InteractiveLogin), at setup and again with `court-gateway login`
+	// whenever the CRM ends the session.
+	Interactive bool
+}
+
+var setups = map[string]SetupSpec{}
+
+// RegisterSetup declares the setup of a crm.type; a driver package calls
+// it from init. A second registration of a type panics.
+func RegisterSetup(crmType string, spec SetupSpec) {
+	if _, dup := setups[crmType]; dup {
+		panic("driver: setup of crm.type " + crmType + " registered twice")
+	}
+	setups[crmType] = spec
+}
+
+// SetupFor returns the registered setup of a crm.type.
+func SetupFor(crmType string) (SetupSpec, bool) {
+	s, ok := setups[crmType]
+	return s, ok
+}
+
+// SecretEnvs are the environment variables holding a crm.type's secrets.
+func SecretEnvs(crmType string) []string {
+	var out []string
+	for _, s := range setups[crmType].Secrets {
+		out = append(out, s.Env)
+	}
+	return out
+}
+
+// LoginMethod is a way a person logs an interactive account in.
+type LoginMethod string
+
+const (
+	// LoginQR: a member of the club's staff scans a QR code in the CRM's
+	// mobile app and confirms there.
+	LoginQR LoginMethod = "qr"
+	// LoginCode: the CRM sends a one-time code to the staff member's phone
+	// (by its own channel), and it is typed in.
+	LoginCode LoginMethod = "code"
+)
+
+// Errors of an interactive login.
+var (
+	// ErrLoginExpired: the QR code or the code expired before the person
+	// acted; start again (a QR is reissued).
+	ErrLoginExpired = errors.New("the login challenge expired")
+	// ErrLoginDeclined: the person declined the login in the CRM's app, or
+	// the code was wrong.
+	ErrLoginDeclined = errors.New("the login was declined")
+	// ErrNoSession: an interactive account has no session: nobody logged
+	// the gateway in yet, or the CRM ended the session. Wrapped in an
+	// *UpstreamError of kind UpstreamAuth where a call needs one.
+	ErrNoSession = errors.New("no CRM session: log the gateway in (court-gateway login)")
+)
+
+// Challenge is what the person logging the gateway in acts on. It is shown
+// to that person only: neither the QR payload nor anything typed is ever
+// logged.
+type Challenge struct {
+	Method LoginMethod
+	// QR is the exact text the QR code encodes (LoginQR).
+	QR string
+	// Sent says, in Russian, where the code went (LoginCode), e.g. «в
+	// Telegram или пушем в приложение».
+	Sent string
+	// Expires is when the challenge stops working (zero: unknown).
+	Expires time.Time
+}
+
+// LoginState is where an interactive login stands.
+type LoginState struct {
+	// Done: the CRM accepted the login. With several clubs the session is
+	// not usable before SelectClub.
+	Done bool
+	// Clubs the person may act for, when the CRM tells (more than one
+	// needs SelectClub).
+	Clubs []Studio
+}
+
+// InteractiveLogin is implemented by accounts whose CRM has no password and
+// is entered by a person. A successful login (and every renewal of the
+// session the CRM asks for later) is saved to Config.Sessions, so the
+// session survives restarts; an account built with a saved session uses it
+// without a person.
+type InteractiveLogin interface {
+	// LoginMethods the CRM offers, the preferred first.
+	LoginMethods() []LoginMethod
+	// StartLogin starts a login: for LoginCode, phone is the staff
+	// member's number in international form (+7…); ignored for LoginQR.
+	StartLogin(ctx context.Context, method LoginMethod, phone string) (Challenge, error)
+	// PollLogin (LoginQR) asks whether the person confirmed; not Done
+	// while waiting, ErrLoginExpired or ErrLoginDeclined when it is over.
+	PollLogin(ctx context.Context) (LoginState, error)
+	// ConfirmLogin (LoginCode) sends the code the person typed.
+	ConfirmLogin(ctx context.Context, code string) (LoginState, error)
+	// SelectClub picks the club of the session (LoginState.Clubs), then
+	// saves it.
+	SelectClub(ctx context.Context, id string) error
+	// HasSession: a session is saved (it may still be refused).
+	HasSession() bool
+}
+
+// SessionStore keeps an interactive account's CRM session between
+// processes: setup and `court-gateway login` save it, the service uses and
+// renews it. The bytes are the driver's own (a secret: the store keeps
+// them readable by the owner only). Load of nothing saved is nil, nil;
+// Save(nil) removes the session.
+type SessionStore interface {
+	LoadSession() ([]byte, error)
+	SaveSession([]byte) error
+}
+
+// Client is a client of the club as a person choosing it sees it. It is
+// shown in the terminal of the person setting the gateway up and never
+// logged.
+type Client struct {
+	ID   string
+	Name string
+	// Hint tells clients of one name apart (a masked phone), may be empty.
+	Hint string
+}
+
+// ClientPicker is implemented by accounts whose bookings are made on a
+// client of the club the club chooses at setup (a service client): its id
+// is the crm key ClientKey of the installation. Without it the driver
+// reads, but does not book.
+type ClientPicker interface {
+	ClientKey() string
+	FindClients(ctx context.Context, pattern string) ([]Client, error)
+}
+
+// CRM is everything the binary knows of one crm.type: the driver of a
+// club, the account of an installation, and the keys the hub reads
+// without knowing the type. A driver package registers it from init with
+// Register (its setup with RegisterSetup), and internal/drivers imports
+// the package: one line per driver, nothing else to edit.
+type CRM struct {
+	Driver  Factory
+	Account AccountFactory
+	// ClubCRMKeys are the keys of the crm section a club configured on the
+	// hub may set; every other key belongs to the installation.
+	ClubCRMKeys []string
+	// StudioKeys are crm keys naming a whole club of the account, CourtKeys
+	// court params naming one CRM room: the resources two clubs on the hub
+	// never share.
+	StudioKeys, CourtKeys []string
+}
+
+var crms = map[string]CRM{}
+
+// Register declares a crm.type; a second registration panics.
+func Register(crmType string, c CRM) {
+	if _, dup := crms[crmType]; dup {
+		panic("driver: crm.type " + crmType + " registered twice")
+	}
+	if c.Driver == nil || c.Account == nil {
+		panic("driver: crm.type " + crmType + " registered without a driver or an account")
+	}
+	crms[crmType] = c
+}
+
+// Registered returns every registered crm.type.
+func Registered() map[string]CRM {
+	out := make(map[string]CRM, len(crms))
+	for t, c := range crms {
+		out[t] = c
+	}
+	return out
 }

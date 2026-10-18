@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -144,7 +145,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		return fail(err)
 	}
 	syncer.SetFetch(client.FetchConfig)
-	go syncer.Run(ctx)
+	// the config syncer, the update confirmation and the updater write to
+	// the state directory (a CRM session renewed while a config is checked,
+	// the update marker, a download): serve waits for them before
+	// returning, as for the status loop
+	var bg sync.WaitGroup
+	bg.Go(func() { syncer.Run(ctx) })
 	tunnelDone := make(chan struct{})
 	go func() {
 		defer close(tunnelDone)
@@ -153,8 +159,12 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 
 	// every statusInterval a readiness round (syncer.Ready) feeds the
 	// health status file (read by `healthcheck`) and a heartbeat to the
-	// hub; the file is also rewritten when the hub connection changes
+	// hub; the file is also rewritten when the hub connection changes.
+	// serve waits for it before returning: a status write still running
+	// after that would land in the state directory of a stopped service
+	statusDone := make(chan struct{})
 	go func() {
+		defer close(statusDone)
 		t := time.NewTicker(min(2*time.Second, statusInterval))
 		defer t.Stop()
 		// each club has its own time limit (core.ReadyTimeout); this only
@@ -237,7 +247,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	// in to the CRM and connect to the hub, as the version before it did;
 	// the clubs' own readiness is reported by the heartbeat, not judged here
 	if canUpdate {
-		go func() {
+		bg.Go(func() {
 			again, err := update.Confirm(ctx, vers, version, func(ctx context.Context) error {
 				return waitHealthy(ctx, s.Driver.Account.CheckLogin, client.Connected, confirmDeadline)
 			}, log, nil)
@@ -247,7 +257,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 			if again {
 				askRestart()
 			}
-		}()
+		})
 	}
 
 	// automatic updates
@@ -267,7 +277,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 			Versions: vers, CheckBinary: update.ChildCheck(cfgPath), Log: log, Hold: passwordRejected(s.Driver.Account),
 		}
 		first := 5*time.Minute + time.Duration(time.Now().UnixNano()%int64(10*time.Minute))
-		go u.Loop(ctx, hint, first, 24*time.Hour, askRestart)
+		bg.Go(func() { u.Loop(ctx, hint, first, 24*time.Hour, askRestart) })
 	}
 
 	log.Info("started", "version", version, "build", build(), "crm", s.CRMType)
@@ -280,6 +290,8 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		log.Info("restarting to run the version that is current now")
 	}
 	cancel()
+	<-statusDone
+	bg.Wait()
 	// the copy started after this one (a restart, an update, the service
 	// manager) must not be refused by the hub as a duplicate
 	<-tunnelDone

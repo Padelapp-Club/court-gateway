@@ -291,6 +291,8 @@ func classify(err error) (int, string, string) {
 		return http.StatusConflict, "BOOKING_STARTED", "the booking has already started and cannot be cancelled"
 	case errors.Is(err, driver.ErrSlotUnavailable):
 		return http.StatusConflict, "SLOT_UNAVAILABLE", "the court is occupied in this interval"
+	case errors.Is(err, driver.ErrBookingNotConfigured):
+		return http.StatusServiceUnavailable, "BOOKING_NOT_CONFIGURED", "the club has not finished setting up bookings through the gateway"
 	case errors.Is(err, driver.ErrNotSupported):
 		return http.StatusNotImplemented, "NOT_SUPPORTED", "the club's CRM does not support this operation"
 	case errors.Is(err, context.DeadlineExceeded):

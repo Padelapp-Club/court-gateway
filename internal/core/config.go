@@ -228,6 +228,9 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 		return nil, err
 	}
 	s.StateDir = StateDir(path, getenv)
+	// an interactive account's CRM session is the installation's, wherever
+	// it is loaded (serve, doctor, login)
+	s.Driver.Sessions = SessionStore(s.StateDir)
 	return s, nil
 }
 
@@ -364,6 +367,17 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 	password := getenv(PasswordEnv)
 	if password != "" {
 		s.Secrets = append(s.Secrets, password)
+	}
+	// the secrets the crm.type declares, CRM_PASSWORD among them or not
+	s.Driver.Secrets = map[string]string{}
+	if password != "" {
+		s.Driver.Secrets[PasswordEnv] = password
+	}
+	for _, name := range driver.SecretEnvs(s.CRMType) {
+		if v := getenv(name); v != "" && name != PasswordEnv {
+			s.Driver.Secrets[name] = v
+			s.Secrets = append(s.Secrets, v)
+		}
 	}
 
 	if len(errs) > 0 {

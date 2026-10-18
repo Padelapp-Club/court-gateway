@@ -10,7 +10,34 @@ human. Do not improvise around a failure.
 1. **Ask the human, do not guess**, for exactly these inputs:
    - join code (one-time, format `XXXX-XXXX-XXXX-XXXX`) — the club gets ONE code from its partner,
      e.g. shown in the partner's admin panel;
-   - Viva administrator login (e-mail) and **password**;
+   - which CRM the club has: **Viva** (`--crm viva`, the default), **Lunda** (`--crm lunda`),
+     **1C:Fitness** (`--crm fitness1c`) or **YCLIENTS** (`--crm yclients`);
+   - for Viva: the administrator login (e-mail) and **password**. Lunda has no password: a member of
+     the club's staff logs the gateway in themselves (step 3, «Lunda») — ask for nothing else;
+   - for **1C:Fitness** (`--crm fitness1c`): the address of the club's 1C (from the card of the
+     external system, without `/hs/api/v3`; `--crm-base-url`), the 1C user (`--crm-username`) — one
+     with the roles «Удаленный доступ внешнее приложение» and «Запуск внешнего соединения» — and its
+     **password** (`CRM_PASSWORD`), the **application key** from the same card (`FITNESS1C_APIKEY` —
+     the club's key; never the "secret key", the gateway does not use it), and, for bookings, the
+     phone of a technical client that **only the gateway** books on (`--crm-client-phone`; the
+     reception must never book on it) and the hub partner it books for (`--crm-partner`) — both or
+     neither: without them the gateway only reads occupancy. Bookings also need, in the club's 1C, a
+     rental service «Аренда корта PadelApp» (price 0, no payment basis, 30-minute step, on every
+     court); the hub operator maps it, do not ask for its id. The 1C password and the application key
+     are secrets exactly like the Viva password (rule 2): pass them only as environment variables of
+     the single `setup` command, then `unset` them;
+   - for YCLIENTS — **the club's own keys only**: its partner token (`YCLIENTS_PARTNER_TOKEN`, from
+     the club's own developer registration in the YCLIENTS marketplace) and either a user token
+     (`YCLIENTS_USER_TOKEN`) or the login and password (`CRM_PASSWORD`) of a staff member of the
+     branch; if that staff member logs in with a second factor (a code by SMS), ask for the user
+     token instead of the password. **Never ask a club for PadelApp's YCLIENTS keys and never put
+     them on a club's machine**: they open every branch connected to PadelApp and run only on
+     PadelApp's own servers — a club without keys of its own: stop and tell the human. Do not ask for
+     the branch id (`company_id`), the courts or the service client's phone: the operator sets them
+     on the hub. Setup, with the secrets in the environment of that one command only:
+     `./court-gateway setup --non-interactive --json --crm yclients [--crm-login "$CRM_LOGIN"]
+     --config "$PWD/gateway.yaml" > setup-result.json`, then
+     `unset YCLIENTS_PARTNER_TOKEN YCLIENTS_USER_TOKEN CRM_PASSWORD CRM_LOGIN GATEWAY_JOIN_CODE`;
    - the hub URL and the hub key fingerprint (`XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX`, given with the
      join code) **only** if the binary is self-built (`version` says `selfbuilt`) or `setup`
      answers `MISSING_INPUT` naming `--hub-url` or `--hub-key-fingerprint`: a release knows its
@@ -19,7 +46,8 @@ human. Do not improvise around a failure.
    Nothing else. The club does **not** choose a club id, courts, hours, a studio or a time zone:
    one installation is one CRM account, and the operator configures its clubs on the hub. Never
    write `club`, `venue` or `courts` into `gateway.yaml` (the gateway refuses them).
-2. **Never echo, print, log or store the Viva password or the join code** — not in your messages,
+2. **Never echo, print, log or store the Viva password, the YCLIENTS tokens and password, or the
+   join code** — not in your messages,
    not in files other than the `.env` that `setup` writes, not in shell history. Pass them only as
    environment variables of the single `setup` command, or the password via stdin
    (`--password-stdin`). Do not run commands with `set -x`. Never `cat` the `.env` file.
@@ -62,11 +90,61 @@ $env:CRM_PASSWORD      = [Net.NetworkCredential]::new('', (Read-Host 'Viva passw
 #   $env:GATEWAY_HUB_KEY_FINGERPRINT = Read-Host 'Hub key fingerprint'
 ```
 
+The blocks above are for **Viva**. For **Lunda** collect only the join code (and the hub lines for a
+self-built binary): there is no login and no password to ask for.
+
+```sh
+printf 'Join code: '; stty -echo; read -r GATEWAY_JOIN_CODE; stty echo; echo; export GATEWAY_JOIN_CODE
+```
+
+```powershell
+$env:GATEWAY_JOIN_CODE = [Net.NetworkCredential]::new('', (Read-Host 'Join code' -AsSecureString)).Password
+```
+
+**1C:Fitness** instead of the two Viva lines (the address, the user, then the two secrets):
+
+```sh
+printf '1C address (without /hs/api/v3): '; read -r CRM_BASE_URL
+printf '1C user: ';                         read -r CRM_USERNAME
+printf '1C password: ';        stty -echo; IFS= read -r CRM_PASSWORD; stty echo; echo
+printf '1C application key: '; stty -echo; IFS= read -r FITNESS1C_APIKEY; stty echo; echo
+export CRM_BASE_URL CRM_USERNAME CRM_PASSWORD FITNESS1C_APIKEY
+# for bookings (both or neither): printf 'Technical client phone: '; read -r CRM_CLIENT_PHONE
+#   printf 'Hub partner: '; read -r CRM_PARTNER; export CRM_CLIENT_PHONE CRM_PARTNER
+```
+
+```powershell
+$env:CRM_BASE_URL     = Read-Host '1C address (without /hs/api/v3)'
+$env:CRM_USERNAME     = Read-Host '1C user'
+$env:CRM_PASSWORD     = [Net.NetworkCredential]::new('', (Read-Host '1C password' -AsSecureString)).Password
+$env:FITNESS1C_APIKEY = [Net.NetworkCredential]::new('', (Read-Host '1C application key' -AsSecureString)).Password
+# for bookings (both or neither): $env:CRM_CLIENT_PHONE = Read-Host 'Technical client phone'; $env:CRM_PARTNER = Read-Host 'Hub partner'
+```
+
+Check that the secrets are not empty without printing them: `[ -n "$CRM_PASSWORD" ] && [ -n "$FITNESS1C_APIKEY" ] && echo set`.
+
+**YCLIENTS** instead of the two Viva lines: the partner token, then **either** the user token
+**or** the staff login and password (leave the other empty):
+
+```sh
+printf 'YCLIENTS partner token: '; stty -echo; IFS= read -r YCLIENTS_PARTNER_TOKEN; stty echo; echo
+printf 'YCLIENTS user token (empty: login): '; stty -echo; IFS= read -r YCLIENTS_USER_TOKEN; stty echo; echo
+printf 'YCLIENTS staff login (empty: token): '; read -r CRM_LOGIN
+printf 'YCLIENTS staff password (empty: token): '; stty -echo; IFS= read -r CRM_PASSWORD; stty echo; echo
+export YCLIENTS_PARTNER_TOKEN YCLIENTS_USER_TOKEN CRM_LOGIN CRM_PASSWORD
+```
+
+(PowerShell: the same four variables, the secret ones with `Read-Host -AsSecureString` as above.)
+
 If the human can only give you the values in the conversation, put them into these environment
 variables of the `setup` command in step 3 and nowhere else; never repeat them back.
 
-**Verify:** `test -n "$CRM_PASSWORD" && test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
+**Verify (Viva, 1C:Fitness):** `test -n "$CRM_PASSWORD" && test -n "$GATEWAY_JOIN_CODE" && echo inputs-ok`
 (PowerShell: `if ($env:CRM_PASSWORD -and $env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
+**Verify (Lunda):** `sh -c 'test -n "$GATEWAY_JOIN_CODE"' && echo inputs-ok` (a child process must see it)
+(PowerShell: `if ($env:GATEWAY_JOIN_CODE) { 'inputs-ok' }`).
+**Verify (YCLIENTS):** `test -n "$GATEWAY_JOIN_CODE" && test -n "$YCLIENTS_PARTNER_TOKEN" && { test -n "$YCLIENTS_USER_TOKEN" || { test -n "$CRM_LOGIN" && test -n "$CRM_PASSWORD"; }; } && echo inputs-ok`
+(PowerShell: `if ($env:GATEWAY_JOIN_CODE -and $env:YCLIENTS_PARTNER_TOKEN -and ($env:YCLIENTS_USER_TOKEN -or ($env:CRM_LOGIN -and $env:CRM_PASSWORD))) { 'inputs-ok' }`).
 **Expect:** `inputs-ok`. Never print the values themselves.
 
 ## Step 1 — platform and folder
@@ -207,6 +285,24 @@ binary without the release key: it works but never updates itself — tell the h
 
 ## Step 3 — setup
 
+**Lunda: the human runs setup, not you.** Lunda is entered by a person: `setup` draws a QR code the
+staff member scans in the Lunda Padel app (or sends a code to their phone), then asks them to pick
+the club's service client. `--non-interactive` refuses it (`LOGIN_REQUIRED`). Give the human this
+command to run in a terminal they see, in the install folder, with `GATEWAY_JOIN_CODE` set as in
+step 0 (Windows: PowerShell as Administrator, `.\court-gateway.exe`):
+
+```sh
+./court-gateway setup --crm lunda --json --config "$PWD/gateway.yaml" > setup-result.json
+```
+
+The questions and the QR code go to the terminal (stderr), the result to `setup-result.json`. Then
+verify as below. A warning `NO_SERVICE_CLIENT` means no service client was chosen: the gateway reads
+but does not book — tell the human, and have them run setup again (a new join code) to choose one.
+In Docker the login of setup is lost with its throwaway container: after setup have the human run
+`docker compose run --rm -it court-gateway login` once (see «The Lunda session ended»).
+
+**Viva:**
+
 ```sh
 ./court-gateway setup --non-interactive --json \
   --crm-username "$CRM_USERNAME" --config "$PWD/gateway.yaml" > setup-result.json
@@ -216,6 +312,21 @@ binary without the release key: it works but never updates itself — tell the h
 `GATEWAY_HUB_KEY_FINGERPRINT` are read from the environment; `--crm viva` is the default. Windows: run
 it in **PowerShell as Administrator**, `.\court-gateway.exe`, `--config C:\court-gateway\gateway.yaml`, line
 continuation with a backtick. There are no flags for a club id, studio, time zone or grid.)
+
+**1C:Fitness** (`CRM_PASSWORD`, `FITNESS1C_APIKEY` and `GATEWAY_JOIN_CODE` are read from the environment;
+the address, the user and, for bookings, the technical client and its partner are flags — the two
+booking flags both or neither):
+
+```sh
+./court-gateway setup --non-interactive --json --crm fitness1c \
+  --crm-base-url "$CRM_BASE_URL" --crm-username "$CRM_USERNAME" \
+  --crm-client-phone "$CRM_CLIENT_PHONE" --crm-partner "$CRM_PARTNER" \
+  --config "$PWD/gateway.yaml" > setup-result.json
+```
+
+(read-only club: leave out the `--crm-client-phone` and `--crm-partner` line. Windows: as for Viva,
+PowerShell as Administrator, `$env:…` instead of `"$…"`.) Then also `unset FITNESS1C_APIKEY`
+(PowerShell: `Remove-Item Env:FITNESS1C_APIKEY`).
 
 Then remove the secrets from your shell: `unset CRM_PASSWORD GATEWAY_JOIN_CODE`
 (PowerShell: `Remove-Item Env:CRM_PASSWORD, Env:GATEWAY_JOIN_CODE`).
@@ -231,8 +342,9 @@ If `"ok": false`, act on `error.code`:
 |---|---|
 | `MISSING_INPUT` | an input from step 0 is empty — ask the human again (`--hub-url` / `--hub-key-fingerprint`: the binary is self-built, ask for the hub URL and the fingerprint) |
 | `INVALID_INPUT` | an input is malformed (hub URL, CRM type) — the message says which |
-| `CRM_AUTH_FAILED` | wrong Viva login or password — ask the human to re-enter; the join code is **not** spent |
-| `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later |
+| `CRM_AUTH_FAILED` | wrong Viva login or password; for 1C: wrong 1C user, password or application key, or a user without the two roles; for YCLIENTS: YCLIENTS refused a key — the partner token, the user token, or the staff member's login or password (a token copied with a space or cut short is the usual cause) — ask the human to re-check (for 1C wait 2 minutes before running setup again: repeated refused logins may lock the 1C user); the join code is **not** spent |
+| `CRM_INVALID_RESPONSE` / `CRM_UNREACHABLE` | Viva answers oddly or not at all — check `curl -sI https://api.vivacrm.ru`, retry later; for 1C: the club's 1C address answers oddly or not at all — check `curl -sI "$CRM_BASE_URL/"` (the web client must answer), have the human check the address from the external system's card, retry later; for YCLIENTS: check `curl -sI https://api.yclients.com`, retry later |
+| `INVALID_INPUT` naming `YCLIENTS_USER_TOKEN` | YCLIENTS: neither a user token nor a staff login with its password was given — ask the human for one of the two |
 | `JOIN_CODE_REJECTED` | code wrong, used or expired — ask the human for a new code |
 | `HUB_UNREACHABLE` | check the hub URL and outbound HTTPS; never open inbound ports |
 | `HUB_REDIRECTED` | the hub URL redirects elsewhere and setup follows no redirect — ask the human for the hub's exact URL |
@@ -242,6 +354,11 @@ If `"ok": false`, act on `error.code`:
 | `FOLDER_NOT_RESTRICTED` | Windows: the folder could not be closed to everyone but Administrators and SYSTEM — re-run setup in PowerShell as Administrator; nothing was written and the join code is **not** spent |
 | `WRITE_FAILED` | `gateway.yaml` or `.env` could not be written (the message names the file) — fix the folder's permissions or free disk space; if the code was already spent, ask for a new one |
 | `INTERNAL` | a bug: the config setup built does not load — stop and report the message to the human |
+| `LOGIN_REQUIRED` | the CRM has no password (Lunda): a member of the club's staff logs the gateway in — run setup **without** `--non-interactive` in a terminal the human sees, so they scan the QR code or type the code; nothing was written, the join code is **not** spent |
+| `CRM_LOGIN_EXPIRED` | the QR code or the code expired before the human confirmed — run setup again; the join code is **not** spent |
+| `CRM_LOGIN_DECLINED` | the human declined the login in the CRM's app, or the code was wrong three times — ask them, then run setup again |
+| `CRM_LOGIN_ABORTED` / `CRM_LOGIN_FAILED` | the login was interrupted or failed otherwise (the message says how) — run setup again; the join code is **not** spent |
+| `CLIENT_NOT_CHOSEN` | choosing the club's service client failed (the CRM did not answer the search) — run setup again; to skip the choice answer the search with an empty line (the gateway then reads and does not book: warning `NO_SERVICE_CLIENT`) |
 
 ## Step 4 — install the service
 
@@ -282,6 +399,7 @@ operator has added a club and `skip` before. The JSON also carries `installation
 | `HUB_AUTH` | the hub does not accept this gateway — a new join code and `setup --force` are needed (the running service restarts by itself on the rewritten files) |
 | `TUNNEL_CONNECTED` | the service is not running or not connected yet — check step 4, wait a minute |
 | `HUB_CONFIG` | `fail`: the clubs configured on the hub do not load with this CRM — report to the operator (the service keeps the previous config); `warn`: the service has not applied the newest config yet, or a club is served but its config disagrees with the CRM (its time zone) — report to the operator |
+| YCLIENTS | `CRM_LOGIN` or `CRM_OCCUPANCY` failing with `CRM_AUTH_FAILED`: YCLIENTS refused a key, or the club's branch has not connected the application of this partner token (YCLIENTS answers 403) — have the human check the keys and, in the YCLIENTS marketplace, that the application is connected to the branch, then run setup again if a key changes. `HUB_CONFIG` `fail` with a court or branch named: the club on the hub does not match YCLIENTS — the branch is inactive or its journal is off, its time zone differs from the club's, a court is no staff member of the branch, fired, closed for booking or without a schedule, or a court **requires online prepayment** (YCLIENTS may drop an unpaid record by itself: the club switches the court's prepayment to «allowed» or «forbidden») — report the message to the operator and the club. `CRM_OCCUPANCY` `warn` (or `HUB_CONFIG` `warn` while no service runs) with `STAFF_HIDDEN` — a court is hidden from online booking and YCLIENTS may refuse bookings on it — or `SCHEDULE_SHORT` — a court's schedule ends within 14 days and beyond it the court reads occupied: the club stays served; tell the club which court (the message, or the service log by that code) |
 | `SECRETS_FILE` | Windows `fail`: the folder holding `.env`, or `.env`, is open to other users — as the `hint` says, in PowerShell as Administrator run `uninstall-service`, then `install-service` (which closes both; on an installed service `install-service` alone fails); `warn` elsewhere: `chmod 600 .env` |
 | `VERSION_CURRENT` | `warn` only: self-built binary, or an update is pending (installs itself) |
 
@@ -309,6 +427,21 @@ as it prints). After a rejected login the service tries again only three times (
 later, counted across restarts), then waits for `set-password`, which — even with the same
 password — makes it log in at once.
 Then `unset CRM_PASSWORD` and run step 5.
+
+## The Lunda session ended
+
+`doctor` shows `CRM_LOGIN` failing with `CRM_AUTH_FAILED` and the hint to log in again: Lunda ended
+the gateway's session (the staff member was signed out or removed). The gateway does not write to
+Lunda until a person logs it in again; no join code is needed. Give the human this command to run
+in a terminal they see, in the install folder (Windows: PowerShell as Administrator,
+`.\court-gateway.exe login -config "$PWD\gateway.yaml"`; Docker: `docker compose run --rm -it court-gateway login`):
+
+```sh
+./court-gateway login -config "$PWD/gateway.yaml"; echo "exit=$?"
+```
+
+**Expect:** `exit=0` and «Вход в CRM выполнен». The running service takes the new session by itself,
+no restart. Never use `set-password` for Lunda (it answers `NO_PASSWORD`). Then run step 5.
 
 ## Uninstall
 

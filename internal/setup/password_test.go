@@ -32,7 +32,7 @@ func (loginAccount) Discover(context.Context, driver.DiscoverQuery) (driver.Disc
 func TestSetPasswordReplacesOnlyThePassword(t *testing.T) {
 	dir := t.TempDir()
 	cfg, envPath := filepath.Join(dir, "gateway.yaml"), filepath.Join(dir, core.EnvFileName)
-	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", Username: "admin@example.test"}
+	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", CRM: [][2]string{{"username", "admin@example.test"}}}
 	if err := os.WriteFile(cfg, []byte(d.render("inst-1", "")), 0o644); err != nil {
 		t.Fatal(err)
 	}
