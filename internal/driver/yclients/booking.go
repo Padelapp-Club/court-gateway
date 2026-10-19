@@ -24,6 +24,8 @@ const (
 	// PaidMark is written into the comment of a paid booking's records
 	// (D11: the club's cash desk is not touched).
 	PaidMark = "Оплачено в PadelApp"
+	// mirrorMarkerPrefix starts the marker of a mirror's records (mirror.go).
+	mirrorMarkerPrefix = "[cg-mirror:"
 	// maxComment is the comment cap of D11 (YCLIENTS' own is not measured);
 	// the comment is cut so the paid mark still fits after it.
 	maxComment = 500
@@ -70,13 +72,14 @@ func hasMarker(comment, partner string) bool {
 	return strings.HasPrefix(strings.TrimSpace(comment), marker(partner))
 }
 
-// setOf reads the set tag after any partner's marker in a comment.
+// setOf reads the set tag after any partner's marker, or a mirror's
+// marker (mirror.go), in a comment.
 func setOf(comment *string) (key string, n int, ok bool) {
 	if comment == nil {
 		return "", 0, false
 	}
 	c := strings.TrimSpace(*comment)
-	if !strings.HasPrefix(c, markerPrefix) {
+	if !strings.HasPrefix(c, markerPrefix) && !strings.HasPrefix(c, mirrorMarkerPrefix) {
 		return "", 0, false
 	}
 	end := strings.Index(c, "]")
@@ -158,31 +161,45 @@ type bookRecordBody struct {
 // records than asked, those it named are deleted again and the create
 // fails: no half booking stays.
 func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
-	staff, ok := d.byCourt[req.Court]
-	if !ok {
-		return driver.Booking{}, fmt.Errorf("court %q: %w", req.Court, driver.ErrNotFound)
-	}
-	length := req.End.Sub(req.Start)
-	if length <= 0 || length%time.Minute != 0 {
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, "the booking is not a whole number of minutes")
-	}
-	services, err := d.catalog(ctx, staff, &req.Start)
+	ids, err := d.book(ctx, req, func(tag string) string { return buildComment(req.Note, req.Partner, tag) },
+		func(rec *details) bool { return d.owned(rec, req.Partner) })
 	if err != nil {
 		return driver.Booking{}, err
 	}
+	d.log.Info("record created", "court", req.Court, "records", len(ids))
+	return driver.Booking{ID: "y-" + strings.Join(ids, "-"), Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
+}
+
+// book makes the records of a booking of the gateway as Create describes
+// and returns their ids: comment writes the comment of its records around
+// their set tag, ours tells its records, read back, from the club's (for
+// undo). A mirror's block is made by it too (CreateBlock).
+func (d *Driver) book(ctx context.Context, req driver.CreateRequest, comment func(tag string) string, ours func(*details) bool) ([]string, error) {
+	staff, ok := d.byCourt[req.Court]
+	if !ok {
+		return nil, fmt.Errorf("court %q: %w", req.Court, driver.ErrNotFound)
+	}
+	length := req.End.Sub(req.Start)
+	if length <= 0 || length%time.Minute != 0 {
+		return nil, driver.Upstream(driver.UpstreamRejected, "the booking is not a whole number of minutes")
+	}
+	services, err := d.catalog(ctx, staff, &req.Start)
+	if err != nil {
+		return nil, err
+	}
 	pieces, err := pickServices(int(length/time.Second), services)
 	if err != nil {
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, err.Error())
+		return nil, driver.Upstream(driver.UpstreamRejected, err.Error())
 	}
 	plans := planAppointments(pieces)
 	if len(plans) > maxRecords {
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("the booking needs %d records of the court's services, at most %d", len(plans), maxRecords))
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("the booking needs %d records of the court's services, at most %d", len(plans), maxRecords))
 	}
 	tag := setTag(newSetKey(), len(plans))
 	staffN, _ := strconv.ParseInt(staff, 10, 64)
 	body := bookRecordBody{
 		Phone: d.client.phone, Fullname: d.client.name, Email: d.client.email,
-		Comment: buildComment(req.Note, req.Partner, tag),
+		Comment: comment(tag),
 	}
 	for i, p := range plans {
 		body.Appointments = append(body.Appointments, appointmentBody{
@@ -196,18 +213,18 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	// what was never made costs one read.
 	r, err := d.c.do(ctx, http.MethodPost, "/book_record/"+d.company, nil, body, partnerAuth)
 	if err != nil {
-		d.undo(ctx, staff, tag, req, body.Appointments, nil)
-		return driver.Booking{}, err
+		d.undo(ctx, staff, tag, req, ours, body.Appointments, nil)
+		return nil, err
 	}
 	switch {
 	case r.status == http.StatusOK || r.status == http.StatusCreated:
 	case r.status == http.StatusUnprocessableEntity:
 		// YCLIENTS refuses a busy time with 422 (D11 R-9, probe)
-		d.undo(ctx, staff, tag, req, body.Appointments, nil)
-		return driver.Booking{}, fmt.Errorf("POST /book_record: %w", driver.ErrSlotUnavailable)
+		d.undo(ctx, staff, tag, req, ours, body.Appointments, nil)
+		return nil, fmt.Errorf("POST /book_record: %w", driver.ErrSlotUnavailable)
 	default:
-		d.undo(ctx, staff, tag, req, body.Appointments, nil)
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /book_record: HTTP %d", r.status))
+		d.undo(ctx, staff, tag, req, ours, body.Appointments, nil)
+		return nil, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /book_record: HTTP %d", r.status))
 	}
 	var created []struct {
 		RecordID json.Number `json:"record_id"`
@@ -222,11 +239,10 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		}
 	}
 	if len(ids) != len(plans) || len(created) != len(plans) { // one id per record, each its own
-		d.undo(ctx, staff, tag, req, body.Appointments, ids)
-		return driver.Booking{}, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /book_record: %d record ids for %d records", len(ids), len(plans)))
+		d.undo(ctx, staff, tag, req, ours, body.Appointments, ids)
+		return nil, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /book_record: %d record ids for %d records", len(ids), len(plans)))
 	}
-	d.log.Info("record created", "court", req.Court, "records", len(ids))
-	return driver.Booking{ID: "y-" + strings.Join(ids, "-"), Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
+	return ids, nil
 }
 
 // undo deletes what a create that went wrong made, and nothing else. The
@@ -244,7 +260,7 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 // and are logged. It works
 // on after the caller's context ends, within its own limit; what it cannot
 // delete it logs.
-func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, plan []appointmentBody, named []string) {
+func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateRequest, ours func(*details) bool, plan []appointmentBody, named []string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
 	defer cancel()
 	key := strings.TrimSuffix(strings.TrimPrefix(tag, "[cg-set:"), "]") // "<key>/<n>", as setOf reads it
@@ -289,7 +305,7 @@ func (d *Driver) undo(ctx context.Context, staff, tag string, req driver.CreateR
 		}
 		start, end, ok := rec.span()
 		k, _, tagged := setOf(rec.Comment)
-		if !ok || !tagged || k != key || rec.StaffID.String() != staff || !d.owned(rec, req.Partner) ||
+		if !ok || !tagged || k != key || rec.StaffID.String() != staff || !ours(rec) ||
 			start.Before(req.Start) || end.After(req.End) || !starts[start.Unix()] {
 			continue // not this booking's record
 		}

@@ -224,6 +224,27 @@ func (s *Stub) SetServices(staff string, svc []Service) {
 	s.staff[staff].Services = svc
 }
 
+// EditRecord changes a record as the club would in the journal (edit gets
+// the stored record itself).
+func (s *Stub) EditRecord(id int64, edit func(*Record)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.records[id]; r != nil {
+		edit(r)
+	}
+}
+
+// Records returns copies of every record, deleted ones too.
+func (s *Stub) Records() []Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Record, 0, len(s.records))
+	for _, r := range s.records {
+		out = append(out, *r)
+	}
+	return out
+}
+
 // Delete deletes a record as the club would in the journal.
 func (s *Stub) Delete(id int64) {
 	s.mu.Lock()

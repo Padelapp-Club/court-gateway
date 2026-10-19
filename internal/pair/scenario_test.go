@@ -20,6 +20,7 @@ var pairs = []struct {
 	setup pairtest.Setup
 }{
 	{"viva+lunda", pairtest.VivaLunda},
+	{"yclients+lunda", pairtest.YclientsLunda},
 }
 
 func each(t *testing.T, f func(t *testing.T, env *pairtest.Env)) {
