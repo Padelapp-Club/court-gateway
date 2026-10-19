@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -32,9 +33,76 @@ func (d *Driver) MirrorHorizon(context.Context) (time.Duration, error) {
 	return driver.ZoneHorizon, nil
 }
 
-// BlockSpan implements driver.Mirrorer: records take the span exactly (a
-// span the court's services cannot make up is refused by CreateBlock).
-func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) { return start, end }
+// maxCover is how far past its source's end a mirror may reach so that the
+// courts' services make it up (R4).
+const maxCover = 30 * time.Minute
+
+// BlockSpan implements driver.Mirrorer: records take the span when the
+// courts' services make up its length; otherwise the shortest length up
+// to maxCover longer that they make up on every court the last
+// MirrorInventory read (a 45-minute booking of the other CRM, with
+// services of 30, 60, 90 and 120 minutes, is blocked for an hour: over,
+// never under). The start stays: records start at any minute, so only the
+// length has to fit, and a block never reaches back before its source
+// (into the past or another booking). No such length: the span itself,
+// which CreateBlock cannot make (MIRROR_CREATE_FAILED, as before R4).
+func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) {
+	return start, start.Add(d.tiles.cover(end.Sub(start)))
+}
+
+// tiles are the services of each court (staff) as MirrorInventory last
+// read them — book_services without a time: every service the court has,
+// read again by every inventory, so a pass rounds by what it has just
+// read — and the lengths BlockSpan has rounded with them.
+type tiles struct {
+	mu      sync.Mutex
+	byStaff map[string][]service
+	covers  map[time.Duration]time.Duration
+}
+
+func (t *tiles) set(read map[string][]service) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.byStaff == nil {
+		t.byStaff = map[string][]service{}
+	}
+	for staff, s := range read {
+		t.byStaff[staff] = s
+	}
+	t.covers = map[time.Duration]time.Duration{}
+}
+
+// cover is the length a block of length l takes (see BlockSpan).
+func (t *tiles) cover(l time.Duration) time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if l <= 0 || l%time.Minute != 0 || len(t.byStaff) == 0 {
+		return l
+	}
+	if c, ok := t.covers[l]; ok {
+		return c
+	}
+	c := l
+	for x := l; x <= l+maxCover; x += time.Minute {
+		if t.fits(x) {
+			c = x
+			break
+		}
+	}
+	t.covers[l] = c
+	return c
+}
+
+// fits: book makes up a booking of length l on every court read.
+func (t *tiles) fits(l time.Duration) bool {
+	for _, s := range t.byStaff {
+		pieces, err := pickServices(int(l/time.Second), s)
+		if err != nil || len(planAppointments(pieces)) > maxRecords {
+			return false
+		}
+	}
+	return true
+}
 
 // mirrorText is a mirror's comment without its set tag.
 func mirrorText(comment string) string {
@@ -163,15 +231,23 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 		staffs = append(staffs, s)
 	}
 	sort.Strings(staffs)
+	read := map[string][]service{}
 	for _, staff := range staffs {
 		w, err := d.working(ctx, staff, ds)
 		if err != nil {
+			return driver.Inventory{}, err
+		}
+		// the court's services, for BlockSpan: a read that fails fails the
+		// inventory (no pass rounds by nothing and takes its mirrors for
+		// invalid)
+		if read[staff], err = d.catalog(ctx, staff, nil); err != nil {
 			return driver.Inventory{}, err
 		}
 		for _, h := range complement(windowFrom, windowTo, w) {
 			items = append(items, driver.MirrorItem{ID: holeID(staff, h[0]), Court: want[staff], Start: h[0], End: h[1], Class: driver.ClassClub, Opaque: true})
 		}
 	}
+	d.tiles.set(read)
 	for _, it := range items {
 		if it.Start.Before(q.To) && it.End.After(q.From) {
 			inv.Items = append(inv.Items, it)
@@ -218,10 +294,11 @@ func (d *Driver) MirrorLookup(ctx context.Context, id string) ([]driver.MirrorIt
 }
 
 // CreateBlock implements driver.Mirrorer: records of the service client
-// over the span (book), their comment the marker and their set tag. A
-// create that goes wrong is undone as a partner's is.
+// over the span (book) as BlockSpan takes it, their comment the marker and
+// their set tag. A create that goes wrong is undone as a partner's is.
 func (d *Driver) CreateBlock(ctx context.Context, req driver.BlockRequest) (driver.MirrorItem, error) {
 	marker := req.Source.String()
+	req.Start, req.End = d.BlockSpan(req.Start, req.End)
 	ids, err := d.book(ctx, driver.CreateRequest{Court: req.Court, Start: req.Start, End: req.End, Kind: driver.KindGame},
 		func(tag string) string { return marker + " " + tag }, func(rec *details) bool { return d.isMirror(rec, marker) })
 	if err != nil {
