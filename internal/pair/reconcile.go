@@ -114,6 +114,11 @@ type Report struct {
 	Created []driver.MirrorItem
 	Removed []driver.MirrorItem
 	Alarms  []Alarm
+	// Recheck: the pass found a mirror invalid that only a second pass in
+	// a row may remove (no marker, no point read of its source) and had not
+	// found so before: the sooner the next pass, the sooner it goes (the
+	// scheduler runs one Recheck later, D11).
+	Recheck bool
 }
 
 // side is one CRM in a pass.
@@ -220,6 +225,11 @@ func errText(err error) string {
 func (p *Pair) finish(rep *Report, next *memo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for k := range next.suspect {
+		if !p.memo.suspect[k] {
+			rep.Recheck = true
+		}
+	}
 	p.memo = *next
 	var keep []sticky
 	for _, s := range p.sticky {
