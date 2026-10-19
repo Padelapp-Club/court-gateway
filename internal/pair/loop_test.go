@@ -24,9 +24,9 @@ type fakeCRM struct {
 	incomplete bool
 	invErr     error
 	lookupErr  error
-	noLookup   bool                                        // MirrorLookup is ErrNotSupported
+	noLookup   bool                                              // MirrorLookup is ErrNotSupported
 	reread     func(q driver.OccupancyQuery) []driver.MirrorItem // more items a read of one court finds
-	round      time.Duration                               // BlockSpan rounds out to it
+	round      time.Duration                                     // BlockSpan rounds out to it
 	created    []driver.BlockRequest
 	deleted    []string
 	seq        int
@@ -268,7 +268,7 @@ func TestFuseCountsBothSides(t *testing.T) {
 // any write: no creation, no removal, an alarm.
 func TestIncompleteReadAbortsPass(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
+		name   string
 		break_ func(l *loop)
 	}{
 		{"primary incomplete", func(l *loop) { l.a.incomplete = true }},

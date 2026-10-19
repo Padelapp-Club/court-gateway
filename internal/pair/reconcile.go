@@ -338,7 +338,9 @@ func (p *Pair) plan(A, B *side, from, to time.Time) plan {
 	p.mu.Lock()
 	prev := p.memo
 	p.mu.Unlock()
-	alarm := func(code, format string, a ...any) { pl.alarms = append(pl.alarms, Alarm{code, fmt.Sprintf(format, a...)}) }
+	alarm := func(code, format string, a ...any) {
+		pl.alarms = append(pl.alarms, Alarm{code, fmt.Sprintf(format, a...)})
+	}
 
 	unitsOf := map[*side][]unit{A: p.units(A.inv.Items, from, to), B: p.units(B.inv.Items, from, to)}
 
@@ -605,4 +607,3 @@ func (p *Pair) remove(ctx context.Context, r removalPlan, pl *plan, rep *Report)
 	rep.Removed = append(rep.Removed, r.it)
 	return true
 }
-

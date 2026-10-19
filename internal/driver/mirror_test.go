@@ -16,9 +16,9 @@ func TestParseMirrorMarker(t *testing.T) {
 		{"[cg-mirror:fitness1c:x-room-202610201000-202610201100]", MarkerValid, MirrorMarker{"fitness1c", "x-room-202610201000-202610201100"}},
 		{"[cg-mirror:yclients:y-1-2]", MarkerValid, MirrorMarker{"yclients", "y-1-2"}},
 		{"[cg-mirror:lunda:L-123]", MarkerValid, MirrorMarker{"lunda", "L-123"}}, // case kept as written
-		{"[cg-mirror:lunda:l-12", MarkerDamaged, MirrorMarker{}},                  // cut off
-		{"[cg-mirror:lunda:l-1 23]", MarkerDamaged, MirrorMarker{}},               // a space inside
-		{"[cg-mirror:lunda:l-123] Иванов", MarkerDamaged, MirrorMarker{}},         // more text
+		{"[cg-mirror:lunda:l-12", MarkerDamaged, MirrorMarker{}},                 // cut off
+		{"[cg-mirror:lunda:l-1 23]", MarkerDamaged, MirrorMarker{}},              // a space inside
+		{"[cg-mirror:lunda:l-123] Иванов", MarkerDamaged, MirrorMarker{}},        // more text
 		{"[cg-mirror:lunda:l-123][cg-mirror:lunda:l-124]", MarkerDamaged, MirrorMarker{}},
 		{"[cg-mirror:crm:l-123]", MarkerDamaged, MirrorMarker{}},   // no such CRM
 		{"[cg-mirror:LUNDA:l-123]", MarkerDamaged, MirrorMarker{}}, // the source in lower case only
