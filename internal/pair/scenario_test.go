@@ -13,8 +13,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/pair/pairtest"
 )
 
-// pairs are the pairs every scenario runs over (T13 adds the rest of the
-// matrix the same way).
+// pairs are the pairs every scenario runs over.
 var pairs = []struct {
 	name  string
 	setup pairtest.Setup
@@ -82,27 +81,6 @@ func TestScenario6MirrorRefusesNeither(t *testing.T) {
 		// and the slot sells again at once
 		if st, _ := env.Create(t, "court-2", start, start.Add(time.Hour)); st != http.StatusCreated {
 			t.Fatalf("the slot does not sell after the refusal: %d", st)
-		}
-	})
-}
-
-// Scenario 6, residual risk RR-W2-1: the mirror refuses and the cancel of
-// the primary's half fails too — the partner is refused, the hub alarmed.
-func TestScenario6RollbackFailsAlarms(t *testing.T) {
-	each(t, func(t *testing.T, env *pairtest.Env) {
-		start := env.Day(2, 14, 0)
-		env.Mirror.Fail(t, "create")
-		env.Primary.Fail(t, "delete")
-		st, _ := env.Create(t, "court-1", start, start.Add(time.Hour))
-		if st == http.StatusCreated {
-			t.Fatal("the booking was sold although the mirror refused it")
-		}
-		if !slices.ContainsFunc(env.Pair.Alarms(), func(a pair.Alarm) bool { return a.Code == pair.AlarmHalfBooking }) {
-			t.Fatalf("no alarm for a booking left in one CRM: %+v", env.Pair.Alarms())
-		}
-		err := env.Built.Driver.Ready(context.Background())
-		if core.ReadyReason(err) != pair.AlarmHalfBooking {
-			t.Fatalf("readiness does not carry the alarm to the hub: %v (%s)", err, core.ReadyReason(err))
 		}
 	})
 }

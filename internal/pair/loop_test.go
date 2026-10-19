@@ -562,11 +562,6 @@ func TestLoopWritesUnderCourtLock(t *testing.T) {
 // the horizon, is not mirrored; a mirror that has started is never
 // removed, while one starting within Lead that has not started is removed
 // once the point read of its source says it is gone.
-//
-// (Before D8 this test asserted the opposite for "l-soon": a booking
-// starting within Lead was not mirrored at all — the defect D8 fixes.
-// Before T13-F1 it asserted that "b-in-lead" is kept: a club booking
-// cancelled minutes before its start kept its block for its whole span.)
 func TestWindow(t *testing.T) {
 	l := newLoop(t) // 09:00
 	l.b.add(club("l-soon", "court-1", l.at(0, 9, 2), l.at(0, 10, 2)))

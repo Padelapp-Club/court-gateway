@@ -1,7 +1,7 @@
 package pair_test
 
-// Regressions of the merge of the two builds of wave 2 (D8–D20 of the
-// dual-build comparison, 2026-10-20), on the CRM stubs.
+// Regressions of D8–D20 of the dual-build comparison (2026-10-20), on the
+// CRM stubs.
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func gridAfter(t time.Time, loc *time.Location) time.Time {
 	return step
 }
 
-// D8 on the stubs (the comparison's probe TestProbeO_Lead): a club booking
+// D8 on the stubs: a club booking
 // that starts in 3 minutes, and one under way since 10 minutes ago, get
 // their mirrors in the other CRM by the next pass — the one under way from
 // the next step of the 30-minute grid, never from the past — both ways.

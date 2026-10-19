@@ -12,7 +12,7 @@ import (
 // make up is blocked in YCLIENTS by the shortest length they make up that
 // covers it — over, never under — in one pass; the next passes leave that
 // mirror as it is (no remove and make again), and the source's cancel
-// removes it. A length they make up is blocked exactly, as before.
+// removes it. A length they make up is blocked exactly.
 func TestYclientsMirrorCoversLengthServicesCannotMake(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

@@ -1,7 +1,7 @@
 package pair_test
 
-// T13, scenario 6: a PadelApp booking lands in both CRMs or in neither —
-// the cells the scenario tests before T13 left open, on every pair.
+// T13, scenario 6: a PadelApp booking lands in both CRMs or in neither, on
+// every pair.
 
 import (
 	"context"

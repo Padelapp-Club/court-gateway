@@ -6,7 +6,6 @@ package pair_test
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -291,5 +290,3 @@ func TestT13IncompleteReadWritesNothing(t *testing.T) {
 // incompleteText tells, in MIRROR_READ_INCOMPLETE, a read the CRM answered
 // incompletely from one that failed: each fault takes its own branch.
 var incompleteText = map[string]string{"incomplete": "ответила не полностью", "failed": "не прочитана"}
-
-var _ = http.StatusOK

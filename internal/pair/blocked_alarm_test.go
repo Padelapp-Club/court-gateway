@@ -44,7 +44,7 @@ func onlyFirstBlocked(t *testing.T, env *pairtest.Env, s time.Time, pass int) {
 }
 
 // A needed mirror whose span a valid mirror of another booking holds is
-// skipped in every pass, as before; the second complete pass in a row that
+// skipped in every pass; the second complete pass in a row that
 // skips it raises MIRROR_OVERLAP naming the court, the time and the CRM —
 // not the first. Nothing is made or removed otherwise than without the
 // alarm.
@@ -140,7 +140,7 @@ func TestMirrorHeldAcrossAnAbortedPassDoesNotAlarm(t *testing.T) {
 }
 
 // A hold (a Lunda draft while someone pays) on a needed mirror's span
-// stops its create in every pass it is there, as before, and is never
+// stops its create in every pass it is there, and is never
 // counted for the alarm: it lasts minutes, longer than a pass.
 func TestMirrorHeldByAHoldDoesNotAlarm(t *testing.T) {
 	l := newLoop(t)

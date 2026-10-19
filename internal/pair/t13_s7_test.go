@@ -327,6 +327,3 @@ func TestT13S7HorizonEdge(t *testing.T) {
 		}
 	})
 }
-
-func first(a, _ time.Time) time.Time  { return a }
-func second(_, b time.Time) time.Time { return b }

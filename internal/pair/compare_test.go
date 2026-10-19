@@ -1,8 +1,7 @@
 package pair_test
 
-// Regressions kept from the probes of the dual-build comparison
-// (2026-10-20): scenarios where this build was right and the other was not,
-// so that it stays right.
+// Regressions of scenarios found by the probes of the dual-build
+// comparison (2026-10-20).
 
 import (
 	"context"
@@ -26,8 +25,7 @@ func noAlarms(t *testing.T, label string, rep pair.Report) {
 // A club booking of the primary moved onto a span overlapping its old one
 // (10–11 → 10:30–11:30), and an unrelated cancellation on another court,
 // in one pass: the old mirror goes first, the new one is made, the
-// cancelled one's mirror goes — no alarm, one mirror left (the other build
-// froze every removal of the club here).
+// cancelled one's mirror goes — no alarm, one mirror left.
 func TestOverlappingMoveOfThePrimary(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(5, 10, 0)
@@ -163,8 +161,7 @@ func TestUnmarkedLundaHalf(t *testing.T) {
 
 // A YCLIENTS club with 200 records over two weeks: one pass reads it by
 // lists (no read per record) well within the production pass timeout and
-// makes MaxCreates mirrors (the other build read every record and timed
-// out without a mirror).
+// makes MaxCreates mirrors.
 func TestYclientsVolumeWithinOnePass(t *testing.T) {
 	env := pairtest.YclientsLunda(t, pairtest.Options{})
 	for i := range 200 {

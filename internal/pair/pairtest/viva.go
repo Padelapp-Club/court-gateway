@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Padelapp-Club/court-gateway/internal/contract"
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/viva/vivastub"
 )
@@ -189,5 +188,3 @@ func (v *VivaStub) Incomplete(t testing.TB) (string, func()) {
 	v.Stub.FailNext(http.MethodGet, "/exercises", http.StatusInternalServerError, "{}")
 	return "failed", func() {}
 }
-
-var _ = contract.BookKey

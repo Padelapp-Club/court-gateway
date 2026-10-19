@@ -17,8 +17,7 @@ import (
 // default fuse of 3 — no mirror removed, MIRROR_FUSE; the operator raises
 // mirror.max_removals on the hub and the very next pass removes them — in
 // 1C too, whose mirrors carry no marker: the club's new pair keeps what
-// the passes before it saw (D10; before D10 a raised fuse restarted the
-// two passes in 1C, and this test settled two passes after it).
+// the passes before it saw (D10).
 func TestFuseOnStubs(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		var ids []string
@@ -53,26 +52,7 @@ func TestFuseOnStubs(t *testing.T) {
 	})
 }
 
-// A day of Lunda that cannot be read makes its read incomplete: the pass
-// writes nothing — not even the creates it could make — and alarms.
-func TestIncompleteLundaReadOnStubs(t *testing.T) {
-	env := pairtest.VivaLunda(t, pairtest.Options{})
-	start := env.Day(2, 10, 0)
-	env.Primary.Book(t, "court-1", start, start.Add(time.Hour))
-	env.LundaStub.FailNextQuery(http.MethodGet, "/club/booking/slots-load", "date="+env.Day(5, 0, 0).Format("2006-01-02"), http.StatusServiceUnavailable, "{}")
-	rep := env.Pass(t)
-	if !rep.Aborted || !alarmed(rep, pair.AlarmIncomplete) || len(rep.Created) > 0 {
-		t.Fatalf("pass: %+v", rep)
-	}
-	if len(pairtest.Of(env.Mirror.Live(t), pairtest.Mirror, "")) > 0 {
-		t.Fatal("a pass with an incomplete read wrote a mirror")
-	}
-	if rep := env.Pass(t); rep.Aborted || len(rep.Created) != 1 {
-		t.Fatalf("the next pass: %+v", rep)
-	}
-}
-
-// A failed read of the primary aborts the pass the same way.
+// A failed read of the primary aborts the pass: nothing is removed.
 func TestFailedPrimaryReadOnStubs(t *testing.T) {
 	env := pairtest.VivaLunda(t, pairtest.Options{})
 	start := env.Day(2, 10, 0)
@@ -114,7 +94,7 @@ func TestDeleteBlockReadsAgain(t *testing.T) {
 	env := pairtest.VivaLunda(t, pairtest.Options{})
 	s := env.Day(3, 10, 0)
 	env.Primary.Book(t, "court-2", s, s.Add(time.Hour))
-	src := env.Mirror.Book(t, "court-2", s.Add(2*time.Hour), s.Add(3*time.Hour))
+	env.Mirror.Book(t, "court-2", s.Add(2*time.Hour), s.Add(3*time.Hour))
 	rep := env.Pass(t)
 	if len(rep.Created) != 2 {
 		t.Fatalf("pass: %+v", rep)
@@ -138,5 +118,4 @@ func TestDeleteBlockReadsAgain(t *testing.T) {
 	if n := len(pairtest.Of(env.Primary.Live(t), pairtest.Mirror, "")) + len(pairtest.Of(env.Mirror.Live(t), pairtest.Mirror, "")); n != 2 {
 		t.Fatalf("mirrors left: %d", n)
 	}
-	_ = src
 }
