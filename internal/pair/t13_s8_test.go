@@ -96,21 +96,7 @@ func TestT13S8ClubBookingsByteForByte(t *testing.T) {
 			four = append(four, book(env.Mirror, "court-1", s, s.Add(time.Hour), "Lunda's booking to cancel", "", true))
 		}
 
-		rep := env.Settle(t)
-		if !alarmed(rep, pair.AlarmOverlap) || !alarmed(rep, pair.AlarmDamaged) {
-			t.Fatalf("first passes: no overlap or damaged alarm: %+v", rep.Alarms)
-		}
-		for _, w := range mirrored {
-			if !pairtest.Has(w.dst.Live(t), pairtest.Mirror, w.court, w.start, w.end) {
-				t.Errorf("%s (%s) is not blocked in %s: %s", w.what, w.handle, w.dst.Type(), pairtest.Spans(w.dst.Live(t)))
-			}
-		}
-		if t.Failed() {
-			t.FailNow()
-		}
-		if !copied {
-			t.Log("1C: no copied marker in the primary (a rental has no comment)")
-		}
+		// the club's records as the club left them, before any pass
 		ps, ls := snap(t, env.Primary, pClub), snap(t, env.Mirror, lClub)
 		same := func(when string) {
 			t.Helper()
@@ -119,6 +105,21 @@ func TestT13S8ClubBookingsByteForByte(t *testing.T) {
 			if t.Failed() {
 				t.FailNow()
 			}
+		}
+		rep := env.Settle(t)
+		// a club booking left unblocked is an error, not the end: the
+		// records are compared all the same
+		for _, w := range mirrored {
+			if !pairtest.Has(w.dst.Live(t), pairtest.Mirror, w.court, w.start, w.end) {
+				t.Errorf("%s (%s) is not blocked in %s: %s", w.what, w.handle, w.dst.Type(), pairtest.Spans(w.dst.Live(t)))
+			}
+		}
+		same("the first passes")
+		if !alarmed(rep, pair.AlarmOverlap) || !alarmed(rep, pair.AlarmDamaged) {
+			t.Fatalf("first passes: no overlap or damaged alarm: %+v", rep.Alarms)
+		}
+		if !copied {
+			t.Log("1C: no copied marker in the primary (a rental has no comment)")
 		}
 		checkWrites := func(when string, rep pair.Report) {
 			t.Helper()
