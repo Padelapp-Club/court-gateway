@@ -171,12 +171,17 @@ func readyWord(h installationHealth) string {
 	return "not ready " + reasonText(h)
 }
 
-// reasonText is the reason code with the clubs it is about, if any.
+// reasonText is the reason code with the clubs it is about, if any, and
+// what to do about it when the gateway says.
 func reasonText(h installationHealth) string {
-	if len(h.clubs) == 0 {
-		return h.reason
+	text := h.reason
+	if len(h.clubs) > 0 {
+		text += " (clubs: " + strings.Join(h.clubs, ", ") + ")"
 	}
-	return h.reason + " (clubs: " + strings.Join(h.clubs, ", ") + ")"
+	if h.detail != "" {
+		text += ": " + h.detail
+	}
+	return text
 }
 
 type statusOptions struct {

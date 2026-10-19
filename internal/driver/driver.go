@@ -60,6 +60,12 @@ func (e *MisconfigError) Error() string { return strings.Join(e.Problems, "; ") 
 type ConfigAlert struct {
 	Code     string // a readiness reason, e.g. TIMEZONE_MISMATCH
 	Problems []string
+	// Detail are texts the hub may show the operator next to Code: fixed
+	// Russian sentences filled in with courts, times, counts and ids only —
+	// never a CRM's own words, never a person's data (the reconciliation's
+	// alarms, which tell what to do: core.ReadyDetail). Problems stay in
+	// the gateway's logs.
+	Detail []string
 }
 
 func (e *ConfigAlert) Error() string { return e.Code + ": " + strings.Join(e.Problems, "; ") }

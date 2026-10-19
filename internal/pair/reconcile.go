@@ -280,6 +280,9 @@ func (p *Pair) alarmAlert() *driver.ConfigAlert {
 	for _, a := range al {
 		out.Problems = append(out.Problems, a.Problem)
 	}
+	// the alarms' texts are the loop's own templates (courts, times,
+	// counts, ids; errText for a failure): the hub shows them (D12)
+	out.Detail = slices.Clone(out.Problems)
 	return out
 }
 

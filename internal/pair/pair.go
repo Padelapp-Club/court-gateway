@@ -223,6 +223,9 @@ func (p *Pair) merge(ea, eb error, loop *driver.ConfigAlert) error {
 	for _, a := range alerts {
 		out.Problems = append(out.Problems, a.Problems...)
 	}
+	if loop != nil {
+		out.Detail = loop.Detail // only the loop's texts go to the hub
+	}
 	return out
 }
 

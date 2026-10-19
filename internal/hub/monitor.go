@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
@@ -53,6 +55,7 @@ type installationHealth struct {
 	ready     bool
 	reason    string
 	clubs     []string  // the clubs reason is about
+	detail    string    // what to do about reason (a pair's alarms), cleaned
 	nextLogin time.Time // gateway clock: when a rejected CRM login is tried again
 	notReady  int       // heartbeats in a row with ready=false
 	beats     int
@@ -80,6 +83,9 @@ type Health struct {
 	Ready       bool
 	Reason      string
 	ReasonClubs []string
+	// ReasonDetail is the gateway's text on what to do about Reason (the
+	// reconciliation alarms of a club in two CRMs: MIRROR_*), "" without.
+	ReasonDetail string
 	// NextLogin is when the gateway tries a login the CRM rejected again
 	// (gateway clock); zero without a rejection.
 	NextLogin    time.Time
@@ -191,7 +197,11 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat, bound bool
 		return
 	}
 	h.beats++
-	h.ready, h.reason, h.clubs, h.nextLogin = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil, time.Time{}
+	h.ready, h.reason, h.clubs, h.nextLogin, h.detail = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil, time.Time{}, ""
+	if !hb.Ready && strings.HasPrefix(h.reason, "MIRROR_") {
+		// only a pair's alarms carry a text for the operator (D12)
+		h.detail = cleanDetail(hb.ReasonDetail, maxReasonDetail)
+	}
 	if !hb.Ready {
 		h.clubs = cleanClubs(hb.ReasonClubs)
 		h.clubs = h.clubs[:min(len(h.clubs), 20)]
@@ -298,6 +308,24 @@ func cleanConfigError(s string, max int) string {
 	return s
 }
 
+// maxReasonDetail bounds a heartbeat's reason_detail kept (in runes).
+const maxReasonDetail = 2000
+
+// cleanDetail keeps a text for the operator: no control characters, at
+// most max runes (never cut inside one).
+func cleanDetail(s string, max int) string {
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, s))
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max])
+	}
+	return s
+}
+
 func cleanClubs(ids []string) []string {
 	out := []string{}
 	for _, id := range ids {
@@ -358,7 +386,7 @@ func (m *Monitor) Health(installation string) Health {
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
-		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, ReasonClubs: append([]string(nil), h.clubs...), NextLogin: h.nextLogin, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, ReasonClubs: append([]string(nil), h.clubs...), ReasonDetail: h.detail, NextLogin: h.nextLogin, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
 		AppliedConfig: tunnel.AppliedConfig{ConfigVersion: h.applied.ConfigVersion, ConfigError: h.applied.ConfigError,
 			ClubErrors: maps.Clone(h.applied.ClubErrors), Clubs: append([]string(nil), h.applied.Clubs...)},
 	}

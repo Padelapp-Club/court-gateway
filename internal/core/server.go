@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
@@ -311,6 +313,9 @@ func classify(err error) (int, string, string) {
 type ReadyError struct {
 	Clubs []string
 	Err   error
+	// alerts are the config alerts of every club in Clubs (Err is the
+	// first's), for ReadyDetail
+	alerts []error
 }
 
 func (e *ReadyError) Error() string {
@@ -318,6 +323,60 @@ func (e *ReadyError) Error() string {
 }
 
 func (e *ReadyError) Unwrap() error { return e.Err }
+
+// Bounds of ReadyDetail: each text, and all of them (in runes).
+const (
+	readyDetailText = 500
+	readyDetailMax  = 2000
+)
+
+// ReadyDetail is what the operator is to do about a readiness failure, in
+// Russian, for the heartbeat (D12): the Detail texts of its config alerts
+// (driver.ConfigAlert — the reconciliation's alarms), each club's prefixed
+// with the club when several have one; control characters dropped, each
+// text and the whole bounded. Nothing else of an error is ever taken: an
+// upstream error's words or a CRM's answer may hold anything.
+func ReadyDetail(err error) string {
+	detail := func(e error) []string {
+		var ca *driver.ConfigAlert
+		if !errors.As(e, &ca) {
+			return nil
+		}
+		var out []string
+		for _, d := range ca.Detail {
+			if d = cleanDetail(d, readyDetailText); d != "" {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	var texts []string
+	var re *ReadyError
+	if errors.As(err, &re) && len(re.alerts) > 1 && len(re.alerts) == len(re.Clubs) {
+		for i, e := range re.alerts {
+			for _, d := range detail(e) {
+				texts = append(texts, "клуб "+re.Clubs[i]+": "+d)
+			}
+		}
+	} else {
+		texts = detail(err)
+	}
+	return cleanDetail(strings.Join(texts, "; "), readyDetailMax)
+}
+
+// cleanDetail drops control characters and keeps at most max runes.
+func cleanDetail(s string, max int) string {
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, s))
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max-1]) + "…"
+	}
+	return s
+}
 
 // ReadyClubs returns the clubs a readiness failure is about (none for the
 // account's own login check).

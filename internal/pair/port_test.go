@@ -4,10 +4,13 @@ package pair_test
 // dual-build comparison, 2026-10-20), on the CRM stubs.
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Padelapp-Club/court-gateway/internal/core"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/fitness1c/fitness1cstub"
 	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda/lundastub"
 	"github.com/Padelapp-Club/court-gateway/internal/pair"
@@ -143,6 +146,30 @@ func TestUnmappedMirrorOnStubs(t *testing.T) {
 			}
 		}
 	})
+}
+
+// D12 on the stubs: the fuse's alarm — its count, its limit and the way out
+// — is the readiness detail the heartbeat carries to the hub, the club's
+// readiness code MIRROR_FUSE; no CRM's words, no client's data in it.
+func TestFuseAlarmTextIsTheReadinessDetail(t *testing.T) {
+	env := pairtest.VivaLunda(t, pairtest.Options{})
+	var ids []string
+	for i := range 4 {
+		s := env.Day(3, 9+2*i, 0)
+		ids = append(ids, env.Mirror.Book(t, "court-1", s, s.Add(time.Hour)))
+	}
+	env.Pass(t)
+	for _, id := range ids {
+		env.Mirror.Cancel(t, id)
+	}
+	if rep := env.Pass(t); !alarmed(rep, pair.AlarmFuse) {
+		t.Fatalf("pass: %+v", rep)
+	}
+	err := env.Built.Clubs.Ready(context.Background())
+	d := core.ReadyDetail(err)
+	if core.ReadyReason(err) != pair.AlarmFuse || !strings.Contains(d, "к снятию 4 отражений") || !strings.Contains(d, "mirror.max_removals") || strings.Contains(d, "PRIVACY-MARKER") {
+		t.Fatalf("readiness %q, detail %q", core.ReadyReason(err), d)
+	}
 }
 
 // D15: a 1C mirror is told by the mirror client alone. A mirror whose

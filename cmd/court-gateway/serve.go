@@ -173,7 +173,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		defer t.Stop()
 		// each club has its own time limit (core.ReadyTimeout); this only
 		// bounds the whole round
-		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Clubs: core.ReadyClubs, Interval: statusInterval,
+		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Clubs: core.ReadyClubs, Detail: core.ReadyDetail, Interval: statusInterval,
 			Version: version, Build: build()}
 		var st core.HealthStatus
 		var crm tunnel.Heartbeat // the last self-check

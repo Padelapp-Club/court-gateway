@@ -18,9 +18,14 @@ type Heartbeat struct {
 	Ready bool   `json:"ready"`
 	// Reason is a short upper-case code when Ready is false; ReasonClubs
 	// are the clubs it is about (none for the account or the hub).
-	Reason      string    `json:"reason,omitempty"`
-	ReasonClubs []string  `json:"reason_clubs,omitempty"`
-	CheckedAt   time.Time `json:"checked_at"`
+	Reason      string   `json:"reason,omitempty"`
+	ReasonClubs []string `json:"reason_clubs,omitempty"`
+	// ReasonDetail is what the operator is to do about Reason, in Russian,
+	// when the gateway has such a text (the alarms of a pair's
+	// reconciliation): fixed sentences, no CRM's words, no personal data.
+	// A hub older than it ignores it.
+	ReasonDetail string    `json:"reason_detail,omitempty"`
+	CheckedAt    time.Time `json:"checked_at"`
 	// NextLogin is when the gateway tries a login the CRM rejected again
 	// (the club's set-password: at once); zero without a rejection.
 	NextLogin time.Time `json:"next_login,omitzero"`
@@ -59,6 +64,9 @@ type SelfCheck struct {
 	// Clubs to the clubs it is about.
 	Reason func(error) string
 	Clubs  func(error) []string
+	// Detail maps it to ReasonDetail: operator-safe text only, never an
+	// error's own words (core.ReadyDetail).
+	Detail func(error) string
 	// Interval between checks (default 60s); each is bounded by
 	// selfCheckTimeout.
 	Interval time.Duration
@@ -95,6 +103,9 @@ func (s *SelfCheck) Step(ctx context.Context) (Heartbeat, bool) {
 		}
 		if s.Clubs != nil {
 			hb.ReasonClubs = s.Clubs(err)
+		}
+		if s.Detail != nil {
+			hb.ReasonDetail = s.Detail(err)
 		}
 	}
 	return hb, true
