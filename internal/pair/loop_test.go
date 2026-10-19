@@ -559,11 +559,14 @@ func TestLoopWritesUnderCourtLock(t *testing.T) {
 // Lead) is mirrored whole, one under way from the first step of the
 // 30-minute grid after now — no block starts in the past — and both
 // mirrors stay valid as time goes on; one ending before that step, or past
-// the horizon, is not mirrored; a mirror not wholly ahead of the range read
-// whole (started, or starting within Lead) is never removed.
+// the horizon, is not mirrored; a mirror that has started is never
+// removed, while one starting within Lead that has not started is removed
+// once the point read of its source says it is gone.
 //
 // (Before D8 this test asserted the opposite for "l-soon": a booking
-// starting within Lead was not mirrored at all — the defect D8 fixes.)
+// starting within Lead was not mirrored at all — the defect D8 fixes.
+// Before T13-F1 it asserted that "b-in-lead" is kept: a club booking
+// cancelled minutes before its start kept its block for its whole span.)
 func TestWindow(t *testing.T) {
 	l := newLoop(t) // 09:00
 	l.b.add(club("l-soon", "court-1", l.at(0, 9, 2), l.at(0, 10, 2)))
@@ -581,8 +584,8 @@ func TestWindow(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("created %v, want %v", got, want)
 	}
-	if len(l.a.deleted) != 0 {
-		t.Fatalf("deleted %v", l.a.deleted)
+	if !slices.Equal(l.a.deleted, []string{"b-in-lead"}) {
+		t.Fatalf("deleted %v, want [b-in-lead] (b-started has begun)", l.a.deleted)
 	}
 	// valid as they are in the next passes, also when the grid's next
 	// step has moved on
@@ -591,6 +594,32 @@ func TestWindow(t *testing.T) {
 		if rep := l.pass(); len(rep.Created)+len(rep.Removed) > 0 {
 			t.Fatalf("at %s a valid mirror was made again or removed: %+v", now.Format("15:04"), rep)
 		}
+	}
+}
+
+// T13-F1's bound: a mirror within Lead is judged only while every source it
+// could be valid for overlaps the range read whole. In a CRM that books
+// whole seances (1C, no marker) the block 09:30–10:00 within the lead at
+// 09:28 is also the block of a booking 09:30–09:32, which ends before the
+// range read (from 09:33) and need not be listed: invalid as it looks pass
+// after pass, it is left alone. (A block of more than one seance within
+// the lead is judged and removed: TestT13S7FindingCancelWithinLead.)
+func TestLeadMirrorWhoseSourceMayEndBeforeTheReadIsKept(t *testing.T) {
+	l := newLoop(t)
+	l.a.typ = "fitness1c"
+	l.a.round = 30 * time.Minute
+	l.p, _ = pair.New(l.a, l.b, pair.Options{PrimaryType: "fitness1c", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: l.loc,
+		Hours: [7]*[2]int{{420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}}, Clock: func() (time.Time, bool) { return l.now, true }})
+	l.now = l.at(0, 9, 28)
+	l.b.add(club("l-short", "court-1", l.at(0, 9, 30), l.at(0, 9, 32)))
+	l.a.add(driver.MirrorItem{ID: "x-mirror", Court: "court-1", Start: l.at(0, 9, 30), End: l.at(0, 10, 0), Class: driver.ClassMirror})
+	for range 3 {
+		if rep := l.pass(); rep.Aborted || len(rep.Removed) > 0 {
+			t.Fatalf("pass: %+v", rep)
+		}
+	}
+	if len(l.a.deleted) != 0 {
+		t.Fatalf("deleted %v", l.a.deleted)
 	}
 }
 

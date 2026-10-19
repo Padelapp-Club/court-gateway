@@ -51,8 +51,11 @@ import (
 // complete for (near midnight a CRM's "today" may already be the next day
 // for its clock, and Viva leaves out its past days). Every driver lists
 // what overlaps the range read, so a booking under way or starting within
-// the lead is mirrored as the read lists it; but a mirror is removed only
-// within the range read whole, never one that starts within the lead.
+// the lead is mirrored as the read lists it. A mirror is removed when it
+// lies within the range read whole — or when it starts within the lead but
+// has not started, and every source it could be valid for overlaps that
+// range (removable): the same evidence then holds for it (T13-F1, a club
+// booking cancelled minutes before its start frees its slot).
 const Lead = 5 * time.Minute
 
 // BlockGrid: no block is written to start in the past (the drivers' own
@@ -341,6 +344,25 @@ func blockOf(u unit, dst driver.Mirrorer, now, cut time.Time) (start, end time.T
 // inWindow: the interval is wholly within [from, to].
 func inWindow(start, end, from, to time.Time) bool { return !start.Before(from) && !end.After(to) }
 
+// removable: an invalid mirror m in dst may be judged by the pass of time
+// now that read both CRMs whole over [from, to] — it has not started, ends
+// within the horizon, and every source it could be valid for overlaps
+// [from, to), so a source still there was listed by the read (or, with a
+// marker, is found by the point read remove makes before any removal).
+// That holds for a mirror wholly within [from, to]; for one that starts
+// within the lead (T13-F1) only while it ends after the last end a source
+// ending by from could give it (dst rounds a block out: BlockSpan).
+func removable(m driver.MirrorItem, dst driver.Mirrorer, now, from, to time.Time) bool {
+	switch {
+	case m.Started || !m.Start.After(now) || m.End.After(to):
+		return false
+	case !m.Start.Before(from):
+		return true
+	}
+	_, last := dst.BlockSpan(now, from)
+	return m.End.After(last)
+}
+
 func overlaps(a, b driver.MirrorItem) bool {
 	return a.Court == b.Court && a.Start.Before(b.End) && b.Start.Before(a.End)
 }
@@ -517,8 +539,8 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 					break
 				}
 			}
-			if found || !inWindow(m.Start, m.End, from, to) || m.Started {
-				continue // valid, or not wholly within the range read whole: left alone
+			if found || !removable(m, dst.m, now, from, to) {
+				continue // valid, or started, or its source may lie beyond the range read: left alone
 			}
 			invalid = append(invalid, m)
 		}

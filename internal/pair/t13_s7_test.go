@@ -7,7 +7,6 @@ package pair_test
 
 import (
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -129,13 +128,19 @@ func hasAny(entries []pairtest.Entry, court string, spans [][2]time.Time) bool {
 
 // eachPairDir runs f on a new Env of every pair for each direction.
 func eachPairDir(t *testing.T, f func(t *testing.T, env *pairtest.Env, d direction)) {
+	eachPairDirAt(t, pairtest.Options{}, f)
+}
+
+// eachPairDirAt is eachPairDir on Envs set up with o — each with a clock
+// of its own made when it is set up, where o.At is set.
+func eachPairDirAt(t *testing.T, o pairtest.Options, f func(t *testing.T, env *pairtest.Env, d direction)) {
 	for _, p := range pairs {
 		t.Run(p.name, func(t *testing.T) {
 			if p.name != "yclients+lunda" {
 				t.Parallel()
 			}
 			for i := range 2 {
-				env := p.setup(t, pairtest.Options{})
+				env := p.setup(t, o)
 				d := directions(env)[i]
 				t.Run(d.name, func(t *testing.T) { f(t, env, d) })
 			}
@@ -157,23 +162,24 @@ func mirrorers(env *pairtest.Env, d direction) (src, dst driver.Mirrorer) {
 // in 3 minutes (off the grid) are blocked by the next pass — the one under
 // way from the next step of the grid, nothing in the past — and the passes
 // after change nothing; the one under way, cancelled, frees its block
-// (one that has not begun and starts beyond the lead).
+// (one that has not begun and starts beyond the lead). The CRMs and the
+// hub read 15:10 of the club's day when it is set up (Options.At): the
+// next step of the grid is 20 minutes ahead whenever the test runs.
 func TestT13S7UnderWayAndAboutToStart(t *testing.T) {
-	eachPairDir(t, func(t *testing.T, env *pairtest.Env, d direction) {
-		daytime(t, env)
+	eachPairDirAt(t, pairtest.Options{At: "15:10"}, func(t *testing.T, env *pairtest.Env, d direction) {
 		srcM, dstM := mirrorers(env, d)
 		// the source as its CRM shows it (1C: its busy time, whole seances)
 		span := func(s, e time.Time) (time.Time, time.Time) { return srcM.BlockSpan(s, e) }
-		n := time.Now().In(env.Location)
+		n := env.Now().In(env.Location)
 		step := gridAfter(n, env.Location)
 		uwS, uwE := step.Add(-time.Hour), step.Add(time.Hour) // began at least 30 minutes ago
 		soonS := n.Truncate(time.Minute).Add(3 * time.Minute)
 		soonE := soonS.Add(time.Hour)
 		uw := d.src.Book(t, "court-1", uwS, uwE)
 		soon := d.src.Book(t, "court-2", soonS, soonE)
-		before := time.Now()
+		before := env.Now()
 		rep := env.Pass(t)
-		after := time.Now()
+		after := env.Now()
 		if rep.Aborted || len(rep.Alarms) > 0 || len(rep.Created) != 2 {
 			t.Fatalf("pass: %+v", rep)
 		}
@@ -195,9 +201,8 @@ func TestT13S7UnderWayAndAboutToStart(t *testing.T) {
 			t.Fatalf("the passes after: %+v", rep)
 		}
 		m := mirrorsOn(t, d.dst, "court-1")
-		if len(m) != 1 || !m[0].Start.After(time.Now().Add(pair.Lead+time.Minute)) {
-			t.Logf("the block of the booking under way starts within the lead (%s): its removal is not asserted", pairtest.Spans(m))
-			return
+		if len(m) != 1 || !m[0].Start.After(env.Now().Add(pair.Lead+time.Minute)) {
+			t.Fatalf("the block of the booking under way does not start beyond the lead: %s", pairtest.Spans(m))
 		}
 		d.src.Cancel(t, uw)
 		if rep := d.settle(t, env); len(rep.Removed) != 1 || len(mirrorsOn(t, d.dst, "court-1")) != 0 {
@@ -211,12 +216,12 @@ func TestT13S7UnderWayAndAboutToStart(t *testing.T) {
 // the club blocked: "ls-…", driver.ErrNotSupported), so an invalid mirror
 // of it is removed by the second pass in a row that finds it so (in 1C the
 // mirror itself carries no marker). Such a source crossing the window's
-// end when the window shrinks keeps its mirror pass after pass.
+// end when the window shrinks keeps its mirror pass after pass. The club's
+// time is 15:10 when it is set up (Options.At): the edge is in its hours.
 func TestT13S7HorizonEdgeWithoutPointRead(t *testing.T) {
-	eachPair(t, func(t *testing.T, env *pairtest.Env) {
-		daytime(t, env)
+	eachPairAt(t, pairtest.Options{At: "15:10"}, func(t *testing.T, env *pairtest.Env) {
 		env.LundaStub.BookingDepth = 14
-		edge := time.Now().In(env.Location).Add(7*24*time.Hour - time.Hour)
+		edge := env.Now().In(env.Location).Add(7*24*time.Hour - time.Hour)
 		g := edge.Truncate(30 * time.Minute)
 		s, e := g.Add(-30*time.Minute), g.Add(time.Hour)
 		env.LundaStub.SeedSlot(pairtest.LundaCourt1, "BLOCKED", s, e, nil)
@@ -238,41 +243,44 @@ func TestT13S7HorizonEdgeWithoutPointRead(t *testing.T) {
 	})
 }
 
-// FINDING (T13-F1): scenario 7 says a booking's cancellation frees its
-// slot in the other CRM within 2 minutes. A mirror is removed only when it
-// lies wholly beyond now + pair.Lead (reconcile.go: the inWindow check
-// before a removal), and never once it has begun (driver ErrStarted / the
-// Started flag). So a club booking cancelled within about 5 minutes of its
-// start keeps its block in the other CRM — and in the partners' sale,
-// which is the union of both — for its whole span: the 2 minutes do not
-// hold for late cancellations. Kept skipped (it fails by design of the
-// current code); run with T13_DEFECTS=1.
+// T13-F1, scenario 7: a booking's cancellation frees its slot in the
+// other CRM — and in the partners' sale, the union of both — within 2
+// minutes, also when the club cancels it minutes before its start, so that
+// its block starts within pair.Lead: a block that has not started is
+// removed on the same evidence as one beyond the lead (a point read of its
+// source by its marker; without one, two passes in a row). The CRMs and the
+// hub read 15:26 of the club's day when it is set up (Options.At): the
+// booking starts at 15:29, off the grid, and its block within the lead on
+// every pair, both ways — in 1C, which books whole seances, from the next
+// step of the grid, 15:30.
 func TestT13S7FindingCancelWithinLead(t *testing.T) {
-	if os.Getenv("T13_DEFECTS") == "" {
-		t.Skip("DEFECT T13-F1: a cancellation within pair.Lead of the booking's start never frees the mirror (reconcile.go inWindow before removal); T13_DEFECTS=1 runs it")
-	}
-	eachPairDir(t, func(t *testing.T, env *pairtest.Env, d direction) {
-		daytime(t, env)
-		n := time.Now().In(env.Location)
+	eachPairDirAt(t, pairtest.Options{At: "15:26"}, func(t *testing.T, env *pairtest.Env, d direction) {
+		n := env.Now().In(env.Location)
 		start := n.Truncate(time.Minute).Add(3 * time.Minute)
-		id := d.src.Book(t, "court-2", start, start.Add(time.Hour))
-		if rep := env.Pass(t); len(rep.Created) != 1 {
+		end := start.Add(time.Hour)
+		id := d.src.Book(t, "court-2", start, end)
+		if rep := env.Pass(t); rep.Aborted || len(rep.Alarms) > 0 || len(rep.Created) != 1 {
 			t.Fatalf("pass: %+v", rep)
 		}
 		m := mirrorsOn(t, d.dst, "court-2")
 		if len(m) != 1 {
 			t.Fatalf("mirrors: %s", pairtest.Spans(d.dst.Live(t)))
 		}
-		if m[0].Start.After(time.Now().Add(pair.Lead)) {
-			t.Skipf("the block starts at %s, beyond the lead (1C rounds it to the grid): nothing to show at this minute", m[0].Start.In(env.Location).Format("15:04"))
+		if now := env.Now(); !m[0].Start.After(now) || m[0].Start.After(now.Add(pair.Lead)) {
+			t.Fatalf("the block starts at %s, not within the lead of %s", m[0].Start.In(env.Location).Format("15:04:05"), now.In(env.Location).Format("15:04:05"))
 		}
 		d.src.Cancel(t, id)
-		for range 3 {
-			env.Pass(t)
+		for p := range 3 {
+			if rep := env.Pass(t); rep.Aborted || len(rep.Alarms) > 0 || len(rep.Created) > 0 {
+				t.Fatalf("pass %d after the cancellation: %+v", p+1, rep)
+			}
 		}
 		if left := mirrorsOn(t, d.dst, "court-2"); len(left) != 0 {
 			t.Fatalf("3 passes after the club cancelled a booking starting at %s, its block stays in %s: %s",
 				start.Format("15:04"), d.dst.Type(), pairtest.Spans(left))
+		}
+		if env.Busy(t, "court-2", start, end) {
+			t.Fatalf("the sale still shows the cancelled booking's slot busy (%s–%s)", start.Format("15:04"), end.Format("15:04"))
 		}
 	})
 }
@@ -281,15 +289,15 @@ func TestT13S7FindingCancelWithinLead(t *testing.T) {
 // the window stays — not removed, not made again, no alarm — when the
 // window shrinks (Lunda's booking depth from 14 to 7 days) so that its
 // source crosses the window's end or lies wholly beyond it; with the depth
-// back the pass changes nothing.
+// back the pass changes nothing. The club's time is 15:10 when it is set up
+// (Options.At): the edge is in its hours.
 func TestT13S7HorizonEdge(t *testing.T) {
-	eachPair(t, func(t *testing.T, env *pairtest.Env) {
-		daytime(t, env)
+	eachPairAt(t, pairtest.Options{At: "15:10"}, func(t *testing.T, env *pairtest.Env) {
 		for i, d := range directions(env) {
 			t.Run(d.name, func(t *testing.T) {
 				court := []string{"court-1", "court-2"}[i]
 				env.LundaStub.BookingDepth = 14
-				edge := time.Now().In(env.Location).Add(7*24*time.Hour - time.Hour) // the window's end with a depth of 7
+				edge := env.Now().In(env.Location).Add(7*24*time.Hour - time.Hour) // the window's end with a depth of 7
 				g := edge.Truncate(30 * time.Minute)
 				crossS, crossE := g.Add(-30*time.Minute), g.Add(time.Hour)
 				farS := env.Day(10, 12, 0)

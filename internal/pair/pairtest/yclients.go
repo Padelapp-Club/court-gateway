@@ -117,6 +117,7 @@ func (y *YclientsStub) Live(t testing.TB) []Entry {
 // YclientsLunda serves a club of YCLIENTS (primary) and Lunda (mirror).
 func YclientsLunda(t *testing.T, o Options) *Env {
 	t.Helper()
+	clock := o.clock(t)
 	zone, _ := time.LoadLocation(lundaZoneName)
 	stub := yclientsstub.New(yPartnerToken, yUserToken, "", "", YCompany, zone)
 	services := func(base int64) []yclientsstub.Service {
@@ -133,6 +134,7 @@ func YclientsLunda(t *testing.T, o Options) *Env {
 	t.Cleanup(srv.Close)
 	y := &YclientsStub{Stub: stub, Server: srv, staff: map[string]string{"court-1": YStaff1, "court-2": YStaff2}}
 	l := NewLunda(t)
+	l.Stub.Now = clock
 	spec := core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: lundaZoneName, SlotMinutes: 30,
 		Hours: map[string]string{"mon-sun": "07:00-23:00"},
 		CRM:   map[string]any{"company_id": YCompany, "client_phone": "+7 900 000-00-00"}, Mirror: o.Mirror}
@@ -148,10 +150,12 @@ func YclientsLunda(t *testing.T, o Options) *Env {
 	}
 	crm := fmt.Sprintf("crm: { type: yclients, api_url: %s/api/v1 }\n", srv.URL)
 	env := map[string]string{yclients.PartnerTokenEnv: yPartnerToken, yclients.UserTokenEnv: yUserToken}
-	mk := func(t *testing.T) built { return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server) }
+	mk := func(t *testing.T) built {
+		return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server, clock)
+	}
 	n := mk(t)
 	return (&Env{Primary: y, Mirror: l, Courts: []string{"court-1", "court-2"},
-		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub}).with(n, mk)
+		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub}).with(n, mk, clock)
 }
 
 // Raw: the record as the stub stores it.

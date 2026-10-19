@@ -94,8 +94,10 @@ func (f *Fitness1CStub) Live(t testing.TB) []Entry {
 // Fitness1CLunda serves a club of 1C:Fitness (primary) and Lunda (mirror).
 func Fitness1CLunda(t *testing.T, o Options) *Env {
 	t.Helper()
+	clock := o.clock(t)
 	zone, _ := time.LoadLocation(lundaZoneName)
 	stub := fitness1cstub.New(f1cUser, f1cPass, f1cKey, F1CClub, "Тестовый клуб", zone)
+	stub.Now = clock
 	stub.AddService(fitness1cstub.Service{ID: F1CService, Title: "Аренда корта PadelApp", Seance: 30, Price: "0"})
 	stub.AddRoom(F1CRoom1, "Корт 1")
 	stub.AddRoom(F1CRoom2, "Корт 2")
@@ -105,6 +107,7 @@ func Fitness1CLunda(t *testing.T, o Options) *Env {
 	t.Cleanup(srv.Close)
 	f := &Fitness1CStub{Stub: stub, Server: srv, rooms: map[string]string{"court-1": F1CRoom1, "court-2": F1CRoom2}}
 	l := NewLunda(t)
+	l.Stub.Now = clock
 	spec := core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: lundaZoneName, SlotMinutes: 30,
 		Hours: map[string]string{"mon-sun": "07:00-23:00"}, CRM: map[string]any{"studio": F1CClub},
 		Services: map[string]map[string]any{"booking": {"service": F1CService}}, Mirror: o.Mirror}
@@ -121,10 +124,12 @@ func Fitness1CLunda(t *testing.T, o Options) *Env {
 	crm := fmt.Sprintf("crm: { type: fitness1c, base_url: %s, username: %s, client_phone: %q, partner: booker, mirror_client_phone: %q }\n",
 		srv.URL, f1cUser, F1CTechPhone, F1CMirrorTech)
 	env := map[string]string{"CRM_PASSWORD": f1cPass, fitness1c.APIKeyEnv: f1cKey}
-	mk := func(t *testing.T) built { return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server) }
+	mk := func(t *testing.T) built {
+		return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server, clock)
+	}
 	n := mk(t)
 	return (&Env{Primary: f, Mirror: l, Courts: []string{"court-1", "court-2"},
-		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub, MarkerlessPrimary: true}).with(n, mk)
+		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub, MarkerlessPrimary: true}).with(n, mk, clock)
 }
 
 // Raw: the rental as the stub stores it (RentalView: every field of it).

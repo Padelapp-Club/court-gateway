@@ -18,12 +18,18 @@ import (
 // run in parallel with each other: YCLIENTS paces every request of the
 // process (one throttle for all its clients), so its pair runs alone.
 func eachPair(t *testing.T, f func(t *testing.T, env *pairtest.Env)) {
+	eachPairAt(t, pairtest.Options{}, f)
+}
+
+// eachPairAt is eachPair on Envs set up with o — each with a clock of its
+// own made when it is set up, where o.At is set.
+func eachPairAt(t *testing.T, o pairtest.Options, f func(t *testing.T, env *pairtest.Env)) {
 	for _, p := range pairs {
 		t.Run(p.name, func(t *testing.T) {
 			if p.name != "yclients+lunda" {
 				t.Parallel()
 			}
-			f(t, p.setup(t, pairtest.Options{}))
+			f(t, p.setup(t, o))
 		})
 	}
 }
@@ -58,17 +64,6 @@ func (d direction) settle(t *testing.T, env *pairtest.Env) pair.Report {
 		rep.Aborted = rep.Aborted || next.Aborted
 	}
 	return rep
-}
-
-// daytime skips a test whose bookings are placed around the wall clock
-// (under way now, at the horizon's edge) when the club's day would put
-// them outside the club's hours (07–23) or Lunda's bookable hours.
-func daytime(t *testing.T, env *pairtest.Env) {
-	t.Helper()
-	n := time.Now().In(env.Location)
-	if m := n.Hour()*60 + n.Minute(); m < 9*60 || m > 21*60 {
-		t.Skipf("the club's time is %s: the test places bookings around now and needs 09:00–21:00", n.Format("15:04"))
-	}
 }
 
 // snapshot is the raw records of handles in crm.

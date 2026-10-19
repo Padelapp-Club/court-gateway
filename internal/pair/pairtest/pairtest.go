@@ -94,6 +94,8 @@ type Env struct {
 	// whose source is gone is removed by the second pass that finds it so.
 	MarkerlessPrimary bool
 
+	clock func() time.Time // Options.At (nil: time.Now)
+
 	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
 	respec  func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair
 	restart func(t *testing.T) built
@@ -134,7 +136,8 @@ func (e *Env) Restart(t *testing.T) {
 }
 
 // with fills in what build gave and how to build it again.
-func (e *Env) with(n built, restart func(t *testing.T) built) *Env {
+func (e *Env) with(n built, restart func(t *testing.T) built, clock func() time.Time) *Env {
+	e.clock = clock
 	e.Built, e.Pair, e.Handler, e.rebuild, e.respec, e.restart = n.b, n.p, n.b.Handler(), n.rebuild, n.respec, restart
 	return e
 }
@@ -143,6 +146,38 @@ func (e *Env) with(n built, restart func(t *testing.T) built) *Env {
 type Options struct {
 	// Mirror is the club's mirror section (nil: mirror: {}).
 	Mirror *core.MirrorSpec
+	// At ("HH:MM"), when set, is the time of the club's day the CRM stubs
+	// and the hub (the gateway's decision clock) read when the Env is set
+	// up; their clock runs on in real time from there, so a scenario placed
+	// around "now" sees the same time of the club's day whenever it runs.
+	// The gateway's own clock for durations (driver.Config.Now) stays the
+	// computer's. "": the computer's clock for all.
+	At string
+}
+
+// clock is the clock of an Env set up now with o (nil: time.Now).
+func (o Options) clock(t *testing.T) func() time.Time {
+	t.Helper()
+	if o.At == "" {
+		return nil
+	}
+	at, err := time.Parse("15:04", o.At)
+	zone, zerr := time.LoadLocation(lundaZoneName)
+	if err != nil || zerr != nil {
+		t.Fatalf("Options.At %q: %v %v", o.At, err, zerr)
+	}
+	n := time.Now()
+	l := n.In(zone)
+	shift := time.Date(l.Year(), l.Month(), l.Day(), at.Hour(), at.Minute(), 0, 0, zone).Sub(n)
+	return func() time.Time { return time.Now().Add(shift) }
+}
+
+// Now is the time of the Env's CRMs and hub (Options.At).
+func (e *Env) Now() time.Time {
+	if e.clock != nil {
+		return e.clock()
+	}
+	return time.Now()
 }
 
 // Setup builds an Env.
@@ -174,7 +209,7 @@ func (e *Env) Settle(t testing.TB) pair.Report {
 
 // Day is a day ahead (in the club's zone) at hh:mm.
 func (e *Env) Day(days, hh, mm int) time.Time {
-	n := time.Now().In(e.Location)
+	n := e.Now().In(e.Location)
 	return time.Date(n.Year(), n.Month(), n.Day()+days, hh, mm, 0, 0, e.Location)
 }
 
@@ -295,7 +330,7 @@ func (m *memStore) SaveSession(b []byte) error {
 // build serves spec as a gateway would: the installation's crm and mirror
 // sections (YAML), the mirror's Lunda account logged in by a QR code on
 // lstub, the club from the hub, the pair from core.BuildDriver.
-func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map[string]string, primaryClient *http.Client, lstub *lundastub.Stub, lsrv *httptest.Server) built {
+func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map[string]string, primaryClient *http.Client, lstub *lundastub.Stub, lsrv *httptest.Server, clock func() time.Time) built {
 	t.Helper()
 	spec = cloneSpec(spec)
 	getenv := func(k string) string {
@@ -312,6 +347,10 @@ func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map
 	log := core.NewLogger(logs, slog.LevelDebug, base.Secrets)
 	base.Driver.Logger = log
 	base.Driver.HTTPClient = primaryClient
+	if clock != nil {
+		// the hub's time (the mirror's driver and the pair take it too)
+		base.Driver.Clock = func() (time.Time, bool) { return clock(), true }
+	}
 	base.Mirror.Driver.HTTPClient = lsrv.Client()
 	base.Mirror.Driver.Sessions = &memStore{}
 	base.Mirror.Driver.Logger = log
