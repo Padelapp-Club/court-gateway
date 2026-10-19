@@ -1,10 +1,10 @@
 # Differential check: the 1C grid rules against the backend adapter
 
-The driver's grid rules are the backend adapter's (D14,
-`backend/src/modules/admins/crm/integrations/fitness1c-crm/fitness1c-crm.service.ts`
+The driver's grid rules are the backend adapter's
+(`backend/src/modules/admins/crm/integrations/fitness1c-crm/fitness1c-crm.service.ts`
 in the monorepo). This directory proves it on the same bodies:
 
-- `fixtures/` — D14's `__fixtures__` (live answers of `rental_rooms_times`), room and
+- `fixtures/` — the adapter's `__fixtures__` (live answers of `rental_rooms_times`), room and
   rental ids replaced by fake ones (this repository is public);
 - `gen_cases.py` → `cases.json` — those bodies and variations that each hit one rule
   (repeated rooms, another day's slots, free and busy at once, `is_busy`, an empty day,

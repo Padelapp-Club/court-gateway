@@ -10,8 +10,8 @@ import (
 )
 
 // The differential check: the grid rules of this driver against the
-// backend adapter's (D14, fitness1c-crm.service.ts) on the same bodies.
-// testdata/difftest/cases.json holds D14's fixtures and variations of them
+// backend adapter's (fitness1c-crm.service.ts) on the same bodies.
+// testdata/difftest/cases.json holds the adapter's fixtures and variations of them
 // (gen_cases.py); ts-golden.json is what the TypeScript adapter answered
 // to each (ts/fitness1c-difftest.spec.ts, run against the monorepo commit
 // named in ts-golden.source). Every busy half-hour of every room and day,

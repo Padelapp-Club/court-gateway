@@ -13,7 +13,7 @@ import (
 )
 
 // statusConfirmed is the status of a rental of a free service right after
-// it is created (D14 §27); anything else (a temporary reservation that
+// it is created; anything else (a temporary reservation that
 // lapses in 15 minutes) is not a booking.
 const statusConfirmed = "reserved"
 

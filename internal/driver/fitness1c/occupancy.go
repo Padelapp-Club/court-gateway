@@ -49,7 +49,7 @@ func parseForeignID(id string) (room string, s span, ok bool) {
 }
 
 // readGrid reads the grid of days by the service svc, one request per day
-// (an answer for N days grows as N², D14 §15.1), dayConcurrency at a time.
+// (an answer for N days grows as N²), dayConcurrency at a time.
 // Any day that fails fails the whole grid: a partial grid would read the
 // missing days as free.
 func (d *Driver) readGrid(ctx context.Context, svc rentalService, loc *time.Location, days []string) (*grid, error) {
@@ -143,7 +143,7 @@ const maxAppointmentPages = 40
 // ownRentals lists the technical client's planned and running rentals of
 // the gateway's services in this club. complete is false when 1C reports
 // more appointments than were read. The appointment id of a rental is its
-// rental id (observed: GET /rental/ answers both equal, D14 probe).
+// rental id (observed in a live probe: GET /rental/ answers both equal).
 func (d *Driver) ownRentals(ctx context.Context, loc *time.Location) (out []rental, complete bool, err error) {
 	if d.c.phone == "" || len(d.services) == 0 {
 		return nil, true, nil // the gateway makes no rentals here

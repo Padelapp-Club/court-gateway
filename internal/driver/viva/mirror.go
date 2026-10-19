@@ -14,7 +14,7 @@ import (
 // Viva in a pair (driver.Mirrorer): a booking of the other CRM is mirrored
 // as a technical break of the court whose comment is the marker and
 // nothing else ("[cg-mirror:<src>:<id>]"). The gateway's mirrors are
-// breaks with the marker (F4): a marker copied into an exercise, or into
+// breaks with the marker: a marker copied into an exercise, or into
 // a break as part of a longer comment, is not one.
 
 // mirrorTitles are the titles of a mirror's break by its source's CRM:

@@ -1,6 +1,6 @@
 // Package fitness1cstub is an in-memory stand-in for the client API v3 of
 // a club's 1C:Fitness instance, as far as the gateway uses it and as the
-// backend adapter's runs observed it (D14 facts §13–§27): HTTP Basic plus
+// backend adapter's live runs observed it: HTTP Basic plus
 // the apikey header (an HTML 401 otherwise), the {result, data} envelope
 // with numeric application errors, a rental grid where a confirmed rental
 // is a missing half-hour and a temporary reservation is is_busy, rooms
@@ -321,7 +321,7 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !authed {
-		// IIS answers with an HTML page (D14 §13.1)
+		// IIS answers with an HTML page
 		w.Header().Set("WWW-Authenticate", `Basic realm="1C:Enterprise 8.3"`)
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -393,7 +393,7 @@ func (s *Stub) clubs(w http.ResponseWriter) {
 	defer s.mu.Unlock()
 	ok(w, []map[string]any{{
 		"id": s.clubID, "title": s.clubName, "time_zone": s.zone.String(),
-		// work_time is not the grid's (D14 §15.1): the driver must not use it
+		// work_time is not the grid's: the driver must not use it
 		"work_time": []map[string]any{{"active": true, "day": 1, "start": "00:00", "end": "23:59"}},
 	}}, nil)
 }
@@ -640,7 +640,7 @@ func (s *Stub) createRental(w http.ResponseWriter, r *http.Request) {
 	roomID := strings.ToLower(body.RoomID)
 	if occ, taken := s.occupant(roomID, start, end, ""); taken {
 		if occ.client == c.id && occ.start.Equal(start) && occ.end.Equal(end) && occ.service == svc.ID {
-			s.writeCreated(w, occ, svc, c) // idempotent per client and slot (D14 §27)
+			s.writeCreated(w, occ, svc, c) // idempotent per client and slot
 			return
 		}
 		fail(w, 1060, "В выбранном помещении контролируется занятость. В указанное время помещение занято")

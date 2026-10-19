@@ -2,7 +2,7 @@
 // API v3 of the club's own 1C instance): occupancy from the rental grid,
 // bookings as rentals of a free service of the club ("Аренда корта
 // PadelApp") made by a technical client, prices of a rental service. It is
-// the backend's adapter (D14, fitness1c-crm.service.ts) moved into the
+// the backend's adapter (fitness1c-crm.service.ts) moved into the
 // gateway with the same rules; the driver keeps no state other than the
 // technical client's token.
 package fitness1c
@@ -40,7 +40,8 @@ const StudioKey, RoomKey = "studio", "fitness1c_room"
 // installKeys are the installation-level keys of the crm section.
 var installKeys = []string{"base_url", "username", "client_phone", "partner", "mirror_client_phone"}
 
-// seance is the only grid step proven by a run (D14 SUPPORTED_SEANCE_LENGTH_MIN):
+// seance is the only grid step proven by a run (the backend adapter's
+// SUPPORTED_SEANCE_LENGTH_MIN):
 // a club whose smallest rental service has another step is not served.
 const seance = 30
 
@@ -129,7 +130,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	case mirrorPhone != "" && !phoneRe.MatchString(mirrorPhone):
 		add(errors.New("crm.mirror_client_phone: ожидается номер телефона технического клиента 1С для отражений, например +79990000001"))
 	case mirrorPhone != "" && strings.TrimPrefix(mirrorPhone, "+") == strings.TrimPrefix(phone, "+"):
-		// F15: one client for both would mix the partners' bookings and the mirrors
+		// one client for both would mix the partners' bookings and the mirrors
 		add(errors.New("crm.mirror_client_phone: клиент отражений совпадает с техническим клиентом броней партнёра (crm.client_phone) — нужен отдельный клиент"))
 	}
 	if cfg.Password == "" {

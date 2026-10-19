@@ -31,7 +31,8 @@ const maxBody = 8 << 20
 // password (SetPassword) ends the pause at once.
 const authPause = 2 * time.Minute
 
-// Codes of 1C's application errors the driver branches on (D14 runs, §27).
+// Codes of 1C's application errors the driver branches on (as the backend
+// adapter's live runs saw them).
 const (
 	codeRoomBusy        = 1060 // the room is taken at that time
 	codeAlreadyCanceled = 1037 // the rental is already cancelled
@@ -110,7 +111,7 @@ func (c *client) stopped() (time.Time, bool) {
 // refused login UpstreamAuth, 1C's numeric error an *apiError, an answer
 // that is not {result: true, data} UpstreamInvalid. retry repeats the
 // request once when no answer came at all (a lost answer: 1C is idempotent
-// per client and slot, D14 §27).
+// per client and slot).
 func (c *client) call(ctx context.Context, method, path string, query url.Values, body any, usertoken string, retry bool) (*envelope, error) {
 	op := method + " " + path
 	if until, stop := c.stopped(); stop && usertoken == "" {

@@ -3,7 +3,7 @@
 
 Every case is one input both implementations read: the backend adapter
 (TypeScript, fitness1c-crm.service.ts) through ts/fitness1c-difftest.spec.ts,
-the gateway driver (Go) through ../../difftest_test.go. The bodies are D14's
+the gateway driver (Go) through ../../difftest_test.go. The bodies are the adapter's
 fixtures (fixtures/, ids replaced by fake ones) and variations of them that
 hit one rule each. Run: python3 gen_cases.py > cases.json
 """

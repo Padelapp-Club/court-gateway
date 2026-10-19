@@ -16,15 +16,15 @@ import (
 // so a mirror cannot carry a marker: it is a rental of the mirror service
 // made by a technical client of its own, the mirror client
 // (crm.mirror_client_phone) — never the client of the partners' bookings
-// (crm.client_phone), or the two would mix (F15). Which booking of the
+// (crm.client_phone), or the two would mix. Which booking of the
 // other CRM a mirror is for is told by its court and span alone (the
 // validity rule); 1C books whole seances, so a mirror takes its source's
 // span rounded out to the grid (BlockSpan).
 //
 // A rental of the mirror client is a mirror whatever its service: the
-// client alone tells the class (F15), so a mirror whose service the club
+// client alone tells the class, so a mirror whose service the club
 // has edited is still the gateway's — not club time to mirror back, not a
-// rental to leave behind (D15). The mirror service only says what a new
+// rental to leave behind. The mirror service only says what a new
 // mirror is rented by.
 //
 // The club's own busy time is the grid's: 1C does not say what a busy
@@ -158,7 +158,8 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 			inv.Items = append(inv.Items, it)
 		}
 	}
-	// the mirror client's rentals in rooms no court maps (F6, D14)
+	// the mirror client's rentals in rooms no court maps: reported, never
+	// touched
 	for _, r := range mirrors {
 		if _, mapped := d.byRoom[r.room]; !mapped && r.Start.Before(q.To) && r.End.After(q.From) {
 			inv.Unmapped = append(inv.Unmapped, driver.MirrorItem{ID: ownID(r.id), Court: r.room, Start: r.Start, End: r.End, Class: driver.ClassMirror, Started: r.started})
