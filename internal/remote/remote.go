@@ -455,11 +455,17 @@ func resource(srv *core.Server, court string) string {
 // resources are the CRM resources the courts of srv book
 // (driver.Resourcer; none when the driver does not name them).
 func resources(srv *core.Server) []string {
+	var out []string
+	if mr, ok := srv.Driver().(driver.MultiResourcer); ok { // a pair: its room in each CRM
+		for _, c := range srv.Settings().Courts {
+			out = append(out, mr.Resources(c.ID)...)
+		}
+		return out
+	}
 	r, ok := srv.Driver().(driver.Resourcer)
 	if !ok {
 		return nil
 	}
-	var out []string
 	for _, c := range srv.Settings().Courts {
 		out = append(out, r.Resource(c.ID))
 	}

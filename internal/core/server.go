@@ -334,7 +334,11 @@ func ReadyReason(err error) string {
 	var ue *driver.UpstreamError
 	var me *driver.MisconfigError
 	var ca *driver.ConfigAlert
+	var mi *driver.MirrorError
 	switch {
+	case errors.As(err, &mi):
+		// the mirror CRM of a pair: its own reason, named as the mirror's
+		return "MIRROR_" + ReadyReason(mi.Err)
 	case errors.As(err, &ca):
 		return ca.Code
 	case errors.As(err, &me):

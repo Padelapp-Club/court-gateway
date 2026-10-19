@@ -24,6 +24,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/pair"
 )
 
 // PasswordEnv is the environment variable holding the CRM password.
@@ -69,7 +70,50 @@ type fileConfig struct {
 		Type string         `yaml:"type"`
 		Rest map[string]any `yaml:",inline"`
 	} `yaml:"crm"`
+	// Mirror is the installation's second CRM of its clubs, as crm: its
+	// type and its driver keys (the login); see MirrorSettings.
+	Mirror *struct {
+		Type string         `yaml:"type"`
+		Rest map[string]any `yaml:",inline"`
+	} `yaml:"mirror"`
 }
+
+// MirrorTypes are the CRM types an installation may hold as its mirror
+// (gateway.yaml `mirror`): Lunda only, next to a primary CRM of another
+// type (REQ-397: Lunda as the primary of a pair is not built).
+var MirrorTypes = []string{"lunda"}
+
+// MirrorSettings are the installation's second CRM: the clubs whose
+// config on the hub has a mirror section are served by a pair of drivers
+// (internal/pair) — the primary CRM (crm) and this one.
+type MirrorSettings struct {
+	CRMType string
+	// Driver is the input of the mirror's driver factory: its own crm
+	// keys, secrets and session. A club's courts are filled by WithClub,
+	// the zone, logger and clocks when the pair is built (BuildDriver).
+	Driver driver.Config
+}
+
+// MirrorClub is a club's own mirror section (ClubSpec.Mirror): the limits
+// of its reconciliation.
+type MirrorClub struct {
+	// MaxRemovals: a pass that would remove more mirrors removes none and
+	// raises an alarm (the fuse).
+	MaxRemovals int
+	// MaxCreates: at most so many mirrors are made in one pass.
+	MaxCreates int
+}
+
+// Defaults and bounds of a club's mirror section.
+const (
+	DefaultMirrorMaxRemovals = 3
+	DefaultMirrorMaxCreates  = 50
+	maxMirrorLimit           = 1000
+)
+
+// MirrorSessionFile is where the mirror's interactive account keeps its
+// CRM session, next to SessionFile.
+const MirrorSessionFile = "mirror-crm-session"
 
 // PartnerEntry is a partner as hub.yaml lists it.
 type PartnerEntry struct {
@@ -195,6 +239,11 @@ type Settings struct {
 	Driver driver.Config
 	// Secrets are values that must never appear in logs.
 	Secrets []string
+	// Mirror is the installation's second CRM, nil without one.
+	Mirror *MirrorSettings
+	// MirrorClub is set, after WithClub, for a club served by the pair of
+	// the installation's CRMs.
+	MirrorClub *MirrorClub
 
 	// installCRM is the crm section of gateway.yaml without type; a club's
 	// own crm keys go over it.
@@ -231,6 +280,9 @@ func LoadFile(path string, getenv func(string) string) (*Settings, error) {
 	// an interactive account's CRM session is the installation's, wherever
 	// it is loaded (serve, doctor, login)
 	s.Driver.Sessions = SessionStore(s.StateDir)
+	if s.Mirror != nil {
+		s.Mirror.Driver.Sessions = NamedSessionStore{Dir: s.StateDir, File: MirrorSessionFile}
+	}
 	return s, nil
 }
 
@@ -380,6 +432,31 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		}
 	}
 
+	// mirror: a second CRM of the same clubs
+	if fc.Mirror != nil {
+		m := &MirrorSettings{CRMType: strings.TrimSpace(fc.Mirror.Type)}
+		switch {
+		case m.CRMType == "":
+			add("mirror.type: параметр обязателен (тип второй CRM клуба: %s)", strings.Join(MirrorTypes, ", "))
+		case !slices.Contains(MirrorTypes, m.CRMType):
+			add("mirror.type: «%s» — второй CRM установки может быть только %s", m.CRMType, strings.Join(MirrorTypes, ", "))
+		case m.CRMType == s.CRMType:
+			add("mirror.type: вторая CRM совпадает с основной (crm.type: %s) — у пары должны быть две разные CRM", s.CRMType)
+		}
+		m.Driver.CRM = driver.Params(maps.Clone(fc.Mirror.Rest))
+		if m.Driver.CRM == nil {
+			m.Driver.CRM = driver.Params{}
+		}
+		m.Driver.Secrets = map[string]string{}
+		for _, name := range driver.SecretEnvs(m.CRMType) {
+			if v := getenv(name); v != "" && name != PasswordEnv {
+				m.Driver.Secrets[name] = v
+				s.Secrets = append(s.Secrets, v)
+			}
+		}
+		s.Mirror = m
+	}
+
 	if len(errs) > 0 {
 		return nil, &ConfigError{Problems: errs}
 	}
@@ -396,14 +473,71 @@ func (e *ConfigError) Error() string {
 	return "ошибки в конфигурации:\n  - " + strings.Join(e.Problems, "\n  - ")
 }
 
-// BuildDriver runs the factory registered for the configured CRM type.
+// BuildDriver runs the factory registered for the configured CRM type; a
+// club served by the installation's two CRMs (MirrorClub) gets the pair of
+// both drivers (internal/pair).
 func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Driver, error) {
-	f, ok := factories[s.CRMType]
+	d, err := buildOne(s.CRMType, "crm.type", s.Driver, factories)
+	if err != nil || s.Mirror == nil || s.MirrorClub == nil {
+		return d, err
+	}
+	m, err := buildOne(s.Mirror.CRMType, "mirror.type", s.MirrorDriverConfig(), factories)
+	if err != nil {
+		ce := &ConfigError{}
+		if !errors.As(err, &ce) {
+			ce.Problems = []string{err.Error()}
+		}
+		for i := range ce.Problems {
+			ce.Problems[i] = "mirror: " + ce.Problems[i]
+		}
+		return nil, ce
+	}
+	courts := make([]string, len(s.Courts))
+	for i, c := range s.Courts {
+		courts[i] = c.ID
+	}
+	p, err := pair.New(d, m, pair.Options{
+		PrimaryType: s.CRMType, MirrorType: s.Mirror.CRMType, Courts: courts, Location: s.Location, Hours: s.Hours,
+		MaxRemovals: s.MirrorClub.MaxRemovals, MaxCreates: s.MirrorClub.MaxCreates,
+		Clock: s.Driver.DecisionClock(), Lock: LockResources, Logger: s.Driver.Logger,
+	})
+	if err != nil {
+		return nil, &ConfigError{Problems: strings.Split(err.Error(), "\n")}
+	}
+	return p, nil
+}
+
+// MirrorDriverConfig is the mirror's driver config of the club: its own
+// keys, secrets, session, account and courts, with the club's zone,
+// logger and clocks (the primary's: one club, one time).
+func (s *Settings) MirrorDriverConfig() driver.Config {
+	mc := s.Mirror.Driver
+	mc.Timezone = s.Driver.Timezone
+	if mc.Logger == nil {
+		mc.Logger = s.Driver.Logger
+	}
+	if mc.Now == nil {
+		mc.Now = s.Driver.Now
+	}
+	if mc.Clock == nil {
+		mc.Clock = s.Driver.Clock
+	}
+	if mc.HTTPClient == nil {
+		mc.HTTPClient = s.Driver.HTTPClient
+	}
+	if mc.Proxy == nil {
+		mc.Proxy = s.Driver.Proxy
+	}
+	return mc
+}
+
+func buildOne(crmType, key string, cfg driver.Config, factories map[string]driver.Factory) (driver.Driver, error) {
+	f, ok := factories[crmType]
 	if !ok {
 		known := slices.Sorted(maps.Keys(factories))
-		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s» (поддерживаются: %s)", s.CRMType, strings.Join(known, ", "))}}
+		return nil, &ConfigError{Problems: []string{fmt.Sprintf("%s: неизвестный тип CRM «%s» (поддерживаются: %s)", key, crmType, strings.Join(known, ", "))}}
 	}
-	d, err := f(s.Driver)
+	d, err := f(cfg)
 	if err != nil {
 		var ce *ConfigError
 		if errors.As(err, &ce) {

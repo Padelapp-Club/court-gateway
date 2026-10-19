@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -66,4 +67,46 @@ func resourceKey(d driver.Driver, court string) string {
 		return r.Resource(court)
 	}
 	return fmt.Sprintf("%p %s", d, court)
+}
+
+// resourceKeys names everything a booking of court occupies: the room of
+// each CRM of a pair (driver.MultiResourcer), else resourceKey.
+func resourceKeys(d driver.Driver, court string) []string {
+	if r, ok := d.(driver.MultiResourcer); ok {
+		if keys := r.Resources(court); len(keys) > 0 {
+			return keys
+		}
+	}
+	return []string{resourceKey(d, court)}
+}
+
+// lockAll takes the locks of keys in one order (sorted, each once), so two
+// writers that need some of the same keys never wait for each other in a
+// circle; on failure it releases what it took.
+func (k *keyedLocks) lockAll(ctx context.Context, keys []string) (func(), error) {
+	keys = slices.Compact(slices.Sorted(slices.Values(keys)))
+	var held []func()
+	release := func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			held[i]()
+		}
+	}
+	for _, key := range keys {
+		unlock, err := k.lock(ctx, key)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		held = append(held, unlock)
+	}
+	return release, nil
+}
+
+// LockResources takes the process-wide create lock of every CRM resource
+// in keys (a pair's court: its room in each CRM), the same lock a
+// partner's create of the court holds from its occupancy check to its
+// write: the reconciliation loop of a pair writes under it, so neither
+// writes into a check the other made. The returned func unlocks.
+func LockResources(ctx context.Context, keys []string) (func(), error) {
+	return createLocks.lockAll(ctx, keys)
 }

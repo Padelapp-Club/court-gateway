@@ -28,6 +28,22 @@ type ClubSpec struct {
 	CRM         map[string]any            `json:"crm,omitempty"`
 	Courts      []CourtSpec               `json:"courts"`
 	Services    map[string]map[string]any `json:"services,omitempty"`
+	// Mirror serves the club by both CRMs of its installation (gateway.yaml
+	// `mirror`): each court then names its room in each CRM, and a
+	// reconciliation loop blocks in one what is booked in the other.
+	Mirror *MirrorSpec `json:"mirror,omitempty"`
+}
+
+// MirrorSpec is a club's mirror section; every limit is optional.
+type MirrorSpec struct {
+	// MaxRemovals is the fuse: a pass that would remove more of the
+	// gateway's mirrors removes none and raises an alarm (default 3). The
+	// operator raises it for one pass when that many cancellations are
+	// right, and sets it back.
+	MaxRemovals *int `json:"max_removals,omitempty"`
+	// MaxCreates bounds the mirrors made in one pass (default 50); the
+	// rest wait for the next pass.
+	MaxCreates *int `json:"max_creates,omitempty"`
 }
 
 // CourtSpec is one court; in JSON its driver keys sit next to id and name.
@@ -244,6 +260,24 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 		s.Driver.Services[k] = driver.Params(v)
 	}
 
+	s.MirrorClub = nil
+	if c.Mirror != nil {
+		mc := &MirrorClub{MaxRemovals: DefaultMirrorMaxRemovals, MaxCreates: DefaultMirrorMaxCreates}
+		limit := func(key string, v *int, out *int) {
+			if v == nil {
+				return
+			}
+			if *v < 1 || *v > maxMirrorLimit {
+				add("mirror.%s: %d — от 1 до %d", key, *v, maxMirrorLimit)
+				return
+			}
+			*out = *v
+		}
+		limit("max_removals", c.Mirror.MaxRemovals, &mc.MaxRemovals)
+		limit("max_creates", c.Mirror.MaxCreates, &mc.MaxCreates)
+		s.MirrorClub = mc
+	}
+
 	// the club's part of the crm section goes over the installation's
 	crm := maps.Clone(s.installCRM)
 	if crm == nil {
@@ -268,7 +302,11 @@ func applyClub(s *Settings, c ClubSpec, crmKeys []string) []string {
 func (base *Settings) WithClub(c ClubSpec, crmKeys []string) (*Settings, error) {
 	s := *base
 	s.Driver.Courts, s.Driver.Services = nil, nil
-	if errs := applyClub(&s, c, crmKeys); len(errs) > 0 {
+	errs := applyClub(&s, c, crmKeys)
+	if len(errs) == 0 {
+		errs = splitMirrorCourts(&s)
+	}
+	if len(errs) > 0 {
 		id := strings.TrimSpace(c.ID)
 		for i := range errs {
 			errs[i] = "клуб «" + id + "»: " + errs[i]
@@ -276,6 +314,45 @@ func (base *Settings) WithClub(c ClubSpec, crmKeys []string) (*Settings, error) 
 		return nil, &ConfigError{Problems: errs}
 	}
 	return &s, nil
+}
+
+// splitMirrorCourts gives the courts' keys of the mirror's CRM (its
+// driver.CRM CourtKeys, e.g. lunda_court) to the mirror's driver config and
+// the rest to the primary's: one court of the club is a room of each CRM,
+// and the court's id maps them one to one. A club without a mirror section
+// may not name a room of the mirror, nor a club with one when the
+// installation has no mirror.
+func splitMirrorCourts(s *Settings) []string {
+	var errs []string
+	switch {
+	case s.MirrorClub != nil && s.Mirror == nil:
+		return []string{"mirror: у установки нет второй CRM — раздел mirror задаётся в gateway.yaml установки (например mirror: {type: lunda})"}
+	case s.Mirror == nil:
+		return nil
+	}
+	m := *s.Mirror
+	keys := driver.Registered()[m.CRMType].CourtKeys
+	var primary, mirror []driver.CourtConfig
+	for i, c := range s.Driver.Courts {
+		pp, mp := driver.Params{}, driver.Params{}
+		for _, k := range slices.Sorted(maps.Keys(c.Params)) {
+			if slices.Contains(keys, k) {
+				mp[k] = c.Params[k]
+				if s.MirrorClub == nil {
+					errs = append(errs, fmt.Sprintf("courts[%d].%s: корт второй CRM задан, а раздела mirror у клуба нет — добавьте mirror: {} или уберите %s", i, k, k))
+				}
+				continue
+			}
+			pp[k] = c.Params[k]
+		}
+		primary = append(primary, driver.CourtConfig{ID: c.ID, Name: c.Name, Params: pp})
+		mirror = append(mirror, driver.CourtConfig{ID: c.ID, Name: c.Name, Params: mp})
+	}
+	if s.MirrorClub != nil {
+		s.Driver.Courts, m.Driver.Courts = primary, mirror
+	}
+	s.Mirror = &m
+	return errs
 }
 
 // ValidateClubSpec checks a club spec as far as the hub can: everything
