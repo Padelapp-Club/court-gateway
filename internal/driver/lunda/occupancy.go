@@ -33,6 +33,12 @@ type lundaSlot struct {
 	BookingID string `json:"bookingId"`
 	Begin     string `json:"begin"`
 	End       string `json:"end"`
+	// The client's id and the notes are decoded only to tell the gateway's
+	// own bookings (the service client and a marker, mirror.go); they are
+	// never logged or passed on.
+	ClientUID     string  `json:"clientUid"`
+	Notes         *string `json:"notes"`
+	NotesAbstract *string `json:"notesAbstract"`
 }
 
 type daySchedule struct {
@@ -109,10 +115,34 @@ func syntheticID(parts ...string) string {
 // court of want that the day does not list at all (Lunda leaves out a
 // court blocked for the day) is occupied the whole day.
 func (d *Driver) dayIntervals(ds daySchedule, want map[string]string) ([]driver.Interval, error) {
-	bad := func(what string) ([]driver.Interval, error) {
+	items, err := d.dayItems(ds, want)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]driver.Interval, len(items))
+	for i, it := range items {
+		out[i] = driver.Interval{ID: it.ID, Court: it.Court, Start: it.Start, End: it.End}
+	}
+	return out, nil
+}
+
+// slotItem is a slot as the reconciliation reads it: classified, and
+// whether its notes must be read from the booking (slots-load did not
+// answer them whole).
+type slotItem struct {
+	driver.MirrorItem
+	needNotes bool
+}
+
+// dayItems is dayIntervals, each interval classified (mirror.go): a slot
+// of a booking on the service client by its notes, a DRAFT as a hold,
+// every other slot the club's; a court left out of the day is closed, busy
+// time Lunda does not explain (opaque).
+func (d *Driver) dayItems(ds daySchedule, want map[string]string) ([]slotItem, error) {
+	bad := func(what string) ([]slotItem, error) {
 		return nil, driver.Upstream(driver.UpstreamInvalid, "GET /"+opSlots+": "+what)
 	}
-	var out []driver.Interval
+	var out []slotItem
 	listed := map[string]bool{}
 	for _, ct := range *ds.Courts {
 		if ct.CourtUID == "" {
@@ -142,14 +172,16 @@ func (d *Driver) dayIntervals(ds daySchedule, want map[string]string) ([]driver.
 			if !knownTypes[s.Type] {
 				d.log.Warn("a Lunda slot of an unknown type: it occupies its court", "type", truncate(s.Type, 32))
 			}
-			out = append(out, driver.Interval{ID: id, Court: court, Start: start, End: end})
+			it := slotItem{MirrorItem: driver.MirrorItem{ID: id, Court: court, Start: start, End: end}}
+			d.classify(&it, s)
+			out = append(out, it)
 		}
 	}
 	for uid, court := range want {
 		if !listed[uid] {
 			day := ds.day
-			out = append(out, driver.Interval{ID: syntheticID("closed", uid, day.Format("2006-01-02")), Court: court,
-				Start: day, End: day.AddDate(0, 0, 1)})
+			out = append(out, slotItem{MirrorItem: driver.MirrorItem{ID: syntheticID("closed", uid, day.Format("2006-01-02")), Court: court,
+				Start: day, End: day.AddDate(0, 0, 1), Opaque: true}})
 		}
 	}
 	return out, nil
