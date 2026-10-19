@@ -40,10 +40,26 @@ import (
 // CRMs; the pass remembers in memory only what the two-pass rules need
 // (memo), lost with the process.
 
-// Lead: a pass's window starts this far ahead of now — a write for a slot
-// about to start would race its start, and a CRM's "today" may already be
-// the next day for its clock.
+// The window of a pass (D8) starts at now, the hub's signed time: a club
+// booking under way or about to start is mirrored as well as a later one
+// (a booking that ends past the horizon is left for a later pass, when it
+// is within it).
+//
+// Lead: the CRMs are read from this far ahead of now — the range a read is
+// complete for (near midnight a CRM's "today" may already be the next day
+// for its clock, and Viva leaves out its past days). Every driver lists
+// what overlaps the range read, so a booking under way or starting within
+// the lead is mirrored as the read lists it; but a mirror is removed only
+// within the range read whole, never one that starts within the lead.
 const Lead = 5 * time.Minute
+
+// BlockGrid: no block is written to start in the past (the drivers' own
+// rules hold a started block for good: it cannot be rolled back or
+// removed, and [UNVERIFIED] whether a CRM accepts one at all). A booking
+// whose block would start before now — one under way, or one 1C rounds
+// out to a seance already begun — is blocked from the first step of this
+// grid of the club's day after now; up to one step of it stays open.
+const BlockGrid = 30 * time.Minute
 
 // Alarm codes, by rank (the first is the readiness code when several are
 // raised).
@@ -176,7 +192,7 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 		p.finish(&rep, &memo{})
 		return rep
 	}
-	pl := p.plan(A, B, from, to)
+	pl := p.plan(A, B, now, from, to)
 	rep.Alarms = append(rep.Alarms, pl.alarms...)
 	p.execute(ctx, &pl, &rep)
 	p.finish(&rep, &pl.next)
@@ -274,6 +290,36 @@ type plan struct {
 	next     memo
 	// prevSuspect: mirrors the previous pass found invalid without a point read
 	prevSuspect map[string]bool
+	// now is the pass's time, cut the step of BlockGrid a block of a
+	// booking under way starts at
+	now, cut time.Time
+}
+
+// gridAfter is the first step of BlockGrid of t's day (in loc) after t.
+func gridAfter(t time.Time, loc *time.Location) time.Time {
+	l := t.In(loc)
+	day := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc)
+	step := day.Add(l.Sub(day).Truncate(BlockGrid))
+	for !step.After(t) {
+		step = step.Add(BlockGrid)
+	}
+	return step
+}
+
+// blockOf is the span a block of u takes in dst at the pass's time: the
+// span dst gives u while it starts after now; once that start has passed
+// (u under way, or rounded out to a seance begun), the rest of it from cut
+// on — ok is false when nothing of it is left after cut.
+func blockOf(u unit, dst driver.Mirrorer, now, cut time.Time) (start, end time.Time, ok bool) {
+	start, end = dst.BlockSpan(u.Start, u.End)
+	if start.After(now) {
+		return start, end, true
+	}
+	if !cut.Before(u.End) {
+		return start, end, false
+	}
+	start, end = dst.BlockSpan(cut, u.End)
+	return start, end, start.After(now) && end.After(start)
 }
 
 // inWindow: the interval is wholly within [from, to].
@@ -283,16 +329,18 @@ func overlaps(a, b driver.MirrorItem) bool {
 	return a.Court == b.Court && a.Start.Before(b.End) && b.Start.Before(a.End)
 }
 
-// units are the club items of s to mirror within the window, opaque ones
-// cut to the club's hours.
-func (p *Pair) units(items []driver.MirrorItem, from, to time.Time) []unit {
+// units are the club items of s to mirror within the window [now, to),
+// opaque ones cut to the club's hours: every one that has not ended by
+// now — under way or about to start too (D8) — and ends within the
+// horizon.
+func (p *Pair) units(items []driver.MirrorItem, now, to time.Time) []unit {
 	var out []unit
 	for _, it := range items {
 		if it.Class != driver.ClassClub || !slices.Contains(p.o.Courts, it.Court) {
 			continue
 		}
 		for _, piece := range p.clip(it) {
-			if inWindow(piece.Start, piece.End, from, to) {
+			if piece.End.After(now) && !piece.End.After(to) {
 				out = append(out, unit{piece})
 			}
 		}
@@ -331,8 +379,10 @@ func (p *Pair) clip(it driver.MirrorItem) []driver.MirrorItem {
 }
 
 // valid: mirror m (in dst) mirrors u (a club unit of src): the same court,
-// the id of its marker (unless it has none), the span a block of u takes.
-func valid(m driver.MirrorItem, u unit, srcType string, dst driver.Mirrorer) bool {
+// the id of its marker (unless it has none), the span a block of u takes —
+// or, once that span has begun by now, its rest from a step of the grid
+// no later than cut (the block made for u under way, blockOf).
+func valid(m driver.MirrorItem, u unit, srcType string, dst driver.Mirrorer, now, cut time.Time) bool {
 	if m.Court != u.Court {
 		return false
 	}
@@ -340,16 +390,20 @@ func valid(m driver.MirrorItem, u unit, srcType string, dst driver.Mirrorer) boo
 		return false
 	}
 	bs, be := dst.BlockSpan(u.Start, u.End)
-	return m.Start.Equal(bs) && m.End.Equal(be)
+	if m.Start.Equal(bs) && m.End.Equal(be) {
+		return true
+	}
+	return !bs.After(now) && m.End.Equal(be) && m.Start.After(bs) && !m.Start.After(cut)
 }
 
 func itemKey(it driver.MirrorItem) string {
 	return it.ID + "|" + it.Court + "|" + it.Start.UTC().Format(time.RFC3339) + "|" + it.End.UTC().Format(time.RFC3339)
 }
 
-// plan reads the two inventories and decides the pass.
-func (p *Pair) plan(A, B *side, from, to time.Time) plan {
-	pl := plan{next: memo{suspect: map[string]bool{}, half: map[string]bool{}}}
+// plan reads the two inventories and decides the pass: now is its time,
+// [from, to) the range both CRMs were read whole over.
+func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
+	pl := plan{next: memo{suspect: map[string]bool{}, half: map[string]bool{}}, now: now, cut: gridAfter(now, p.o.Location)}
 	p.mu.Lock()
 	prev := p.memo
 	p.mu.Unlock()
@@ -357,7 +411,7 @@ func (p *Pair) plan(A, B *side, from, to time.Time) plan {
 		pl.alarms = append(pl.alarms, Alarm{code, fmt.Sprintf(format, a...)})
 	}
 
-	unitsOf := map[*side][]unit{A: p.units(A.inv.Items, from, to), B: p.units(B.inv.Items, from, to)}
+	unitsOf := map[*side][]unit{A: p.units(A.inv.Items, now, to), B: p.units(B.inv.Items, now, to)}
 
 	// two club bookings of one court across the CRMs: nothing is touched
 	for _, ua := range unitsOf[A] {
@@ -427,13 +481,13 @@ func (p *Pair) plan(A, B *side, from, to time.Time) plan {
 			}
 			found := false
 			for i, u := range units {
-				if !matched[i] && valid(m, u, src.typ, dst.m) {
+				if !matched[i] && valid(m, u, src.typ, dst.m, pl.now, pl.cut) {
 					matched[i], found = true, true
 					break
 				}
 			}
 			if found || !inWindow(m.Start, m.End, from, to) || m.Started {
-				continue // valid, or not wholly ahead within the window: left alone
+				continue // valid, or not wholly within the range read whole: left alone
 			}
 			invalid = append(invalid, m)
 		}
@@ -458,7 +512,10 @@ func (p *Pair) plan(A, B *side, from, to time.Time) plan {
 					u.Court, p.span(u.Start, u.End), src.name, dst.name)
 				continue
 			}
-			bs, be := dst.m.BlockSpan(u.Start, u.End)
+			bs, be, ok := blockOf(u, dst.m, pl.now, pl.cut)
+			if !ok {
+				continue // under way, and over before the next step of the grid
+			}
 			pl.creates = append(pl.creates, createPlan{src: src, dst: dst, u: u, start: bs, end: be})
 		}
 	}
@@ -562,7 +619,9 @@ func (p *Pair) create(ctx context.Context, c createPlan, pending map[string]*rem
 		}
 		done[r.key] = true
 	}
-	req := driver.BlockRequest{Court: c.u.Court, Start: c.u.Start, End: c.u.End, Source: driver.MirrorMarker{Src: c.src.typ, ID: c.u.ID}}
+	// the block's span as planned (blockOf: from the grid's step for a
+	// booking under way); BlockSpan of it is itself
+	req := driver.BlockRequest{Court: c.u.Court, Start: c.start, End: c.end, Source: driver.MirrorMarker{Src: c.src.typ, ID: c.u.ID}}
 	it, err := c.dst.m.CreateBlock(ctx, req)
 	if err != nil {
 		p.log.Error("reconciliation: a mirror could not be made", "court", c.u.Court, "crm", c.dst.typ, "source", c.u.ID, "error", err)
@@ -597,7 +656,7 @@ func (p *Pair) remove(ctx context.Context, r removalPlan, pl *plan, rep *Report)
 		default:
 			for _, it := range items {
 				for _, piece := range p.clip(it) {
-					if piece.Class == driver.ClassClub && valid(r.it, unit{piece}, r.src.typ, r.dst.m) {
+					if piece.Class == driver.ClassClub && valid(r.it, unit{piece}, r.src.typ, r.dst.m, pl.now, pl.cut) {
 						p.log.Info("reconciliation: the source of a mirror is still there; it is kept", "mirror", r.it.ID, "source", r.it.Source.ID)
 						return false
 					}

@@ -475,17 +475,63 @@ func TestLoopWritesUnderCourtLock(t *testing.T) {
 	}
 }
 
-// The window: a club's booking starting within Lead or ending past the
-// horizon is not mirrored yet; a mirror not wholly within it is not
-// removed.
+// The window starts at now (D8): a club's booking about to start (within
+// Lead) is mirrored whole, one under way from the first step of the
+// 30-minute grid after now — no block starts in the past — and both
+// mirrors stay valid as time goes on; one ending before that step, or past
+// the horizon, is not mirrored; a mirror not wholly ahead of the range read
+// whole (started, or starting within Lead) is never removed.
+//
+// (Before D8 this test asserted the opposite for "l-soon": a booking
+// starting within Lead was not mirrored at all — the defect D8 fixes.)
 func TestWindow(t *testing.T) {
-	l := newLoop(t)
-	l.b.add(club("l-soon", "court-1", l.now.Add(2*time.Minute), l.now.Add(62*time.Minute)))
+	l := newLoop(t) // 09:00
+	l.b.add(club("l-soon", "court-1", l.at(0, 9, 2), l.at(0, 10, 2)))
+	l.b.add(club("l-under-way", "court-2", l.at(0, 8, 40), l.at(0, 10, 10)))
+	l.b.add(club("l-ending", "court-1", l.at(0, 8, 0), l.at(0, 9, 1)))
 	l.b.add(club("l-far", "court-2", l.at(14, 8, 0), l.at(14, 10, 0)))
-	l.a.add(mirrorOf("b-started", "court-2", l.now.Add(-30*time.Minute), l.now.Add(30*time.Minute), "lunda", "l-gone"))
+	l.a.add(mirrorOf("b-started", "court-2", l.at(0, 8, 30), l.at(0, 9, 30), "lunda", "l-gone"))
+	l.a.add(mirrorOf("b-in-lead", "court-2", l.at(0, 9, 3), l.at(0, 9, 25), "lunda", "l-gone-too"))
 	l.pass()
-	if len(l.a.created) != 0 || len(l.a.deleted) != 0 {
-		t.Fatalf("created %+v, deleted %v", l.a.created, l.a.deleted)
+	want := []string{"court-1 09:02–10:02", "court-2 09:30–10:10"}
+	var got []string
+	for _, c := range l.a.created {
+		got = append(got, c.Court+" "+c.Start.In(l.loc).Format("15:04")+"–"+c.End.In(l.loc).Format("15:04"))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("created %v, want %v", got, want)
+	}
+	if len(l.a.deleted) != 0 {
+		t.Fatalf("deleted %v", l.a.deleted)
+	}
+	// valid as they are in the next passes, also when the grid's next
+	// step has moved on
+	for _, now := range []time.Time{l.now, l.at(0, 9, 40)} {
+		l.now = now
+		if rep := l.pass(); len(rep.Created)+len(rep.Removed) > 0 {
+			t.Fatalf("at %s a valid mirror was made again or removed: %+v", now.Format("15:04"), rep)
+		}
+	}
+}
+
+// D8 with a CRM that books whole seances (1C): a booking starting at
+// 09:15 when it is 09:05 is rounded out to 09:00, a seance begun — its
+// block starts at the next step, 09:30, not in the past.
+func TestWindowRoundedBlockNeverStartsInThePast(t *testing.T) {
+	l := newLoop(t)
+	l.a.typ = "fitness1c"
+	l.a.round = 30 * time.Minute
+	l.p, _ = pair.New(l.a, l.b, pair.Options{PrimaryType: "fitness1c", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: l.loc,
+		Hours: [7]*[2]int{{420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}}, Clock: func() (time.Time, bool) { return l.now, true }})
+	l.now = l.at(0, 9, 5)
+	l.b.add(club("l-1", "court-1", l.at(0, 9, 15), l.at(0, 10, 15)))
+	l.pass()
+	if m := l.a.live(driver.ClassMirror); len(m) != 1 || !m[0].Start.Equal(l.at(0, 9, 30)) || !m[0].End.Equal(l.at(0, 10, 30)) {
+		t.Fatalf("the 1C block: %+v", m)
+	}
+	l.now = l.at(0, 9, 20)
+	if rep := l.pass(); len(rep.Created)+len(rep.Removed) > 0 {
+		t.Fatalf("the block was made again or removed: %+v", rep)
 	}
 }
 

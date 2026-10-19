@@ -13,6 +13,53 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/pair/pairtest"
 )
 
+// gridAfter is the first step of the 30-minute grid of t's day after t.
+func gridAfter(t time.Time, loc *time.Location) time.Time {
+	l := t.In(loc)
+	day := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc)
+	step := day.Add(l.Sub(day).Truncate(30 * time.Minute))
+	for !step.After(t) {
+		step = step.Add(30 * time.Minute)
+	}
+	return step
+}
+
+// D8 on the stubs (the comparison's probe TestProbeO_Lead): a club booking
+// that starts in 3 minutes, and one under way since 10 minutes ago, get
+// their mirrors in the other CRM by the next pass — the one under way from
+// the next step of the 30-minute grid, never from the past — both ways.
+func TestBookingAboutToStartOrUnderWayIsMirrored(t *testing.T) {
+	for _, dir := range []string{"viva to lunda", "lunda to viva"} {
+		t.Run(dir, func(t *testing.T) {
+			env := pairtest.VivaLunda(t, pairtest.Options{})
+			src, dst := env.Primary, env.Mirror
+			if dir == "lunda to viva" {
+				src, dst = env.Mirror, env.Primary
+			}
+			n := time.Now().In(env.Location).Truncate(time.Minute)
+			soon, end := n.Add(3*time.Minute), n.Add(90*time.Minute)
+			src.Book(t, "court-1", soon, soon.Add(time.Hour))
+			src.Book(t, "court-2", n.Add(-10*time.Minute), end)
+			before := gridAfter(time.Now(), env.Location)
+			rep := env.Pass(t)
+			after := gridAfter(time.Now(), env.Location)
+			if rep.Aborted || len(rep.Alarms) > 0 || len(rep.Created) != 2 {
+				t.Fatalf("pass: %+v", rep)
+			}
+			live := dst.Live(t)
+			if !pairtest.Has(live, pairtest.Mirror, "court-1", soon, soon.Add(time.Hour)) {
+				t.Fatalf("the booking starting in 3 minutes is not blocked: %s", pairtest.Spans(live))
+			}
+			if !pairtest.Has(live, pairtest.Mirror, "court-2", before, end) && !pairtest.Has(live, pairtest.Mirror, "court-2", after, end) {
+				t.Fatalf("the booking under way is not blocked from %s: %s", before.Format("15:04"), pairtest.Spans(live))
+			}
+			if rep := env.Pass(t); len(rep.Created)+len(rep.Removed) > 0 || len(rep.Alarms) > 0 {
+				t.Fatalf("the next pass: %+v", rep)
+			}
+		})
+	}
+}
+
 // D9: Lunda's horizon is its club's booking depth, read every pass. With a
 // depth of 7 days a pass reads 7 days, is complete and mirrors; a booking
 // of the primary beyond the depth waits for the window (no alarm); when the
