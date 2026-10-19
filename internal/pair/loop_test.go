@@ -160,6 +160,8 @@ type loop struct {
 	p    *pair.Pair
 	now  time.Time
 	loc  *time.Location
+	// clockUnknown: the hub's time is not known (a pass is skipped)
+	clockUnknown bool
 }
 
 func newLoop(t *testing.T, opts ...func(*pair.Options)) *loop {
@@ -168,7 +170,7 @@ func newLoop(t *testing.T, opts ...func(*pair.Options)) *loop {
 	l := &loop{a: &fakeCRM{typ: "viva"}, b: &fakeCRM{typ: "lunda"}, loc: loc,
 		now: time.Date(2026, 10, 20, 9, 0, 0, 0, loc)}
 	o := pair.Options{PrimaryType: "viva", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: loc,
-		Clock: func() (time.Time, bool) { return l.now, true }}
+		Clock: func() (time.Time, bool) { return l.now, !l.clockUnknown }}
 	for i := range 7 {
 		o.Hours[i] = &[2]int{7 * 60, 23 * 60}
 	}
@@ -354,6 +356,48 @@ func TestTwoPassesWithoutPointRead(t *testing.T) {
 			t.Fatal("removed although valid in the pass before")
 		}
 	})
+}
+
+// "Two passes in a row" are two COMPLETE passes in a row (F11, D16): a pass
+// aborted on an incomplete or failed read, or skipped without the hub's
+// time, between them starts the count again.
+func TestTwoPassesResetByAbortedPass(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		spoil func(l *loop) (restore func())
+	}{
+		{"incomplete read", func(l *loop) func() {
+			l.a.incomplete = true
+			return func() { l.a.incomplete = false }
+		}},
+		{"failed read", func(l *loop) func() {
+			l.b.invErr = errors.New("down")
+			return func() { l.b.invErr = nil }
+		}},
+		{"clock unknown", func(l *loop) func() {
+			l.clockUnknown = true
+			return func() { l.clockUnknown = false }
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			l := newLoop(t)
+			m := mirrorOf("f-1", "court-1", l.at(1, 10, 0), l.at(1, 11, 0), "", "")
+			m.Source = nil
+			l.a.add(m)
+			l.pass() // invalid: first sight
+			restore := c.spoil(l)
+			if rep := l.pass(); !rep.Aborted && !rep.Skipped {
+				t.Fatalf("the spoilt pass ran: %+v", rep)
+			}
+			restore()
+			if l.pass(); len(l.a.deleted) != 0 {
+				t.Fatal("removed on evidence from before a pass that did not read both CRMs whole")
+			}
+			if l.pass(); len(l.a.deleted) != 1 {
+				t.Fatal("not removed after two complete passes in a row")
+			}
+		})
+	}
 }
 
 // Nothing but a club's item is ever mirrored: not a partner's booking, a

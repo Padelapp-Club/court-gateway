@@ -139,6 +139,7 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 	now, known := p.o.Clock()
 	if !known {
 		rep.Skipped = true
+		p.forget()
 		return rep
 	}
 	h := min(p.am.MirrorHorizon(), p.bm.MirrorHorizon())
@@ -164,7 +165,10 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 		}
 	}
 	if rep.Aborted {
-		p.finish(&rep, nil)
+		// a pass that did not read both CRMs whole breaks "two complete
+		// passes in a row" (F11, D16): what the passes before saw is
+		// forgotten, the count starts again from the next complete pass
+		p.finish(&rep, &memo{})
 		return rep
 	}
 	pl := p.plan(A, B, from, to)
@@ -189,14 +193,12 @@ func errText(err error) string {
 }
 
 // finish records the pass's alarms (deduplicated, sticky ones added) and
-// what the next pass must remember; next is nil for an aborted pass,
-// which teaches nothing.
+// what the next pass must remember (nothing after an aborted pass: the
+// evidence of passes in a row is broken).
 func (p *Pair) finish(rep *Report, next *memo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if next != nil {
-		p.memo = *next
-	}
+	p.memo = *next
 	var keep []sticky
 	for _, s := range p.sticky {
 		rep.Alarms = append(rep.Alarms, s.Alarm)
@@ -221,6 +223,14 @@ func (p *Pair) finish(rep *Report, next *memo) {
 	for _, a := range out {
 		p.log.Error("reconciliation alarm", "code", a.Code, "problem", a.Problem)
 	}
+}
+
+// forget drops what the passes before saw: a pass that read nothing (the
+// hub's time not known) breaks passes in a row as an aborted one does.
+func (p *Pair) forget() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.memo = memo{}
 }
 
 // stick raises an alarm outside a pass.
