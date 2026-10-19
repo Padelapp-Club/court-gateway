@@ -505,6 +505,22 @@ func TestAlarmsInReadiness(t *testing.T) {
 	}
 }
 
+// Two club bookings overlapping across the CRMs are an alarm even when
+// each was mirrored before the other was made (a CRM that does not refuse
+// an overlap): nothing is created or removed for them.
+func TestOverlapOfMirroredClubBookings(t *testing.T) {
+	l := newLoop(t)
+	s := l.at(1, 10, 0)
+	l.a.add(club("e-1", "court-1", s, s.Add(time.Hour)))
+	l.b.add(mirrorOf("l-m1", "court-1", s, s.Add(time.Hour), "viva", "e-1"))
+	l.b.add(club("l-1", "court-1", s.Add(30*time.Minute), s.Add(90*time.Minute)))
+	l.a.add(mirrorOf("b-m1", "court-1", s.Add(30*time.Minute), s.Add(90*time.Minute), "lunda", "l-1"))
+	rep := l.pass()
+	if !alarmed(rep, pair.AlarmOverlap) || len(rep.Created)+len(rep.Removed) > 0 {
+		t.Fatalf("pass: %+v", rep)
+	}
+}
+
 // A pair is not made of a driver that cannot keep mirrors (F13).
 func TestPairNeedsMirrorers(t *testing.T) {
 	if _, err := pair.New(plainDriver{}, &fakeCRM{typ: "lunda"}, pair.Options{PrimaryType: "demo", MirrorType: "lunda"}); err == nil {
