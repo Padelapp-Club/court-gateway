@@ -610,8 +610,8 @@ func TestLeadMirrorWhoseSourceMayEndBeforeTheReadIsKept(t *testing.T) {
 	}
 }
 
-// The window starting at now, with a CRM that books whole seances (1C): a booking starting at
-// 09:15 when it is 09:05 is rounded out to 09:00, a seance begun — its
+// The window starting at now, with a CRM that books whole seances (1C): a
+// booking starting at 09:15 when it is 09:05 is rounded out to 09:00, a seance begun — its
 // block starts at the next step, 09:30, not in the past.
 func TestWindowRoundedBlockNeverStartsInThePast(t *testing.T) {
 	l := newLoop(t, func(o *pair.Options) { o.PrimaryType = "fitness1c" })

@@ -157,8 +157,9 @@ func mirrorers(env *pairtest.Env, d direction) (src, dst driver.Mirrorer) {
 	return src, dst
 }
 
-// The window starting at now, on every pair, both ways: a club booking under way (begun 30 minutes
-// before the last step of the grid, ending on the grid) and one starting
+// The window starting at now, on every pair, both ways: a club booking
+// under way (begun 30 minutes before the last step of the grid, ending on
+// the grid) and one starting
 // in 3 minutes (off the grid) are blocked by the next pass — the one under
 // way from the next step of the grid, nothing in the past — and the passes
 // after change nothing; the one under way, cancelled, frees its block
