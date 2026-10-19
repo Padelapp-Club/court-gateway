@@ -96,7 +96,6 @@ type Env struct {
 
 	clock func() time.Time // Options.At (nil: time.Now)
 
-	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
 	respec  func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair
 	restart func(t *testing.T) built
 }
@@ -104,17 +103,16 @@ type Env struct {
 // built is what build gives: the gateway's club, its pair and how to serve
 // it again with a new config.
 type built struct {
-	b       *contract.Built
-	p       *pair.Pair
-	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
-	respec  func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair
+	b      *contract.Built
+	p      *pair.Pair
+	respec func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair
 }
 
 // Reconfigure serves the club again with mirror section m, as a new config
 // from the hub would (the operator raising the fuse), on the same CRMs.
 func (e *Env) Reconfigure(t *testing.T, m core.MirrorSpec) {
 	t.Helper()
-	e.Pair = e.rebuild(t, m)
+	e.Respec(t, func(s *core.ClubSpec) { s.Mirror = &m })
 }
 
 // Respec serves the club again with its spec changed by f (its court
@@ -132,13 +130,13 @@ func (e *Env) Restart(t *testing.T) {
 	t.Helper()
 	e.Pair.Close()
 	n := e.restart(t)
-	e.Built, e.Pair, e.Handler, e.rebuild, e.respec = n.b, n.p, n.b.Handler(), n.rebuild, n.respec
+	e.Built, e.Pair, e.Handler, e.respec = n.b, n.p, n.b.Handler(), n.respec
 }
 
 // with fills in what build gave and how to build it again.
 func (e *Env) with(n built, restart func(t *testing.T) built, clock func() time.Time) *Env {
 	e.clock = clock
-	e.Built, e.Pair, e.Handler, e.rebuild, e.respec, e.restart = n.b, n.p, n.b.Handler(), n.rebuild, n.respec, restart
+	e.Built, e.Pair, e.Handler, e.respec, e.restart = n.b, n.p, n.b.Handler(), n.respec, restart
 	return e
 }
 
@@ -397,11 +395,7 @@ func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map
 		b.Settings, b.Driver, b.Server = s, d, srv
 		return d.(*pair.Pair)
 	}
-	rebuild := func(t *testing.T, m core.MirrorSpec) *pair.Pair {
-		t.Helper()
-		return respec(t, func(s *core.ClubSpec) { s.Mirror = &m })
-	}
-	return built{b: b, p: p, rebuild: rebuild, respec: respec}
+	return built{b: b, p: p, respec: respec}
 }
 
 // cloneSpec copies spec deep enough that a Respec of one build does not
