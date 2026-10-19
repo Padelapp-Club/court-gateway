@@ -594,11 +594,9 @@ func TestWindow(t *testing.T) {
 // after pass, it is left alone. (A block of more than one seance within
 // the lead is judged and removed: TestT13S7FindingCancelWithinLead.)
 func TestLeadMirrorWhoseSourceMayEndBeforeTheReadIsKept(t *testing.T) {
-	l := newLoop(t)
+	l := newLoop(t, func(o *pair.Options) { o.PrimaryType = "fitness1c" })
 	l.a.typ = "fitness1c"
 	l.a.round = 30 * time.Minute
-	l.p, _ = pair.New(l.a, l.b, pair.Options{PrimaryType: "fitness1c", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: l.loc,
-		Hours: [7]*[2]int{{420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}}, Clock: func() (time.Time, bool) { return l.now, true }})
 	l.now = l.at(0, 9, 28)
 	l.b.add(club("l-short", "court-1", l.at(0, 9, 30), l.at(0, 9, 32)))
 	l.a.add(driver.MirrorItem{ID: "x-mirror", Court: "court-1", Start: l.at(0, 9, 30), End: l.at(0, 10, 0), Class: driver.ClassMirror})
@@ -616,11 +614,9 @@ func TestLeadMirrorWhoseSourceMayEndBeforeTheReadIsKept(t *testing.T) {
 // 09:15 when it is 09:05 is rounded out to 09:00, a seance begun — its
 // block starts at the next step, 09:30, not in the past.
 func TestWindowRoundedBlockNeverStartsInThePast(t *testing.T) {
-	l := newLoop(t)
+	l := newLoop(t, func(o *pair.Options) { o.PrimaryType = "fitness1c" })
 	l.a.typ = "fitness1c"
 	l.a.round = 30 * time.Minute
-	l.p, _ = pair.New(l.a, l.b, pair.Options{PrimaryType: "fitness1c", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: l.loc,
-		Hours: [7]*[2]int{{420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}}, Clock: func() (time.Time, bool) { return l.now, true }})
 	l.now = l.at(0, 9, 5)
 	l.b.add(club("l-1", "court-1", l.at(0, 9, 15), l.at(0, 10, 15)))
 	l.pass()
@@ -637,10 +633,8 @@ func TestWindowRoundedBlockNeverStartsInThePast(t *testing.T) {
 // hours only; a CRM that books whole seances blocks the span rounded out,
 // and that rounded mirror is valid.
 func TestOpaqueClippedAndRounded(t *testing.T) {
-	l := newLoop(t)
+	l := newLoop(t, func(o *pair.Options) { o.PrimaryType = "fitness1c" })
 	l.a.typ = "fitness1c"
-	l.p, _ = pair.New(l.a, l.b, pair.Options{PrimaryType: "fitness1c", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: l.loc,
-		Hours: [7]*[2]int{{420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}, {420, 1380}}, Clock: func() (time.Time, bool) { return l.now, true }})
 	l.a.round = 30 * time.Minute
 	op := club("x-1", "court-1", l.at(1, 0, 0), l.at(1, 8, 0)) // closed hours and a booking 7-8
 	op.Opaque = true
