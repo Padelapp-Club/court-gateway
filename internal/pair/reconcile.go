@@ -68,13 +68,14 @@ const (
 	AlarmHalfBooking  = "MIRROR_HALF_BOOKING"
 	AlarmOverlap      = "MIRROR_OVERLAP"
 	AlarmDamaged      = "MIRROR_DAMAGED"
+	AlarmUnmapped     = "MIRROR_UNMAPPED"
 	AlarmRemoveFailed = "MIRROR_REMOVE_FAILED"
 	AlarmCreateFailed = "MIRROR_CREATE_FAILED"
 	AlarmBacklog      = "MIRROR_BACKLOG"
 	AlarmIncomplete   = "MIRROR_READ_INCOMPLETE"
 )
 
-var alarmRank = []string{AlarmFuse, AlarmHalfBooking, AlarmOverlap, AlarmDamaged, AlarmRemoveFailed, AlarmCreateFailed, AlarmBacklog, AlarmIncomplete}
+var alarmRank = []string{AlarmFuse, AlarmHalfBooking, AlarmOverlap, AlarmDamaged, AlarmUnmapped, AlarmRemoveFailed, AlarmCreateFailed, AlarmBacklog, AlarmIncomplete}
 
 // Alarm is something the operator and the club must look at. Problem is
 // in Russian and carries no personal data: courts, times, counts, ids.
@@ -433,6 +434,16 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 		}
 	}
 
+	// mirrors on rooms no court of the club maps: untouched, reported (F6)
+	for _, s := range []*side{A, B} {
+		for _, it := range s.inv.Unmapped {
+			if it.End.After(now) && it.Start.Before(to) {
+				alarm(AlarmUnmapped, "%s: отражение %s (%s) стоит на корте %s, которого нет в сопоставлении кортов клуба — шлюз его не трогает; верните корт в сопоставление или снимите отражение в CRM вручную",
+					s.name, it.ID, p.span(it.Start, it.End), it.Court)
+			}
+		}
+	}
+
 	// a partner's booking in one CRM only: reported once it is seen twice
 	type ownKey struct {
 		court, partner string
@@ -475,8 +486,13 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 			if m.Class != driver.ClassMirror || !slices.Contains(p.o.Courts, m.Court) {
 				continue
 			}
-			// a mirror of another pair's CRM is not ours to judge here
+			// a mirror whose marker names a CRM that is not the other one
+			// of this pair is not ours to judge: untouched, reported (F6)
 			if m.Source != nil && m.Source.Src != src.typ {
+				if m.End.After(now) {
+					alarm(AlarmUnmapped, "корт %s, %s: в %s отражение %s с меткой CRM «%s», а вторая CRM клуба — %s; шлюз его не трогает — проверьте, откуда оно, и снимите его в CRM вручную",
+						m.Court, p.span(m.Start, m.End), dst.name, m.ID, m.Source.Src, src.name)
+				}
 				continue
 			}
 			found := false

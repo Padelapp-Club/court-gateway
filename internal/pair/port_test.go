@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver/fitness1c/fitness1cstub"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/lunda/lundastub"
 	"github.com/Padelapp-Club/court-gateway/internal/pair"
 	"github.com/Padelapp-Club/court-gateway/internal/pair/pairtest"
 )
@@ -101,6 +102,47 @@ func TestLundaHorizonIsTheBookingDepth(t *testing.T) {
 	if !pairtest.Has(env.Mirror.Live(t), pairtest.Mirror, "court-2", far, far.Add(time.Hour)) {
 		t.Fatalf("the far booking is not blocked once within the depth: %s", pairtest.Spans(env.Mirror.Live(t)))
 	}
+}
+
+// D14 on the stubs (F6): the gateway's mirror on a court of the CRM that
+// the club's mapping does not name — Lunda's service-client booking with a
+// mirror's marker, 1C's rental of the mirror client — raises
+// MIRROR_UNMAPPED and is never touched.
+func TestUnmappedMirrorOnStubs(t *testing.T) {
+	t.Run("lunda", func(t *testing.T) {
+		env := pairtest.VivaLunda(t, pairtest.Options{})
+		const court3 = "00000000-0000-4000-8000-00000000a1c3"
+		env.LundaStub.AddCourt(court3, "Корт 3")
+		s := env.Day(2, 10, 0)
+		id := env.LundaStub.SeedBooking(lundastub.Booking{Court: court3, Begin: s, End: s.Add(time.Hour), Customer: pairtest.LundaService,
+			Price: 0, Notes: "[cg-mirror:viva:e-00000000-0000-4000-8000-0000000000aa]"})
+		for i := range 2 {
+			if rep := env.Pass(t); !alarmed(rep, pair.AlarmUnmapped) || len(rep.Removed) > 0 {
+				t.Fatalf("pass %d: %+v", i+1, rep)
+			}
+		}
+		if b := env.LundaStub.Booking(id); b.Status == "CANCELLED" {
+			t.Fatal("a mirror off the mapping was cancelled")
+		}
+	})
+	t.Run("fitness1c", func(t *testing.T) {
+		env := pairtest.Fitness1CLunda(t, pairtest.Options{})
+		f := env.Primary.(*pairtest.Fitness1CStub)
+		const room3 = "00000000-0000-4000-8000-00000000c1b3"
+		f.Stub.AddRoom(room3, "Корт 3")
+		s := env.Day(2, 10, 0)
+		id := f.Stub.SeedClientRental(pairtest.F1CMirrorTech, room3, pairtest.F1CService, s, s.Add(time.Hour))
+		for i := range 3 {
+			if rep := env.Pass(t); !alarmed(rep, pair.AlarmUnmapped) || len(rep.Removed) > 0 {
+				t.Fatalf("pass %d: %+v", i+1, rep)
+			}
+		}
+		for _, r := range f.Stub.RentalViews() {
+			if r.ID == id && r.Canceled {
+				t.Fatal("a mirror off the mapping was cancelled")
+			}
+		}
+	})
 }
 
 // D15: a 1C mirror is told by the mirror client alone. A mirror whose

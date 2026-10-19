@@ -93,7 +93,7 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 	first := localDay(q.From, d.loc).AddDate(0, 0, -1)
 	last := localDay(q.To.Add(-time.Nanosecond), d.loc)
 	inv := driver.Inventory{Complete: true}
-	var all []slotItem
+	var all, unmapped []slotItem
 	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
 		ds, err := readSlots(ctx, d.c, day)
 		var ue *driver.UpstreamError
@@ -109,6 +109,7 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 			return driver.Inventory{}, err
 		}
 		all = append(all, items...)
+		unmapped = append(unmapped, d.unmappedMirrors(ds)...)
 		if ds.BeyondBookingDepth {
 			inv.Complete = false
 			break
@@ -139,7 +140,47 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 			inv.Items = append(inv.Items, it)
 		}
 	}
+	for _, it := range mergeItems(unmapped) {
+		if it.Start.Before(q.To) && it.End.After(q.From) {
+			inv.Unmapped = append(inv.Unmapped, it)
+		}
+	}
 	return inv, nil
+}
+
+// unmappedMirrors are the gateway's mirrors on the day's courts that no
+// court of the config maps (F6, D14): bookings of the service client
+// whose notes, as the schedule gives them, read as a mirror's marker. One
+// listed without its notes is not read again: it is not the loop's to
+// judge, only to report when it can tell.
+func (d *Driver) unmappedMirrors(ds daySchedule) []slotItem {
+	var out []slotItem
+	for _, ct := range *ds.Courts {
+		if _, mapped := d.byUID[ct.CourtUID]; mapped || ct.Slots == nil || d.service == "" {
+			continue
+		}
+		for _, s := range *ct.Slots {
+			if s == nil || s.Type == "DRAFT" || s.BookingID == "" || s.ClientUID != d.service {
+				continue
+			}
+			text := s.Notes
+			if text == nil {
+				text = s.NotesAbstract
+			}
+			if text == nil {
+				continue
+			}
+			m, st := driver.ParseMirrorMarker(*text)
+			start, ok1 := parseLocal(s.Begin, d.loc)
+			end, ok2 := parseLocal(s.End, d.loc)
+			id, ok3 := slotID(s, ct.CourtUID)
+			if st != driver.MarkerValid || !ok1 || !ok2 || !ok3 || !end.After(start) {
+				continue
+			}
+			out = append(out, slotItem{MirrorItem: driver.MirrorItem{ID: id, Court: ct.CourtUID, Start: start, End: end, Class: driver.ClassMirror, Source: &m}})
+		}
+	}
+	return out
 }
 
 // mergeItems joins the overlapping or touching items of one id on one

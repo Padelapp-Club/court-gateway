@@ -158,6 +158,12 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 			inv.Items = append(inv.Items, it)
 		}
 	}
+	// the mirror client's rentals in rooms no court maps (F6, D14)
+	for _, r := range mirrors {
+		if _, mapped := d.byRoom[r.room]; !mapped && r.Start.Before(q.To) && r.End.After(q.From) {
+			inv.Unmapped = append(inv.Unmapped, driver.MirrorItem{ID: ownID(r.id), Court: r.room, Start: r.Start, End: r.End, Class: driver.ClassMirror, Started: r.started})
+		}
+	}
 	return inv, nil
 }
 

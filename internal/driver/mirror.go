@@ -156,6 +156,12 @@ type Inventory struct {
 	// that starts in the range asked.
 	Complete bool
 	Items    []MirrorItem
+	// Unmapped are the gateway's mirrors found on rooms of the CRM that no
+	// court of the club maps (Court is the CRM's own id of the room): a
+	// mapping changed under them (F6). The loop reports them and never
+	// touches them. A driver lists those it can tell from what it reads
+	// anyway (Lunda, 1C:Fitness), and reads nothing more for them.
+	Unmapped []MirrorItem
 }
 
 // BlockRequest asks a driver to block a court for an item of the other

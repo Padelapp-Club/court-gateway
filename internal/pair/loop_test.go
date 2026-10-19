@@ -28,6 +28,7 @@ type fakeCRM struct {
 	reread     func(q driver.OccupancyQuery) []driver.MirrorItem // more items a read of one court finds
 	round      time.Duration                                     // BlockSpan rounds out to it
 	horizon    time.Duration                                     // MirrorHorizon (14 days when 0)
+	unmapped   []driver.MirrorItem                               // Inventory.Unmapped
 	created    []driver.BlockRequest
 	deleted    []string
 	seq        int
@@ -81,7 +82,7 @@ func (f *fakeCRM) MirrorInventory(_ context.Context, q driver.OccupancyQuery) (d
 	if f.invErr != nil {
 		return driver.Inventory{}, f.invErr
 	}
-	inv := driver.Inventory{Complete: !f.incomplete}
+	inv := driver.Inventory{Complete: !f.incomplete, Unmapped: slices.Clone(f.unmapped)}
 	for _, it := range f.items {
 		if !f.hidden[it.ID] && slices.Contains(q.Courts, it.Court) && it.Start.Before(q.To) && it.End.After(q.From) {
 			inv.Items = append(inv.Items, it)
@@ -405,6 +406,36 @@ func TestTwoPassesResetByAbortedPass(t *testing.T) {
 				t.Fatal("not removed after two complete passes in a row")
 			}
 		})
+	}
+}
+
+// D14 (F6): a mirror on a room no court of the club maps, and a mirror
+// whose marker names a CRM that is not the other one of the pair, are
+// never touched — not removed though no source is found, not taken for a
+// source's mirror — and each raises MIRROR_UNMAPPED, pass after pass.
+func TestUnmappedMirrorsAreReportedNotTouched(t *testing.T) {
+	l := newLoop(t)
+	s := l.at(1, 10, 0)
+	l.a.add(mirrorOf("b-other", "court-1", s, s.Add(time.Hour), "yclients", "y-1"))
+	l.b.unmapped = []driver.MirrorItem{mirrorOf("l-off-map", "lunda-court-9", s, s.Add(time.Hour), "viva", "e-gone")}
+	l.b.add(club("l-1", "court-1", s.Add(2*time.Hour), s.Add(3*time.Hour)))
+	for i := range 3 {
+		rep := l.pass()
+		n := 0
+		for _, a := range rep.Alarms {
+			if a.Code == pair.AlarmUnmapped {
+				n++
+			}
+		}
+		if n != 2 {
+			t.Fatalf("pass %d: %d MIRROR_UNMAPPED alarms, want 2: %+v", i+1, n, rep.Alarms)
+		}
+		if len(rep.Removed) > 0 || len(l.a.deleted)+len(l.b.deleted) > 0 {
+			t.Fatalf("pass %d removed a mirror it may not judge: %+v", i+1, rep)
+		}
+	}
+	if len(l.a.created) != 1 || l.a.created[0].Source.ID != "l-1" {
+		t.Fatalf("created %+v", l.a.created)
 	}
 }
 
