@@ -172,6 +172,42 @@ func TestFuseAlarmTextIsTheReadinessDetail(t *testing.T) {
 	}
 }
 
+// D18: a partner's cancel takes the court's lock in both CRMs — the one
+// the loop's writes and a partner's create hold — so it waits while it is
+// held, and completes once it is released.
+func TestPartnerCancelTakesTheCourtLock(t *testing.T) {
+	env := pairtest.VivaLunda(t, pairtest.Options{})
+	start := env.Day(3, 15, 0)
+	st, id := env.Create(t, "court-1", start, start.Add(time.Hour))
+	if st != http.StatusCreated {
+		t.Fatalf("create: %d", st)
+	}
+	unlock, err := core.LockResources(context.Background(), env.Pair.Resources("court-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan int, 1)
+	go func() { got <- env.CancelBooking(t, id) }()
+	select {
+	case st := <-got:
+		unlock()
+		t.Fatalf("the cancel did not wait for the court's lock: %d", st)
+	case <-time.After(300 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case st := <-got:
+		if st != http.StatusNoContent {
+			t.Fatalf("cancel: %d", st)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the cancel did not complete once the lock was free")
+	}
+	if n := len(pairtest.Of(env.Primary.Live(t), pairtest.Partner, "")) + len(pairtest.Of(env.Mirror.Live(t), pairtest.Partner, "")); n != 0 {
+		t.Fatalf("partner bookings left: %d", n)
+	}
+}
+
 // D15: a 1C mirror is told by the mirror client alone. A mirror whose
 // service the club edits is still the gateway's: kept while its source
 // stands, never taken for the club's busy time (nor mirrored back into

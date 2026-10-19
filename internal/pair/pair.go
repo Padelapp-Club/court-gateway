@@ -337,6 +337,14 @@ func (p *Pair) Cancel(ctx context.Context, id string, partner string) error {
 	if err != nil {
 		return err
 	}
+	// the court's lock in both CRMs, the one a partner's create and the
+	// loop's writes hold (D18): no write of the loop on the court goes in
+	// between the two cancels
+	unlock, err := p.lock(ctx, bk.Court)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	halves, err := p.halves(ctx, bk, partner)
 	if err != nil {
 		return &driver.MirrorError{Err: err}
