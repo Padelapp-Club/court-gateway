@@ -331,7 +331,7 @@ const (
 )
 
 // ReadyDetail is what the operator is to do about a readiness failure, in
-// Russian, for the heartbeat (D12): the Detail texts of its config alerts
+// Russian, for the heartbeat, which carries it to the hub: the Detail texts of its config alerts
 // (driver.ConfigAlert — the reconciliation's alarms), each club's prefixed
 // with the club when several have one; control characters dropped, each
 // text and the whole bounded. Nothing else of an error is ever taken: an

@@ -81,7 +81,7 @@ type fileConfig struct {
 
 // MirrorTypes are the CRM types an installation may hold as its mirror
 // (gateway.yaml `mirror`): Lunda only, next to a primary CRM of another
-// type (REQ-397: Lunda as the primary of a pair is not built).
+// type (Lunda as the primary of a pair is not built).
 var MirrorTypes = []string{"lunda"}
 
 // MirrorSettings are the installation's second CRM: the clubs whose
@@ -101,7 +101,8 @@ type MirrorSettings struct {
 
 // mirrorMemories keep, in memory only, the pair.Memory of each club of an
 // installation for as long as the process runs: the pair a new config of
-// the club builds takes the one of the pair before (D10).
+// the club builds takes the one of the pair before, so a config change
+// does not drop what earlier passes saw.
 type mirrorMemories struct {
 	mu   sync.Mutex
 	byID map[string]*pair.Memory

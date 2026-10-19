@@ -24,7 +24,7 @@ func (d passDriver) Get(context.Context, string) (driver.Booking, error) {
 	return driver.Booking{}, driver.ErrNotFound
 }
 
-// D20: the clubs' passes run in parallel — a club whose pass hangs on a
+// The clubs' passes run in parallel — a club whose pass hangs on a
 // slow CRM delays no other club — each bounded by the pass timeout, and a
 // new config (Clubs.Set) never waits for a running pass; the club's next
 // pass runs on the new config's driver.

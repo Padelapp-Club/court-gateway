@@ -15,7 +15,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/tunnel"
 )
 
-// D12: the text of a reconciliation alarm — what it counted and what the
+// The text of a reconciliation alarm — what it counted and what the
 // operator is to do — travels with the heartbeat (reason_detail) and is
 // shown by the hub (status files, /hub/status), not the code alone. Only
 // the alarm's Detail goes; the rest of the alert (Problems) and any other

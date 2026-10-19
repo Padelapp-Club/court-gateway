@@ -11,13 +11,13 @@ import (
 
 // MirrorInterval is how often the reconciliation loop of a club served by
 // two CRMs runs: within it, a booking made directly in one CRM is blocked
-// in the other and leaves the partners' sale (scenario 7: at most 2 min).
+// in the other and leaves the partners' sale (at most 2 min).
 const MirrorInterval = time.Minute
 
 // MirrorRecheck: a pass that leaves a mirror to be removed by a second pass
 // (pair.Report.Recheck: a 1C mirror, which carries no marker, found invalid
 // for the first time) is followed by one more pass of its club this long
-// after it started, not a whole interval later (D11). A cancellation then
+// after it started, not a whole interval later. A cancellation then
 // frees its slot within MirrorInterval + MirrorRecheck + the second pass:
 // within 2 minutes while each pass takes at most 30 s. Only that club runs
 // the extra pass: halving the interval of every club instead would double
@@ -60,11 +60,11 @@ func RunMirrors(ctx context.Context, clubs *Clubs, interval time.Duration, log *
 
 // RunMirrorsWith runs the reconciliation of the clubs served by two CRMs:
 // every interval a pass of each such club, the clubs' passes in parallel
-// (D20) — a slow CRM delays only its own club — each bounded by
+// — a slow CRM delays only its own club — each bounded by
 // PassTimeout, and a club's passes one at a time: a club whose pass is
 // still running when the interval comes runs its next pass as soon as
 // that one ends. A pass that reports Recheck is followed by another of its
-// club Recheck after it started (D11). It is the gateway's only scheduled
+// club Recheck after it started. It is the gateway's only scheduled
 // write. The current club table is read for every pass and nothing here
 // holds it: a new config (Clubs.Set) never waits for a pass, and the next
 // pass of the club runs on the new config's pair (one pass of a club at a

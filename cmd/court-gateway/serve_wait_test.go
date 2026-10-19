@@ -58,7 +58,7 @@ func TestServeWaitsForTheConfigSyncer(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { done <- serve(ctx, filepath.Join(s.dir, "gateway.yaml"), "", &contract.LogBuffer{}, env{}.get) }()
 	// release before the join: a failure while the syncer is held would
-	// otherwise wait forever, serve waiting for the syncer (review r9)
+	// otherwise wait forever, serve waiting for the syncer
 	defer func() { cancel(); releaseOnce.Do(func() { close(release) }); <-done }()
 	s.hub.MustOperator(t, http.StatusCreated, http.MethodPut, "/hub/installations/club-one/clubs/club-one", core.ClubSpec{
 		ID: "club-one", Name: "Клуб Один", Timezone: "Europe/Moscow", SlotMinutes: 30, Hours: map[string]string{"mon-sun": "07:00-23:00"},

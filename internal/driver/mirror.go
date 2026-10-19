@@ -155,7 +155,7 @@ type Inventory struct {
 	Items    []MirrorItem
 	// Unmapped are the gateway's mirrors found on rooms of the CRM that no
 	// court of the club maps (Court is the CRM's own id of the room): a
-	// mapping changed under them (F6). The loop reports them and never
+	// mapping changed under them. The loop reports them and never
 	// touches them. A driver lists those it can tell from what it reads
 	// anyway (Lunda, 1C:Fitness), and reads nothing more for them.
 	Unmapped []MirrorItem

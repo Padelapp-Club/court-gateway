@@ -265,7 +265,7 @@ func chooseClub(ctx context.Context, il driver.InteractiveLogin, r *bufio.Reader
 }
 
 // pickClient has the person find and choose the club's service client
-// (REQ-396); an empty answer chooses none.
+// that bookings are written on; an empty answer chooses none.
 func pickClient(r *bufio.Reader, w io.Writer) func(context.Context, driver.ClientPicker) (string, error) {
 	return func(ctx context.Context, cp driver.ClientPicker) (string, error) {
 		fmt.Fprintln(w, "Служебный клиент клуба для броней PadelApp: брони PadelApp встают в CRM на этого клиента (обычно клиент с именем клуба).")

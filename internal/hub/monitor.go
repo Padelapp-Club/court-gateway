@@ -199,7 +199,7 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat, bound bool
 	h.beats++
 	h.ready, h.reason, h.clubs, h.nextLogin, h.detail = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil, time.Time{}, ""
 	if !hb.Ready && strings.HasPrefix(h.reason, "MIRROR_") {
-		// only a pair's alarms carry a text for the operator (D12)
+		// only a pair's alarms carry a text for the operator
 		h.detail = cleanDetail(hb.ReasonDetail, maxReasonDetail)
 	}
 	if !hb.Ready {

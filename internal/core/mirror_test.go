@@ -116,7 +116,8 @@ func TestValidateMirrorSpec(t *testing.T) {
 	}
 }
 
-// A primary that cannot keep mirrors is refused as a config error (F13).
+// A primary that cannot keep mirrors is refused as a config error: the two CRMs
+// would otherwise run without the loop that keeps them in step.
 func TestPairNeedsAMirrorer(t *testing.T) {
 	base, err := core.Load([]byte(hubYAML+"crm: { type: demo }\nmirror: { type: lunda, service_client: abc }\n"), env)
 	if err != nil {
@@ -133,7 +134,7 @@ func TestPairNeedsAMirrorer(t *testing.T) {
 	}
 }
 
-// 1C in a pair needs a mirror client of its own (F15): none, or the
+// 1C in a pair needs a mirror client of its own: none, or the
 // partners' one, is a config error.
 func TestFitness1CMirrorClient(t *testing.T) {
 	env1c := func(k string) string {

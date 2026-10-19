@@ -10,7 +10,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-// D12: ReadyDetail takes the Detail texts of the config alerts of a
+// ReadyDetail takes the Detail texts of the config alerts of a
 // readiness failure and nothing else — not an alert's Problems, not an
 // upstream error's words — prefixed by the club when several clubs have
 // one; control characters dropped, every text and the whole bounded.

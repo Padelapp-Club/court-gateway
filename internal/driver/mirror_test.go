@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The mirror's marker is read strictly (F5): exactly one marker, a known
+// The mirror's marker is read strictly: exactly one marker, a known
 // source, an id of [A-Za-z0-9_-] taken as written; anything else that
 // starts with "[cg-mirror" is damaged, and a partner's marker is not one.
 func TestParseMirrorMarker(t *testing.T) {
