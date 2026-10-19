@@ -227,13 +227,8 @@ const (
 	mirrorClient
 )
 
-// userToken is the technical client's token: kept until 1C refuses it,
+// tokenOf is a technical client's token: kept until 1C refuses it,
 // issued again by phone (GET /client_usertoken/, no secret needed).
-func (c *client) userToken(ctx context.Context, fresh bool) (string, error) {
-	return c.tokenOf(ctx, gatewayClient, fresh)
-}
-
-// tokenOf is userToken of either technical client.
 func (c *client) tokenOf(ctx context.Context, who techClient, fresh bool) (string, error) {
 	c.mu.Lock()
 	phone, slot := c.phone, &c.token
@@ -263,13 +258,8 @@ func (c *client) tokenOf(ctx context.Context, who techClient, fresh bool) (strin
 	return data.UserToken, nil
 }
 
-// asClient runs f with the technical client's token; when 1C refuses the
-// token, it is issued again and f runs once more.
-func (c *client) asClient(ctx context.Context, f func(tok string) error) error {
-	return c.as(ctx, gatewayClient, f)
-}
-
-// as is asClient of either technical client.
+// as runs f with a technical client's token; when 1C refuses the token,
+// it is issued again and f runs once more.
 func (c *client) as(ctx context.Context, who techClient, f func(tok string) error) error {
 	tok, err := c.tokenOf(ctx, who, false)
 	if err != nil {

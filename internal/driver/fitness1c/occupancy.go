@@ -151,13 +151,13 @@ func (d *Driver) ownRentals(ctx context.Context, loc *time.Location) (out []rent
 	return d.rentalsOf(ctx, loc, gatewayClient, d.ours)
 }
 
-// rentalsOf lists the planned and running rentals of a technical client in
-// this club whose service keep takes (anyService: every one), as
-// ownRentals does.
 // anyService is rentalsOf's keep of a client whose every rental counts
 // (the mirror client).
 var anyService func(service string) bool
 
+// rentalsOf lists the planned and running rentals of a technical client in
+// this club whose service keep takes (anyService: every one), as
+// ownRentals does.
 func (d *Driver) rentalsOf(ctx context.Context, loc *time.Location, who techClient, keep func(service string) bool) (out []rental, complete bool, err error) {
 	seen := map[string]bool{}
 	read, total := 0, -1

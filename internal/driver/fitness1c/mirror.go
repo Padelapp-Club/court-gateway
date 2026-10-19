@@ -249,7 +249,7 @@ func (d *Driver) CreateBlock(ctx context.Context, req driver.BlockRequest) (driv
 	}
 	id := strings.ToLower(out.Rental.ID)
 	if out.TemporarilyReserved == nil || *out.TemporarilyReserved || out.Status == nil || *out.Status != statusConfirmed {
-		d.compensateAs(ctx, mirrorClient, id, "a mirror not confirmed without payment")
+		d.compensate(ctx, mirrorClient, id, "a mirror not confirmed without payment")
 		return driver.MirrorItem{}, driver.Upstream(driver.UpstreamRejected,
 			"POST /rental/: 1C made a temporary reservation, not a block: the mirror service must not require a payment basis")
 	}
@@ -288,7 +288,7 @@ func (d *Driver) DeleteBlock(ctx context.Context, it driver.MirrorItem) error {
 		case r.started || !r.Start.After(now):
 			return driver.ErrStarted
 		}
-		if err := d.deleteRentalAs(ctx, mirrorClient, rid); err != nil {
+		if err := d.deleteRental(ctx, mirrorClient, rid); err != nil {
 			return err
 		}
 		d.log.Info("mirror rental cancelled", "court", it.Court)
