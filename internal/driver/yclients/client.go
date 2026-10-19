@@ -20,7 +20,7 @@ import (
 
 const (
 	accept = "application/vnd.yclients.v2+json"
-	// requestTimeout bounds one request (the D11 adapter's 20 s).
+	// requestTimeout bounds one request (the backend adapter's 20 s).
 	requestTimeout = 20 * time.Second
 	// retry429 is how often a 429 is retried, after Retry-After (at most
 	// retryAfterMax) or 1, 2, 4 s.

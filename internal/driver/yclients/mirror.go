@@ -17,7 +17,7 @@ import (
 // services that make up its length), whose comment is the marker and the
 // set tag of its records, nothing else: "[cg-mirror:<src>:<id>]
 // [cg-set:<key>/<n>]". A record is the gateway's mirror only with both the
-// marker and the service client (F4): a marker copied onto another
+// marker and the service client: a marker copied onto another
 // client's record is the club's. YCLIENTS has no block of its own the
 // driver may write (a court's schedule is the club's working time), so a
 // record of the service client is its block, as a partner's booking is.
@@ -34,7 +34,7 @@ func (d *Driver) MirrorHorizon(context.Context) (time.Duration, error) {
 }
 
 // maxCover is how far past its source's end a mirror may reach so that the
-// courts' services make it up (R4).
+// courts' services make it up.
 const maxCover = 30 * time.Minute
 
 // BlockSpan implements driver.Mirrorer: records take the span when the

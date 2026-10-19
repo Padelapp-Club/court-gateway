@@ -160,7 +160,7 @@ type appointment struct {
 
 // planAppointments lays the services out in records. YCLIENTS adds up
 // different services of one appointment but folds the same service twice
-// into one (live probe, D11): a repeated service opens the next record,
+// into one (seen in a live probe): a repeated service opens the next record,
 // back to back.
 func planAppointments(pieces []piece) []appointment {
 	var out []appointment

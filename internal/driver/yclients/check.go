@@ -17,7 +17,7 @@ import (
 const syncHorizon = 14 * 24 * time.Hour
 
 // company is GET /company/{id}/: the fields with which a branch limits
-// what the gateway may do (D11 REQ-139).
+// what the gateway may do.
 type company struct {
 	ID                 json.Number     `json:"id"`
 	Title              string          `json:"title"`
@@ -82,8 +82,8 @@ func (d *Driver) readStaff(ctx context.Context) ([]staffMember, error) {
 	return list, nil
 }
 
-// CheckConfig implements driver.ConfigChecker with the D11 restriction
-// check: what makes bookings impossible or wrong is a *MisconfigError (the
+// CheckConfig implements driver.ConfigChecker with the backend adapter's
+// restriction check: what makes bookings impossible or wrong is a *MisconfigError (the
 // branch inactive or its journal off, another time zone than the club's —
 // schedule times are read in the club's —, a court that is no staff of
 // the branch, fired, closed for booking, without a schedule, or with

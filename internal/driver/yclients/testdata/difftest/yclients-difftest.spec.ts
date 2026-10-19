@@ -1,14 +1,14 @@
 /**
- * D11 differential check, TypeScript side. Not part of the monorepo: copy it into
+ * YCLIENTS differential check, TypeScript side. Not part of the monorepo: copy it into
  * backend/src/modules/admins/crm/integrations/yclients-crm/ of a monorepo checkout and run
  *
- *   D11_DIFF_SCENARIOS=<court-gateway>/internal/driver/yclients/testdata/d11diff/scenarios.json \
- *   D11_DIFF_OUT=<court-gateway>/internal/driver/yclients/testdata/d11diff/ts-golden.json \
- *   npx jest src/modules/admins/crm/integrations/yclients-crm/d11-diff.spec.ts
+ *   YCLIENTS_DIFF_SCENARIOS=<court-gateway>/internal/driver/yclients/testdata/difftest/scenarios.json \
+ *   YCLIENTS_DIFF_OUT=<court-gateway>/internal/driver/yclients/testdata/difftest/ts-golden.json \
+ *   npx jest src/modules/admins/crm/integrations/yclients-crm/yclients-difftest.spec.ts
  *
- * Every scenario goes through the D11 adapter (YclientsCrmService) with its HTTP client replaced
+ * Every scenario goes through the backend adapter (YclientsCrmService) with its HTTP client replaced
  * by the scenario's answers; what it reads as occupied (per 30-minute slot) and every request it
- * sends are written to D11_DIFF_OUT. The Go test (d11diff_test.go) runs the same scenarios through
+ * sends are written to YCLIENTS_DIFF_OUT. The Go test (difftest_test.go) runs the same scenarios through
  * the gateway driver and compares.
  */
 import { Logger } from '@nestjs/common';
@@ -26,7 +26,7 @@ interface Req {
   body?: unknown;
 }
 
-const input = JSON.parse(readFileSync(process.env.D11_DIFF_SCENARIOS as string, 'utf8'));
+const input = JSON.parse(readFileSync(process.env.YCLIENTS_DIFF_SCENARIOS as string, 'utf8'));
 const out: Record<string, unknown> = {};
 
 const slotsOf = (days: string[], tz: string): { fromMs: number; toMs: number }[] => {
@@ -39,7 +39,7 @@ const slotsOf = (days: string[], tz: string): { fromMs: number; toMs: number }[]
 
 const utc = (ms: number) => DateTime.fromMillis(ms, { zone: 'utc' }).toISO({ suppressMilliseconds: true });
 
-describe('D11 differential scenarios', () => {
+describe('YCLIENTS differential scenarios', () => {
   beforeAll(() => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -48,7 +48,7 @@ describe('D11 differential scenarios', () => {
   });
 
   afterAll(() => {
-    writeFileSync(process.env.D11_DIFF_OUT as string, JSON.stringify(out, null, 1) + '\n');
+    writeFileSync(process.env.YCLIENTS_DIFF_OUT as string, JSON.stringify(out, null, 1) + '\n');
   });
 
   for (const sc of input.scenarios) {

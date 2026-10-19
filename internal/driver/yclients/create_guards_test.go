@@ -13,38 +13,40 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/yclients/yclientsstub"
 )
 
-// Clean-room review, round 1 (c82ab7f): one regression per blocker.
+// Guards of a create and of the paid mark: a booking's id must name all
+// its records, a failed create leaves no record, YCLIENTS' error text never
+// leaks, and a booking with a deleted record is not marked paid.
 
-// B1: a booking that would take more records than its id can name is
+// A booking that would take more records than its id can name is
 // refused before anything is written; one that fits keeps a working id.
-func TestReviewR1BookingNeedsAtMostEightRecords(t *testing.T) {
+func TestBookingNeedsAtMostEightRecords(t *testing.T) {
 	f := newFixture(t, opts{stub: func(s *yclientsstub.Stub) {
 		s.SetServices(staff1, []yclientsstub.Service{{ID: 41001, Title: "30 мин", SeanceLength: 1800, Price: 1000}})
 	}})
-	d := d11Day(f)
-	_, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 14, 30), Kind: driver.KindTournament, Partner: "booker"})
+	d := ycDay(f)
+	_, err := f.drv.Create(ycCtx, driver.CreateRequest{Court: "court-1", Start: ycAt(d, 10, 0), End: ycAt(d, 14, 30), Kind: driver.KindTournament, Partner: "booker"})
 	if err == nil {
 		t.Fatalf("a booking of 9 records was made")
 	}
-	if w := d11Writes(f, http.MethodPost, "/book_record/"); len(w) != 0 {
+	if w := ycWrites(f, http.MethodPost, "/book_record/"); len(w) != 0 {
 		t.Fatalf("book_record sent for a booking of 9 records: %d", len(w))
 	}
-	b, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 15, 0), End: d11At(d, 19, 0), Kind: driver.KindTournament, Partner: "booker"})
+	b, err := f.drv.Create(ycCtx, driver.CreateRequest{Court: "court-1", Start: ycAt(d, 15, 0), End: ycAt(d, 19, 0), Kind: driver.KindTournament, Partner: "booker"})
 	if err != nil {
 		t.Fatalf("8 records: %v", err)
 	}
-	if st, m := d11HTTP(t, f, http.MethodDelete, "/v1/clubs/test-club/bookings/"+b.ID, contract.BookKey, nil); st != http.StatusNoContent {
+	if st, m := ycHTTP(t, f, http.MethodDelete, "/v1/clubs/test-club/bookings/"+b.ID, contract.BookKey, nil); st != http.StatusNoContent {
 		t.Fatalf("cancel of an 8-record booking: %d %v", st, m)
 	}
-	occ, err := f.d11Occ(d, d.AddDate(0, 0, 1), "court-1")
+	occ, err := f.ycOcc(d, d.AddDate(0, 0, 1), "court-1")
 	if err != nil || len(occ.Intervals) != 0 {
 		t.Fatalf("after the cancel: %v %+v", err, occ.Intervals)
 	}
 }
 
-// B2: a create whose answer names fewer records than it made, or that got
+// A create whose answer names fewer records than it made, or that got
 // a 5xx after the write, leaves no record of it in the journal.
-func TestReviewR1FailedCreateLeavesNoRecord(t *testing.T) {
+func TestFailedCreateLeavesNoRecord(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		set  func(*yclientsstub.Stub)
@@ -57,14 +59,14 @@ func TestReviewR1FailedCreateLeavesNoRecord(t *testing.T) {
 				s.SetServices(staff1, []yclientsstub.Service{{ID: 42001, Title: "1 ч", SeanceLength: 3600, Price: 2000}})
 			}})
 			c.set(f.stub)
-			d := d11Day(f)
+			d := ycDay(f)
 			// a club's own record nearby must survive the clean-up
-			club := f.seedClubBooking(staff1, d11At(d, 14, 0), d11At(d, 15, 0))
-			_, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
+			club := f.seedClubBooking(staff1, ycAt(d, 14, 0), ycAt(d, 15, 0))
+			_, err := f.drv.Create(ycCtx, driver.CreateRequest{Court: "court-1", Start: ycAt(d, 10, 0), End: ycAt(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
 			if err == nil {
 				t.Fatalf("the create passed")
 			}
-			occ, err := f.d11Occ(d, d.AddDate(0, 0, 1), "court-1")
+			occ, err := f.ycOcc(d, d.AddDate(0, 0, 1), "court-1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -75,19 +77,19 @@ func TestReviewR1FailedCreateLeavesNoRecord(t *testing.T) {
 	}
 }
 
-// B3: the text YCLIENTS writes into an error answer (it may echo a
+// The text YCLIENTS writes into an error answer (it may echo a
 // client's data) reaches neither an error nor the log.
-func TestReviewR1UpstreamMessageNeverLeaks(t *testing.T) {
+func TestUpstreamMessageNeverLeaks(t *testing.T) {
 	const pii = "PRIVATE-CLIENT-REVIEW@example.test"
 	f := newFixture(t, opts{})
-	d := d11Day(f)
+	d := ycDay(f)
 	f.stub.FailNextWith("/api/v1/records/", http.StatusBadRequest, "Invalid client email: "+pii)
-	st, _ := d11HTTP(t, f, http.MethodGet, "/v1/clubs/test-club/occupancy?from="+strings.ReplaceAll(d.Format(time.RFC3339), "+", "%2B")+"&to="+strings.ReplaceAll(d.AddDate(0, 0, 1).Format(time.RFC3339), "+", "%2B"), contract.ReadKey, nil)
+	st, _ := ycHTTP(t, f, http.MethodGet, "/v1/clubs/test-club/occupancy?from="+strings.ReplaceAll(d.Format(time.RFC3339), "+", "%2B")+"&to="+strings.ReplaceAll(d.AddDate(0, 0, 1).Format(time.RFC3339), "+", "%2B"), contract.ReadKey, nil)
 	if st < 400 {
 		t.Fatalf("a failed read answered %d", st)
 	}
 	f.stub.FailNextWith("/api/v1/records/", http.StatusBadRequest, "Invalid client email: "+pii)
-	_, err := f.d11Occ(d, d.AddDate(0, 0, 1), "court-1")
+	_, err := f.ycOcc(d, d.AddDate(0, 0, 1), "court-1")
 	if err == nil || strings.Contains(err.Error(), pii) {
 		t.Fatalf("err = %v", err)
 	}
@@ -96,14 +98,15 @@ func TestReviewR1UpstreamMessageNeverLeaks(t *testing.T) {
 	}
 }
 
-// B4: the paid mark of a booking one of whose records the club deleted is
-// refused, with nothing written (D11 refuses a deleted record).
-func TestReviewR1PaidMarkRefusedWhenAPartIsDeleted(t *testing.T) {
+// The paid mark of a booking one of whose records the club deleted is
+// refused, with nothing written (the backend adapter refuses a deleted
+// record too).
+func TestPaidMarkRefusedWhenAPartIsDeleted(t *testing.T) {
 	f := newFixture(t, opts{stub: func(s *yclientsstub.Stub) {
 		s.SetServices(staff1, []yclientsstub.Service{{ID: 43001, Title: "1 ч", SeanceLength: 3600, Price: 2000}})
 	}})
-	d := d11Day(f)
-	b, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
+	d := ycDay(f)
+	b, err := f.drv.Create(ycCtx, driver.CreateRequest{Court: "court-1", Start: ycAt(d, 10, 0), End: ycAt(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,12 +115,12 @@ func TestReviewR1PaidMarkRefusedWhenAPartIsDeleted(t *testing.T) {
 		t.Fatalf("id %s: %v", b.ID, err)
 	}
 	f.stub.Delete(second)
-	err = f.drv.MarkPaid(d11ctx, b.ID, "booker")
+	err = f.drv.MarkPaid(ycCtx, b.ID, "booker")
 	var ue *driver.UpstreamError
 	if !errors.As(err, &ue) {
 		t.Fatalf("MarkPaid with a deleted record = %v", err)
 	}
-	if w := d11Writes(f, http.MethodPut, "/record/"); len(w) != 0 {
+	if w := ycWrites(f, http.MethodPut, "/record/"); len(w) != 0 {
 		t.Fatalf("PUT sent: %d", len(w))
 	}
 }

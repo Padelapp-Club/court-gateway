@@ -22,11 +22,12 @@ const (
 	// every record the gateway creates: "[cg:<partner>] <note>".
 	markerPrefix = "[cg:"
 	// PaidMark is written into the comment of a paid booking's records
-	// (D11: the club's cash desk is not touched).
+	// (the club's cash desk is not touched).
 	PaidMark = "Оплачено в PadelApp"
 	// mirrorMarkerPrefix starts the marker of a mirror's records (mirror.go).
 	mirrorMarkerPrefix = "[cg-mirror:"
-	// maxComment is the comment cap of D11 (YCLIENTS' own is not measured);
+	// maxComment is the backend adapter's comment cap (YCLIENTS' own is not
+	// measured);
 	// the comment is cut so the paid mark still fits after it.
 	maxComment = 500
 )
@@ -103,7 +104,7 @@ func recordIDs(id string) ([]string, bool) {
 }
 
 // yclientsTime writes an instant in the club's zone with its offset, as
-// the D11 adapter does ("2026-10-07T10:00:00+05:00").
+// the backend adapter does ("2026-10-07T10:00:00+05:00").
 func yclientsTime(t time.Time, loc *time.Location) string {
 	return t.In(loc).Format("2006-01-02T15:04:05Z07:00")
 }
@@ -156,7 +157,7 @@ type bookRecordBody struct {
 }
 
 // Create implements driver.Driver: book_record for the club's service
-// client with the services that make up the booked length (D11), the
+// client with the services that make up the booked length, the
 // partner's marker and note in the comment. If YCLIENTS creates fewer
 // records than asked, those it named are deleted again and the create
 // fails: no half booking stays.
@@ -219,7 +220,7 @@ func (d *Driver) book(ctx context.Context, req driver.CreateRequest, comment fun
 	switch {
 	case r.status == http.StatusOK || r.status == http.StatusCreated:
 	case r.status == http.StatusUnprocessableEntity:
-		// YCLIENTS refuses a busy time with 422 (D11 R-9, probe)
+		// YCLIENTS refuses a busy time with 422 (seen in a live probe)
 		d.undo(ctx, staff, tag, req, ours, body.Appointments, nil)
 		return nil, fmt.Errorf("POST /book_record: %w", driver.ErrSlotUnavailable)
 	default:
@@ -552,10 +553,10 @@ func withPaidMark(comment string) string {
 }
 
 // MarkPaid implements driver.Driver: the paid mark in the comment of each
-// record (D11). PUT /record takes the whole record, so it is built from a
+// record. PUT /record takes the whole record, so it is built from a
 // fresh read with only the comment changed — attendance as it was, no
 // SMS, never over another booking — and read back: an answer of 2xx
-// proves nothing (D11 probe: 200 and the change dropped).
+// proves nothing (a live probe got 200 and the change dropped).
 func (d *Driver) MarkPaid(ctx context.Context, id, partner string) error {
 	ids, ok := recordIDs(id)
 	if !ok {
@@ -569,7 +570,7 @@ func (d *Driver) MarkPaid(ctx context.Context, id, partner string) error {
 	case len(live) == 0:
 		return driver.ErrNotFound
 	case gone > 0:
-		// D11: a deleted record has nothing to mark, and the payment must
+		// a deleted record has nothing to mark, and the payment must
 		// not read as marked
 		return driver.Upstream(driver.UpstreamRejected, "a record of the booking is deleted in the journal: the paid mark is not written")
 	}

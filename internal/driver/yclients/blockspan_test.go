@@ -9,7 +9,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/yclients/yclientsstub"
 )
 
-// R4: BlockSpan rounds a mirror's length up to the shortest the courts'
+// BlockSpan rounds a mirror's length up to the shortest the courts'
 // services (as the last MirrorInventory read them) make up on every court,
 // at most 30 minutes past the source's end; the start never moves. A length
 // they make up is itself; none within 30 minutes: the span itself (the
@@ -70,7 +70,7 @@ func TestBlockSpanCoversWithTheCourtsServices(t *testing.T) {
 	}
 }
 
-// R4: CreateBlock writes the span BlockSpan gives — a 45-minute source is
+// CreateBlock writes the span BlockSpan gives — a 45-minute source is
 // blocked by one record of the 1-hour service — and returns it as the
 // inventory reads it, so the next pass finds it valid.
 func TestCreateBlockWritesTheCoveringSpan(t *testing.T) {
