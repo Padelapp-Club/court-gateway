@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -436,6 +437,54 @@ func TestUnmappedMirrorsAreReportedNotTouched(t *testing.T) {
 	}
 	if len(l.a.created) != 1 || l.a.created[0].Source.ID != "l-1" {
 		t.Fatalf("created %+v", l.a.created)
+	}
+}
+
+// D10: the fuse's way out for markerless mirrors. The club's Memory
+// outlives its pair: a pair built for a new config (the operator raising
+// mirror.max_removals) with the Memory of the one before removes, in its
+// first pass, the markerless mirrors the passes before found invalid; a
+// pair with a new Memory (a restart) starts the count again. The alarm says
+// to keep the limit raised until it clears, not to raise it "for one pass".
+func TestMemoryOutlivesThePair(t *testing.T) {
+	build := func(l *loop, mem *pair.Memory, maxRemovals int) *pair.Pair {
+		p, err := pair.New(l.a, l.b, pair.Options{PrimaryType: "viva", MirrorType: "lunda", Courts: []string{"court-1", "court-2"}, Location: l.loc,
+			Clock: func() (time.Time, bool) { return l.now, true }, MaxRemovals: maxRemovals, Memory: mem})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, c := range []struct {
+		name    string
+		same    bool
+		removed int
+	}{{"the club's memory", true, 4}, {"a new memory", false, 0}} {
+		t.Run(c.name, func(t *testing.T) {
+			l := newLoop(t)
+			mem := pair.NewMemory()
+			l.p = build(l, mem, 3)
+			for i := range 4 {
+				m := mirrorOf(fmt.Sprintf("f-%d", i), "court-1", l.at(1, 9+2*i, 0), l.at(1, 10+2*i, 0), "", "")
+				m.Source = nil
+				l.a.add(m)
+			}
+			l.pass() // invalid: first sight
+			rep := l.pass()
+			if !alarmed(rep, pair.AlarmFuse) || len(rep.Removed) != 0 {
+				t.Fatalf("second pass: %+v", rep)
+			}
+			if a := rep.Alarms[0].Problem; !strings.Contains(a, "до 4 или выше, держите порог поднятым, пока тревога не уйдёт, затем верните") || strings.Contains(a, "на один проход") {
+				t.Fatalf("the fuse's way out: %q", a)
+			}
+			if !c.same {
+				mem = pair.NewMemory()
+			}
+			l.p = build(l, mem, 10) // the operator raised the limit: a new pair
+			if rep := l.pass(); len(rep.Removed) != c.removed {
+				t.Fatalf("first pass of the new pair: %d removed, want %d: %+v", len(rep.Removed), c.removed, rep)
+			}
+		})
 	}
 }
 

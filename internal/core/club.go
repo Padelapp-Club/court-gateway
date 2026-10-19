@@ -37,9 +37,11 @@ type ClubSpec struct {
 // MirrorSpec is a club's mirror section; every limit is optional.
 type MirrorSpec struct {
 	// MaxRemovals is the fuse: a pass that would remove more of the
-	// gateway's mirrors removes none and raises an alarm (default 3). The
-	// operator raises it for one pass when that many cancellations are
-	// right, and sets it back.
+	// gateway's mirrors removes none and raises an alarm (default 3). When
+	// that many cancellations are right, the operator raises it to the
+	// alarm's count or more, keeps it raised until the alarm clears (a 1C
+	// mirror goes on the second pass that finds it invalid), then sets it
+	// back.
 	MaxRemovals *int `json:"max_removals,omitempty"`
 	// MaxCreates bounds the mirrors made in one pass (default 50); the
 	// rest wait for the next pass.

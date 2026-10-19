@@ -543,8 +543,10 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 	if n := len(pl.removals); n > p.o.MaxRemovals {
 		pl.fused = true
 		p.log.Error("reconciliation fuse: too many mirrors to remove in one pass, none is removed", "planned", n, "limit", p.o.MaxRemovals)
-		alarm(AlarmFuse, "сверка CRM: к снятию %d отражений за один проход, а порог — %d; ничего не снято. Проверьте отмены в CRM; если они верны, поднимите mirror.max_removals клуба на хабе на один проход и верните обратно",
-			n, p.o.MaxRemovals)
+		// the way out (F7, D10): not "for one pass" — a markerless mirror
+		// (1C) is removed by the second pass that finds it invalid
+		alarm(AlarmFuse, "сверка CRM: к снятию %d отражений за один проход, а порог — %d; ничего не снято. Проверьте отмены в CRM; если они верны, поднимите mirror.max_removals клуба на хабе до %d или выше, держите порог поднятым, пока тревога не уйдёт, затем верните",
+			n, p.o.MaxRemovals, n)
 		pl.removals = nil
 	}
 

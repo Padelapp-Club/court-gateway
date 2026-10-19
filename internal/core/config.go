@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -92,6 +93,33 @@ type MirrorSettings struct {
 	// keys, secrets and session. A club's courts are filled by WithClub,
 	// the zone, logger and clocks when the pair is built (BuildDriver).
 	Driver driver.Config
+
+	// memories are the pairs' memories by club, shared by every copy of
+	// these settings (a club's pair is rebuilt with each new config)
+	memories *mirrorMemories
+}
+
+// mirrorMemories keep, in memory only, the pair.Memory of each club of an
+// installation for as long as the process runs: the pair a new config of
+// the club builds takes the one of the pair before (D10).
+type mirrorMemories struct {
+	mu   sync.Mutex
+	byID map[string]*pair.Memory
+}
+
+// memory is the club's pair.Memory (nil without memories: a new one).
+func (m *MirrorSettings) memory(club string) *pair.Memory {
+	if m.memories == nil {
+		return nil
+	}
+	m.memories.mu.Lock()
+	defer m.memories.mu.Unlock()
+	mem, ok := m.memories.byID[club]
+	if !ok {
+		mem = pair.NewMemory()
+		m.memories.byID[club] = mem
+	}
+	return mem
 }
 
 // MirrorClub is a club's own mirror section (ClubSpec.Mirror): the limits
@@ -434,7 +462,7 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 
 	// mirror: a second CRM of the same clubs
 	if fc.Mirror != nil {
-		m := &MirrorSettings{CRMType: strings.TrimSpace(fc.Mirror.Type)}
+		m := &MirrorSettings{CRMType: strings.TrimSpace(fc.Mirror.Type), memories: &mirrorMemories{byID: map[string]*pair.Memory{}}}
 		switch {
 		case m.CRMType == "":
 			add("mirror.type: параметр обязателен (тип второй CRM клуба: %s)", strings.Join(MirrorTypes, ", "))
@@ -499,7 +527,7 @@ func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Drive
 	p, err := pair.New(d, m, pair.Options{
 		PrimaryType: s.CRMType, MirrorType: s.Mirror.CRMType, Courts: courts, Location: s.Location, Hours: s.Hours,
 		MaxRemovals: s.MirrorClub.MaxRemovals, MaxCreates: s.MirrorClub.MaxCreates,
-		Clock: s.Driver.DecisionClock(), Lock: LockResources, Logger: s.Driver.Logger,
+		Clock: s.Driver.DecisionClock(), Lock: LockResources, Logger: s.Driver.Logger, Memory: s.Mirror.memory(s.ClubID),
 	})
 	if err != nil {
 		return nil, &ConfigError{Problems: strings.Split(err.Error(), "\n")}

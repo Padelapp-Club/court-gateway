@@ -61,7 +61,33 @@ type Options struct {
 	Lock     func(ctx context.Context, keys []string) (func(), error)
 	LockWait time.Duration
 	Logger   *slog.Logger
+	// Memory is what the club's passes leave each other (nil: a new one).
+	// The pair built for a new config of the club takes the Memory of the
+	// pair before it (core keeps one per club), so the operator raising
+	// the fuse does not restart the two passes a markerless removal needs.
+	Memory *Memory
 }
+
+// Memory is what one pass of a club leaves the next, in memory only —
+// never in a file, never in a CRM: the evidence of passes in a row (a
+// mirror found invalid without a point read, a partner's booking found in
+// one CRM), the passes cut off by MaxCreates, and the alarms. It outlives
+// a pair: every new config of the club from the hub (the operator raising
+// mirror.max_removals among them) builds a new pair, and handing it the
+// Memory of the one before keeps that evidence (D10). The passes of every
+// pair of one Memory run one at a time. A restart loses it: a removal then
+// waits for passes in a row again.
+type Memory struct {
+	pass sync.Mutex // one pass of the club at a time
+
+	mu     sync.Mutex
+	alarms []Alarm  // of the last pass
+	sticky []sticky // raised outside a pass, kept for a few passes
+	memo   memo     // what the previous pass saw
+}
+
+// NewMemory is the Memory of a club with no pass yet.
+func NewMemory() *Memory { return &Memory{} }
 
 // Pair is the driver of a club in two CRMs. Both drivers must be
 // driver.Mirrorer.
@@ -71,12 +97,7 @@ type Pair struct {
 	o      Options
 	log    *slog.Logger
 
-	pass sync.Mutex // one pass at a time
-
-	mu     sync.Mutex
-	alarms []Alarm  // of the last pass
-	sticky []sticky // raised outside a pass, kept for a few passes
-	memo   memo     // what the previous pass saw (in memory only)
+	*Memory
 }
 
 var (
@@ -134,7 +155,11 @@ func New(a, b driver.Driver, o Options) (*Pair, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Pair{a: a, b: b, am: am, bm: bm, o: o, log: log}, nil
+	mem := o.Memory
+	if mem == nil {
+		mem = NewMemory()
+	}
+	return &Pair{a: a, b: b, am: am, bm: bm, o: o, log: log, Memory: mem}, nil
 }
 
 // Primary and Mirror are the pair's two drivers.

@@ -15,7 +15,10 @@ import (
 
 // The fuse on the stubs: four cancels in Lunda at once against the
 // default fuse of 3 — no mirror removed, MIRROR_FUSE; the operator raises
-// mirror.max_removals for one pass and they go.
+// mirror.max_removals on the hub and the very next pass removes them — in
+// 1C too, whose mirrors carry no marker: the club's new pair keeps what
+// the passes before it saw (D10; before D10 a raised fuse restarted the
+// two passes in 1C, and this test settled two passes after it).
 func TestFuseOnStubs(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		var ids []string
@@ -41,9 +44,8 @@ func TestFuseOnStubs(t *testing.T) {
 		}
 		four := 4
 		env.Reconfigure(t, core.MirrorSpec{MaxRemovals: &four})
-		// a new config is a new pair: what it remembers starts over
-		if rep := env.Settle(t); len(rep.Removed) != 4 || alarmed(rep, pair.AlarmFuse) {
-			t.Fatalf("pass with the fuse raised: %+v", rep)
+		if rep := env.Pass(t); len(rep.Removed) != 4 || alarmed(rep, pair.AlarmFuse) {
+			t.Fatalf("the first pass with the fuse raised: %+v", rep)
 		}
 		if n := len(pairtest.Of(env.Primary.Live(t), pairtest.Mirror, "")); n != 0 {
 			t.Fatalf("mirrors left: %d", n)
