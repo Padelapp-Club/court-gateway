@@ -148,9 +148,15 @@ func (d *Driver) ownRentals(ctx context.Context, loc *time.Location) (out []rent
 	if d.c.phone == "" || len(d.services) == 0 {
 		return nil, true, nil // the gateway makes no rentals here
 	}
+	return d.rentalsOf(ctx, loc, gatewayClient, d.ours)
+}
+
+// rentalsOf lists the planned and running rentals of a technical client in
+// this club whose service keep takes, as ownRentals does.
+func (d *Driver) rentalsOf(ctx context.Context, loc *time.Location, who techClient, keep func(service string) bool) (out []rental, complete bool, err error) {
 	seen := map[string]bool{}
 	read, total := 0, -1
-	err = d.c.asClient(ctx, func(tok string) error {
+	err = d.c.as(ctx, who, func(tok string) error {
 		out, seen, read, total = nil, map[string]bool{}, 0, -1
 		for page := 0; page < maxAppointmentPages; page++ {
 			q := url.Values{
@@ -169,11 +175,11 @@ func (d *Driver) ownRentals(ctx context.Context, loc *time.Location) (out []rent
 			}
 			read += len(list)
 			for _, a := range list {
-				r, keep, err := d.ownRental(a, loc)
+				r, kept, err := d.ownRental(a, loc, keep)
 				if err != nil {
 					return err
 				}
-				if keep && !seen[r.id] {
+				if kept && !seen[r.id] {
 					seen[r.id] = true
 					out = append(out, r)
 				}
@@ -197,14 +203,14 @@ func (d *Driver) ownRentals(ctx context.Context, loc *time.Location) (out []rent
 
 // ownRental validates one appointment and keeps it when it is a rental of
 // a gateway service in this club's configured rooms.
-func (d *Driver) ownRental(a appointment, loc *time.Location) (rental, bool, error) {
+func (d *Driver) ownRental(a appointment, loc *time.Location, keep func(service string) bool) (rental, bool, error) {
 	if a.Type != "" && a.Type != "rental" {
 		return rental{}, false, nil
 	}
 	if a.ClubID != "" && !strings.EqualFold(a.ClubID, d.studio) {
 		return rental{}, false, nil // another club of the instance
 	}
-	if a.Service == nil || !d.ours(a.Service.ID) {
+	if a.Service == nil || !keep(a.Service.ID) {
 		return rental{}, false, nil
 	}
 	bad := func(what string) (rental, bool, error) {

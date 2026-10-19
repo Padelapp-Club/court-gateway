@@ -21,6 +21,7 @@ var pairs = []struct {
 }{
 	{"viva+lunda", pairtest.VivaLunda},
 	{"yclients+lunda", pairtest.YclientsLunda},
+	{"fitness1c+lunda", pairtest.Fitness1CLunda},
 }
 
 func each(t *testing.T, f func(t *testing.T, env *pairtest.Env)) {
@@ -147,7 +148,7 @@ func TestScenario7MirrorToPrimary(t *testing.T) {
 			t.Fatalf("no mirror in the primary: %s", pairtest.Spans(live))
 		}
 		mirror := pairtest.Of(live, pairtest.Mirror, "court-2")[0]
-		if mirror.Note != "[cg-mirror:lunda:l-"+id+"]" || strings.Contains(mirror.Note, "PRIVACY") {
+		if !env.MarkerlessPrimary && mirror.Note != "[cg-mirror:lunda:l-"+id+"]" || strings.Contains(mirror.Note, "PRIVACY") {
 			t.Fatalf("the mirror's marker: %q", mirror.Note)
 		}
 		if st, _ := env.Create(t, "court-2", start, start.Add(time.Hour)); st != http.StatusConflict {
@@ -158,7 +159,7 @@ func TestScenario7MirrorToPrimary(t *testing.T) {
 			t.Fatalf("second pass: %+v", rep)
 		}
 		env.Mirror.Cancel(t, id)
-		rep = env.Pass(t)
+		rep = env.Settle(t)
 		if len(rep.Removed) != 1 {
 			t.Fatalf("pass after the cancel: %+v", rep)
 		}
@@ -217,7 +218,7 @@ func TestScenario7Move(t *testing.T) {
 		// moved to overlap its old time: the old mirror goes first
 		moved := start.Add(30 * time.Minute)
 		env.Mirror.Move(t, id, moved, moved.Add(time.Hour))
-		rep := env.Pass(t)
+		rep := env.Settle(t)
 		if len(rep.Created) != 1 || len(rep.Removed) != 1 || len(rep.Alarms) > 0 {
 			t.Fatalf("pass after the move: %+v", rep)
 		}
@@ -276,7 +277,7 @@ func TestScenario8ClubBookingsUntouched(t *testing.T) {
 			t.Fatalf("no overlap alarm: %+v", rep)
 		}
 		env.Mirror.Cancel(t, gone)
-		for range 3 {
+		for range 4 {
 			env.Pass(t)
 		}
 		p1, m1 := clubBefore()

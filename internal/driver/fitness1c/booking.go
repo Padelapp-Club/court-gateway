@@ -130,10 +130,15 @@ func (d *Driver) bookingServiceNow(ctx context.Context, svc string) error {
 // last failure is logged as an error with the rental's id (no personal
 // data) for removal by hand.
 func (d *Driver) compensate(ctx context.Context, id, why string) {
+	d.compensateAs(ctx, gatewayClient, id, why)
+}
+
+// compensateAs is compensate of a rental of either technical client.
+func (d *Driver) compensateAs(ctx context.Context, who techClient, id, why string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	for attempt := 1; attempt <= compensationAttempts; attempt++ {
-		err := d.deleteRental(ctx, id)
+		err := d.deleteRentalAs(ctx, who, id)
 		if err == nil {
 			d.log.Warn("1C: rental removed", "why", why, "rental", id)
 			return
@@ -151,7 +156,12 @@ func (d *Driver) compensate(ctx context.Context, id, why string) {
 
 // deleteRental cancels a rental; 1037 "already cancelled" is success.
 func (d *Driver) deleteRental(ctx context.Context, id string) error {
-	err := d.c.asClient(ctx, func(tok string) error {
+	return d.deleteRentalAs(ctx, gatewayClient, id)
+}
+
+// deleteRentalAs is deleteRental by either technical client.
+func (d *Driver) deleteRentalAs(ctx context.Context, who techClient, id string) error {
+	err := d.c.as(ctx, who, func(tok string) error {
 		_, err := d.c.call(ctx, http.MethodDelete, "/rental/", url.Values{"rental_id": {id}}, nil, tok, false)
 		return err
 	})

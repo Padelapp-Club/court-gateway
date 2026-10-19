@@ -193,6 +193,33 @@ func (s *Stub) CancelRental(id string) {
 	}
 }
 
+// RentalView is a rental as a test reads it back.
+type RentalView struct {
+	ID, Room, Service string
+	// Phone is the phone of the client who made it ("" for a club's
+	// rental, SeedRental).
+	Phone      string
+	Start, End time.Time
+	Canceled   bool
+}
+
+// RentalViews returns every rental, cancelled ones too.
+func (s *Stub) RentalViews() []RentalView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []RentalView
+	for _, r := range s.rentals {
+		v := RentalView{ID: r.id, Room: r.room, Service: r.service, Start: r.start, End: r.end, Canceled: r.canceled}
+		for _, c := range s.clients {
+			if c.id == r.client {
+				v.Phone = c.phone
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 // Rentals returns the ids of the rentals not cancelled.
 func (s *Stub) Rentals() []string {
 	s.mu.Lock()

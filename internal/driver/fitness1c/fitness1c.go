@@ -31,14 +31,14 @@ const APIKeyEnv = "FITNESS1C_APIKEY"
 // ClubCRMKeys are the keys of the crm section that belong to one club: the
 // club's id in 1C and, optionally, the rental service its grid is read by
 // and the one its prices come from.
-var ClubCRMKeys = []string{"studio", "occupancy_service", "price_service"}
+var ClubCRMKeys = []string{"studio", "occupancy_service", "price_service", "mirror_service"}
 
 // StudioKey (of the crm section) and RoomKey (of a court) hold the CRM
 // resources a club takes (drivers.ResourceKeys).
 const StudioKey, RoomKey = "studio", "fitness1c_room"
 
 // installKeys are the installation-level keys of the crm section.
-var installKeys = []string{"base_url", "username", "client_phone", "partner"}
+var installKeys = []string{"base_url", "username", "client_phone", "partner", "mirror_client_phone"}
 
 // seance is the only grid step proven by a run (D14 SUPPORTED_SEANCE_LENGTH_MIN):
 // a club whose smallest rental service has another step is not served.
@@ -63,6 +63,8 @@ func init() {
 			{Key: "username", Flag: "crm-username", Env: "CRM_USERNAME", Prompt: "Пользователь 1С (роли «Удаленный доступ внешнее приложение» и «Запуск внешнего соединения»)", Required: true},
 			{Key: "client_phone", Flag: "crm-client-phone", Prompt: "Телефон технического клиента в 1С, на которого ставятся брони партнёра (пусто — только чтение)"},
 			{Key: "partner", Flag: "crm-partner", Prompt: "Партнёр хаба, чьи брони ставит этот клиент (например, padelapp)"},
+			// only with a second CRM (mirror: in gateway.yaml): no question
+			{Key: "mirror_client_phone", Flag: "crm-mirror-client-phone"},
 		},
 		Secrets: []driver.SetupSecret{
 			{Env: "CRM_PASSWORD", Prompt: "Пароль пользователя 1С", Required: true},
@@ -81,6 +83,7 @@ type Driver struct {
 	studio           string // the club's id in 1C (club_id)
 	occupancyService string // "" = the rental service with the smallest step
 	priceService     string // "" = the occupancy service
+	mirrorSvc        string // crm.mirror_service, "" = the booking service (mirrorService)
 	loc              *time.Location
 	courts           []court
 	byRoom           map[string]string // room id -> court id
@@ -119,6 +122,16 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	if (phone == "") != (partner == "") {
 		add(errors.New("crm.client_phone и crm.partner задаются вместе: телефон технического клиента 1С и партнёр хаба, чьи брони он ставит"))
 	}
+	mirrorPhone, err := p.String("crm", "mirror_client_phone", false)
+	add(err)
+	mirrorPhone = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(mirrorPhone)
+	switch {
+	case mirrorPhone != "" && !phoneRe.MatchString(mirrorPhone):
+		add(errors.New("crm.mirror_client_phone: ожидается номер телефона технического клиента 1С для отражений, например +79990000001"))
+	case mirrorPhone != "" && strings.TrimPrefix(mirrorPhone, "+") == strings.TrimPrefix(phone, "+"):
+		// F15: one client for both would mix the partners' bookings and the mirrors
+		add(errors.New("crm.mirror_client_phone: клиент отражений совпадает с техническим клиентом броней партнёра (crm.client_phone) — нужен отдельный клиент"))
+	}
 	if cfg.Password == "" {
 		add(errors.New("CRM_PASSWORD: переменная окружения с паролем пользователя 1С не задана"))
 	}
@@ -142,7 +155,7 @@ func login(cfg driver.Config, timeout time.Duration, add func(error)) *client {
 	}
 	return &client{
 		base: base + apiPrefix, username: username, password: cfg.Password, apiKey: apiKey,
-		phone: phone, partner: partner, http: hc,
+		phone: phone, partner: partner, mirrorPhone: mirrorPhone, http: hc,
 		log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)), now: now,
 	}
 }
@@ -171,6 +184,7 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 		studio:           id("studio", true),
 		occupancyService: id("occupancy_service", false),
 		priceService:     id("price_service", false),
+		mirrorSvc:        id("mirror_service", false),
 		loc:              cmp.Or(cfg.Timezone, time.UTC),
 		byRoom:           map[string]string{},
 		byCourt:          map[string]court{},

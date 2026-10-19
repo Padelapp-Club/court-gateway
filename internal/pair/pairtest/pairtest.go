@@ -82,6 +82,9 @@ type Env struct {
 	Partner string
 	// LundaStub is the mirror's stub, for failures a scenario injects.
 	LundaStub *lundastub.Stub
+	// MarkerlessPrimary: the primary's mirrors carry no marker (1C): one
+	// whose source is gone is removed by the second pass that finds it so.
+	MarkerlessPrimary bool
 
 	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
 }
@@ -108,6 +111,22 @@ func (e *Env) Pass(t testing.TB) pair.Report {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return e.Pair.Reconcile(ctx)
+}
+
+// Settle runs the passes a change takes to be reconciled — one, or two
+// where a mirror of the primary has no marker (MarkerlessPrimary) — and
+// returns them summed.
+func (e *Env) Settle(t testing.TB) pair.Report {
+	t.Helper()
+	rep := e.Pass(t)
+	if e.MarkerlessPrimary {
+		next := e.Pass(t)
+		rep.Created = append(rep.Created, next.Created...)
+		rep.Removed = append(rep.Removed, next.Removed...)
+		rep.Alarms = append(rep.Alarms, next.Alarms...)
+		rep.Aborted = rep.Aborted || next.Aborted
+	}
+	return rep
 }
 
 // Day is a day ahead (in the club's zone) at hh:mm.

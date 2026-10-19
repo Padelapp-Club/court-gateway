@@ -29,7 +29,7 @@ func TestFuseOnStubs(t *testing.T) {
 		for _, id := range ids {
 			env.Mirror.Cancel(t, id)
 		}
-		rep := env.Pass(t)
+		rep := env.Settle(t) // a markerless mirror is a removal from its second pass on
 		if !alarmed(rep, pair.AlarmFuse) || len(rep.Removed) != 0 {
 			t.Fatalf("pass after 4 cancels: %+v", rep)
 		}
@@ -41,7 +41,8 @@ func TestFuseOnStubs(t *testing.T) {
 		}
 		four := 4
 		env.Reconfigure(t, core.MirrorSpec{MaxRemovals: &four})
-		if rep := env.Pass(t); len(rep.Removed) != 4 || alarmed(rep, pair.AlarmFuse) {
+		// a new config is a new pair: what it remembers starts over
+		if rep := env.Settle(t); len(rep.Removed) != 4 || alarmed(rep, pair.AlarmFuse) {
 			t.Fatalf("pass with the fuse raised: %+v", rep)
 		}
 		if n := len(pairtest.Of(env.Primary.Live(t), pairtest.Mirror, "")); n != 0 {

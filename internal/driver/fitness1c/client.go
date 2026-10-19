@@ -87,6 +87,10 @@ type client struct {
 	password  string
 	stopUntil time.Time // no request before (a refused login)
 	token     string    // the technical client's usertoken
+
+	// the technical client of a pair's mirrors ("" when none) and its token
+	mirrorPhone string
+	mirrorToken string
 }
 
 func (c *client) setPassword(p string) {
@@ -212,26 +216,49 @@ func (c *client) get(ctx context.Context, path string, query url.Values, usertok
 	return env, nil
 }
 
+// techClient is one of the installation's technical clients in 1C.
+type techClient int
+
+const (
+	// gatewayClient makes the partners' bookings (crm.client_phone).
+	gatewayClient techClient = iota
+	// mirrorClient makes the mirrors of a pair (crm.mirror_client_phone):
+	// 1C keeps no comment on a rental, so a mirror is told by its client.
+	mirrorClient
+)
+
 // userToken is the technical client's token: kept until 1C refuses it,
 // issued again by phone (GET /client_usertoken/, no secret needed).
 func (c *client) userToken(ctx context.Context, fresh bool) (string, error) {
+	return c.tokenOf(ctx, gatewayClient, fresh)
+}
+
+// tokenOf is userToken of either technical client.
+func (c *client) tokenOf(ctx context.Context, who techClient, fresh bool) (string, error) {
 	c.mu.Lock()
-	tok := c.token
+	phone, slot := c.phone, &c.token
+	if who == mirrorClient {
+		phone, slot = c.mirrorPhone, &c.mirrorToken
+	}
+	tok := *slot
 	c.mu.Unlock()
 	if tok != "" && !fresh {
 		return tok, nil
 	}
+	if phone == "" {
+		return "", fmt.Errorf("the 1C technical client is not configured: %w", driver.ErrBookingNotConfigured)
+	}
 	var data struct {
 		UserToken string `json:"usertoken"`
 	}
-	if _, err := c.get(ctx, "/client_usertoken/", url.Values{"phone": {c.phone}}, "", &data); err != nil {
+	if _, err := c.get(ctx, "/client_usertoken/", url.Values{"phone": {phone}}, "", &data); err != nil {
 		return "", err
 	}
 	if data.UserToken == "" {
 		return "", driver.Upstream(driver.UpstreamInvalid, "GET /client_usertoken/: no usertoken")
 	}
 	c.mu.Lock()
-	c.token = data.UserToken
+	*slot = data.UserToken
 	c.mu.Unlock()
 	return data.UserToken, nil
 }
@@ -239,7 +266,12 @@ func (c *client) userToken(ctx context.Context, fresh bool) (string, error) {
 // asClient runs f with the technical client's token; when 1C refuses the
 // token, it is issued again and f runs once more.
 func (c *client) asClient(ctx context.Context, f func(tok string) error) error {
-	tok, err := c.userToken(ctx, false)
+	return c.as(ctx, gatewayClient, f)
+}
+
+// as is asClient of either technical client.
+func (c *client) as(ctx context.Context, who techClient, f func(tok string) error) error {
+	tok, err := c.tokenOf(ctx, who, false)
 	if err != nil {
 		return err
 	}
@@ -249,7 +281,7 @@ func (c *client) asClient(ctx context.Context, f func(tok string) error) error {
 	if !refused {
 		return err
 	}
-	if tok, err = c.userToken(ctx, true); err != nil {
+	if tok, err = c.tokenOf(ctx, who, true); err != nil {
 		return err
 	}
 	return f(tok)
