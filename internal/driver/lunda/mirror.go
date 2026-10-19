@@ -39,24 +39,27 @@ func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) { return
 
 // classify sets the class of a slot's item: a hold (DRAFT) is transient,
 // a booking of the service client is classified by its notes, any other
-// slot is the club's. Notes slots-load did not answer whole (absent, or
-// only an abstract that may be cut off in a marker) are read from the
-// booking (needNotes).
+// slot is the club's. slots-load answers an abstract of the notes
+// ([UNVERIFIED] whether it is ever cut short): an abstract that reads as
+// no marker, a partner's or a whole mirror's is taken as it reads (a
+// mirror is removed only after DeleteBlock reads the booking whole); one
+// that starts like a marker but does not read, or none at all, makes the
+// notes be read from the booking (needNotes).
 func (d *Driver) classify(it *slotItem, s *lundaSlot) {
 	switch {
 	case s.Type == "DRAFT":
 		it.Class = driver.ClassTransient
 	case s.BookingID != "" && d.service != "" && s.ClientUID == d.service:
-		var text string
-		switch {
-		case s.Notes != nil:
-			text = *s.Notes
-		case s.NotesAbstract != nil && !strings.HasPrefix(strings.TrimSpace(*s.NotesAbstract), "[cg"):
-			text = *s.NotesAbstract // no marker, cut off or not
-		default:
-			it.needNotes = true
+		text := s.Notes
+		if text == nil {
+			text = s.NotesAbstract
 		}
-		it.Class, it.Source, it.Partner = driver.ClassOfComment(text)
+		if text == nil {
+			it.needNotes = true
+			return
+		}
+		it.Class, it.Source, it.Partner = driver.ClassOfComment(*text)
+		it.needNotes = it.Class == driver.ClassDamaged && s.Notes == nil
 	default:
 		it.Class = driver.ClassClub
 	}

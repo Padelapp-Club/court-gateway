@@ -33,14 +33,14 @@ func (d *Driver) MirrorHorizon() time.Duration { return driver.ZoneHorizon }
 // BlockSpan implements driver.Mirrorer: a break takes any span.
 func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) { return start, end }
 
-// commentText reads a record's comment: present is false when the field
-// is absent or null.
+// commentText reads a record's comment: present is false only when the
+// field is absent (null is an empty comment).
 func commentText(raw json.RawMessage) (text string, present bool) {
-	if isEmpty(raw) && strings.TrimSpace(string(raw)) != `""` {
+	if len(strings.TrimSpace(string(raw))) == 0 {
 		return "", false
 	}
 	if json.Unmarshal(raw, &text) != nil {
-		return "", true // not a string: no marker
+		return "", true // null, or not a string: no marker
 	}
 	return text, true
 }

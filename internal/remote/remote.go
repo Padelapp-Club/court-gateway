@@ -436,6 +436,11 @@ func (s *Syncer) without(old *core.Server, gone func(court string) bool) (*core.
 		return old, nil
 	}
 	st.Driver.Courts = slices.DeleteFunc(slices.Clone(st.Driver.Courts), func(c driver.CourtConfig) bool { return gone(c.ID) })
+	if st.Mirror != nil { // a pair: the same courts of its second CRM
+		m := *st.Mirror
+		m.Driver.Courts = slices.DeleteFunc(slices.Clone(m.Driver.Courts), func(c driver.CourtConfig) bool { return gone(c.ID) })
+		st.Mirror = &m
+	}
 	d, err := core.BuildDriver(&st, s.factories)
 	if err != nil {
 		return nil, err

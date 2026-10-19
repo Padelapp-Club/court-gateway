@@ -443,6 +443,22 @@ in a terminal they see, in the install folder (Windows: PowerShell as Administra
 **Expect:** `exit=0` and «Вход в CRM выполнен». The running service takes the new session by itself,
 no restart. Never use `set-password` for Lunda (it answers `NO_PASSWORD`). Then run step 5.
 
+## A second CRM: Lunda next to the club's CRM (`mirror`)
+
+Only when the operator says the club keeps Lunda next to its CRM (Viva, YCLIENTS or 1C:Fitness): after
+step 3, add to `gateway.yaml` a `mirror:` section next to `crm:` — `type: lunda` and
+`service_client: <the club's service client id in Lunda>` (the human reads it in Lunda's admin) — then
+have the human log Lunda in, in a terminal they see, in the install folder:
+
+```sh
+./court-gateway login --mirror -config "$PWD/gateway.yaml"; echo "exit=$?"
+```
+
+**Expect:** `exit=0` and «Вход в CRM выполнен». For 1C:Fitness also add `mirror_client_phone` to the
+`crm:` section: a technical client of 1C for the mirrors only, never the one of `client_phone` (the
+gateway refuses the config). Then restart the service and run step 5. When the Lunda session of the
+mirror ends, readiness reports `MIRROR_CRM_AUTH_FAILED`: run the same `login --mirror`, no restart.
+
 ## Uninstall
 
 `sudo ./court-gateway uninstall-service` (Windows: `.\court-gateway.exe uninstall-service`), then
