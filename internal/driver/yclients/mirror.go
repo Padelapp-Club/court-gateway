@@ -45,7 +45,7 @@ const maxCover = 30 * time.Minute
 // never under). The start stays: records start at any minute, so only the
 // length has to fit, and a block never reaches back before its source
 // (into the past or another booking). No such length: the span itself,
-// which CreateBlock cannot make (MIRROR_CREATE_FAILED, as before R4).
+// which CreateBlock cannot make (MIRROR_CREATE_FAILED).
 func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) {
 	return start, start.Add(d.tiles.cover(end.Sub(start)))
 }

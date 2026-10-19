@@ -13,7 +13,7 @@ import (
 // services (as the last MirrorInventory read them) make up on every court,
 // at most 30 minutes past the source's end; the start never moves. A length
 // they make up is itself; none within 30 minutes: the span itself (the
-// create then fails, as before R4).
+// create then fails).
 func TestBlockSpanCoversWithTheCourtsServices(t *testing.T) {
 	svc := func(id int64, minutes int) yclientsstub.Service {
 		return yclientsstub.Service{ID: id, Title: "Аренда", SeanceLength: minutes * 60, Price: float64(minutes) * 30}
