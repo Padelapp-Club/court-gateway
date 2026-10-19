@@ -206,6 +206,38 @@ func TestT13S7UnderWayAndAboutToStart(t *testing.T) {
 	})
 }
 
+// The horizon's edge where nothing but the window protects a mirror: its
+// source has no point read — a slot of Lunda that is no booking (a court
+// the club blocked: "ls-…", driver.ErrNotSupported), so an invalid mirror
+// of it is removed by the second pass in a row that finds it so (in 1C the
+// mirror itself carries no marker). Such a source crossing the window's
+// end when the window shrinks keeps its mirror pass after pass.
+func TestT13S7HorizonEdgeWithoutPointRead(t *testing.T) {
+	eachPair(t, func(t *testing.T, env *pairtest.Env) {
+		daytime(t, env)
+		env.LundaStub.BookingDepth = 14
+		edge := time.Now().In(env.Location).Add(7*24*time.Hour - time.Hour)
+		g := edge.Truncate(30 * time.Minute)
+		s, e := g.Add(-30*time.Minute), g.Add(time.Hour)
+		env.LundaStub.SeedSlot(pairtest.LundaCourt1, "BLOCKED", s, e, nil)
+		if rep := env.Pass(t); rep.Aborted || len(rep.Alarms) > 0 || len(rep.Created) != 1 {
+			t.Fatalf("pass with a depth of 14: %+v", rep)
+		}
+		mirrors := mirrorsOn(t, env.Primary, "court-1")
+		if len(mirrors) != 1 || !pairtest.Has(mirrors, pairtest.Mirror, "court-1", s, e) {
+			t.Fatalf("the blocked slot's mirror: %s", pairtest.Spans(mirrors))
+		}
+		raw := snap(t, env.Primary, handles(mirrors))
+		env.LundaStub.BookingDepth = 7
+		for p := range 3 {
+			if rep := env.Pass(t); rep.Aborted || len(rep.Alarms) > 0 || len(rep.Created)+len(rep.Removed) > 0 {
+				t.Fatalf("pass %d with a depth of 7: %+v", p+1, rep)
+			}
+		}
+		raw.same(t, env.Primary, "the window shrank")
+	})
+}
+
 // FINDING (T13-F1): scenario 7 says a booking's cancellation frees its
 // slot in the other CRM within 2 minutes. A mirror is removed only when it
 // lies wholly beyond now + pair.Lead (reconcile.go: the inWindow check
