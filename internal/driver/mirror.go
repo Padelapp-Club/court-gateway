@@ -69,9 +69,6 @@ func (m MirrorMarker) String() string { return mirrorPrefix + ":" + m.Src + ":" 
 // booking.
 const mirrorPrefix = "[cg-mirror"
 
-// MirrorSources are the CRM types a marker may name.
-var MirrorSources = []string{"viva", "yclients", "fitness1c", "lunda"}
-
 var (
 	mirrorRe = regexp.MustCompile(`^\[cg-mirror:(viva|yclients|fitness1c|lunda):([A-Za-z0-9_-]{1,100})\]$`)
 	ownRe    = regexp.MustCompile(`^\[cg:([a-z0-9][a-z0-9_-]{0,31})\]`)

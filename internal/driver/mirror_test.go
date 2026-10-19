@@ -1,6 +1,9 @@
 package driver
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The mirror's marker is read strictly (F5): exactly one marker, a known
 // source, an id of [A-Za-z0-9_-] taken as written; anything else that
@@ -32,20 +35,10 @@ func TestParseMirrorMarker(t *testing.T) {
 		if st != tc.state || m != tc.want {
 			t.Errorf("%q: %v %+v, want %v %+v", tc.text, st, m, tc.state, tc.want)
 		}
-		if st == MarkerValid && m.String() != tc.text && m.String() != trim(tc.text) {
+		if st == MarkerValid && m.String() != strings.TrimSpace(tc.text) {
 			t.Errorf("%q: written back as %q", tc.text, m.String())
 		}
 	}
-}
-
-func trim(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\n') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\n') {
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 func TestClassOfComment(t *testing.T) {
