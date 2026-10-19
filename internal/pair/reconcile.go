@@ -108,6 +108,8 @@ type memo struct {
 	suspect map[string]bool // mirrors invalid without a point read
 	half    map[string]bool // partners' bookings found in one CRM only
 	capped  int             // passes in a row cut off by MaxCreates
+	// mirrors to make whose span a mirror the pass does not remove held
+	blocked map[string]bool
 }
 
 // Report is what a pass did.
@@ -309,6 +311,8 @@ type plan struct {
 	next     memo
 	// prevSuspect: mirrors the previous pass found invalid without a point read
 	prevSuspect map[string]bool
+	// prevBlocked: mirrors to make the previous pass found held (blockedBy)
+	prevBlocked map[string]bool
 	// now is the pass's time, cut the step of BlockGrid a block of a
 	// booking under way starts at
 	now, cut time.Time
@@ -441,7 +445,7 @@ func itemKey(it driver.MirrorItem) string {
 // plan reads the two inventories and decides the pass: now is its time,
 // [from, to) the range both CRMs were read whole over.
 func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
-	pl := plan{next: memo{suspect: map[string]bool{}, half: map[string]bool{}}, now: now, cut: gridAfter(now, p.o.Location)}
+	pl := plan{next: memo{suspect: map[string]bool{}, half: map[string]bool{}, blocked: map[string]bool{}}, now: now, cut: gridAfter(now, p.o.Location)}
 	p.mu.Lock()
 	prev := p.memo
 	p.mu.Unlock()
@@ -597,6 +601,7 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 		pl.creates = pl.creates[:p.o.MaxCreates]
 	}
 	pl.prevSuspect = prev.suspect
+	pl.prevBlocked = prev.blocked
 	return pl
 }
 
@@ -634,8 +639,9 @@ func (p *Pair) execute(ctx context.Context, pl *plan, rep *Report) {
 // create makes one mirror. Under the court's lock the target CRM is read
 // again over the block's span: anything there but a mirror the pass
 // removes anyway means it is not made (an alarm, unless it is a hold of a
-// few minutes); such mirrors are removed first (a moved booking whose old
-// mirror is in the way).
+// few minutes, or a mirror: then in the second pass in a row, blockedBy);
+// such mirrors are removed first (a moved booking whose old mirror is in
+// the way).
 func (p *Pair) create(ctx context.Context, c createPlan, pending map[string]*removalPlan, done map[string]bool, pl *plan, rep *Report) {
 	unlock, err := p.lock(ctx, c.u.Court)
 	if err != nil {
@@ -654,12 +660,16 @@ func (p *Pair) create(ctx context.Context, c createPlan, pending map[string]*rem
 		if !overlaps(it, now) {
 			continue
 		}
-		switch r := pending[c.dst.typ+"|"+itemKey(it)]; {
+		key := c.dst.typ + "|" + itemKey(it)
+		switch r := pending[key]; {
 		case it.Class == driver.ClassMirror && r != nil && !pl.fused:
 			first = append(first, r)
 		case it.Class == driver.ClassMirror, it.Class == driver.ClassTransient:
 			// a mirror not removed yet (it may be valid until the next
 			// pass reads its source) or a hold: the next pass sees again
+			if it.Class == driver.ClassMirror && r == nil && !pl.next.suspect[key] {
+				p.blockedBy(c, pl, rep) // a mirror the pass keeps
+			}
 			return
 		default:
 			rep.Alarms = append(rep.Alarms, Alarm{AlarmOverlap, fmt.Sprintf(
@@ -688,6 +698,26 @@ func (p *Pair) create(ctx context.Context, c createPlan, pending map[string]*rem
 	p.log.Info("reconciliation: mirror made", "court", c.u.Court, "crm", c.dst.typ, "mirror", it.ID, "source", c.u.ID,
 		"start", c.u.Start.UTC().Format(time.RFC3339), "end", c.u.End.UTC().Format(time.RFC3339))
 	rep.Created = append(rep.Created, it)
+}
+
+// blockedBy: the span of mirror c is held by a mirror the pass neither
+// removes nor suspects (one invalid without a point read goes by the next
+// pass). Once is no news: that mirror's source may be cancelled or moved
+// by the next pass. The same unit held so in two complete passes in a row
+// may be held for good — a valid mirror of another booking that BlockSpan
+// rounded out over it — and its time stays open in dst: an alarm. A hold
+// (transient, minutes) is not counted; an aborted pass forgets the count
+// (memo).
+func (p *Pair) blockedBy(c createPlan, pl *plan, rep *Report) {
+	key := c.src.typ + ">" + c.dst.typ + "|" + itemKey(c.u.MirrorItem)
+	pl.next.blocked[key] = true
+	if !pl.prevBlocked[key] {
+		return
+	}
+	p.log.Error("reconciliation: a mirror cannot be made, another mirror holds its span", "court", c.u.Court, "crm", c.dst.typ, "source", c.u.ID)
+	rep.Alarms = append(rep.Alarms, Alarm{AlarmOverlap, fmt.Sprintf(
+		"корт %s, %s: время брони клуба из %s не заблокировано в %s — его перекрывает отражение другой брони клуба, два прохода сверки подряд; в %s это время могут продать напрямую, проверьте брони корта в обеих CRM",
+		c.u.Court, p.span(c.start, c.end), c.src.name, c.dst.name, c.dst.name)})
 }
 
 // remove removes one mirror, the caller holding its court's lock, once a
