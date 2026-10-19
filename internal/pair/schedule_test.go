@@ -63,14 +63,14 @@ func (c *schedClock) set(t time.Time) {
 	c.waiters = keep
 }
 
-// next waits (in real time) for n waiters, then moves the clock to the
-// earliest of them.
+// next waits (in real time) for n waiters — for one at least once a
+// second has passed — then moves the clock to the earliest of them.
 func (c *schedClock) next(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	start := time.Now()
 	for {
 		c.mu.Lock()
-		if len(c.waiters) >= n {
+		if len(c.waiters) >= n || len(c.waiters) > 0 && time.Since(start) > time.Second {
 			at := c.waiters[0].at
 			for _, w := range c.waiters {
 				if w.at.Before(at) {
@@ -82,8 +82,8 @@ func (c *schedClock) next(t *testing.T, n int) {
 			return
 		}
 		c.mu.Unlock()
-		if time.Now().After(deadline) {
-			t.Fatalf("the schedule is not waiting on %d timers", n)
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("the schedule is not waiting on its clock")
 		}
 		time.Sleep(time.Millisecond)
 	}
