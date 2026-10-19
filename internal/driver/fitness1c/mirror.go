@@ -21,6 +21,12 @@ import (
 // validity rule); 1C books whole seances, so a mirror takes its source's
 // span rounded out to the grid (BlockSpan).
 //
+// A rental of the mirror client is a mirror whatever its service: the
+// client alone tells the class (F15), so a mirror whose service the club
+// has edited is still the gateway's — not club time to mirror back, not a
+// rental to leave behind (D15). The mirror service only says what a new
+// mirror is rented by.
+//
 // The club's own busy time is the grid's: 1C does not say what a busy
 // half-hour holds (a rental, a class, a closed hour), so it is opaque —
 // mirrored within the club's hours only — and has no id of its own: its
@@ -54,11 +60,6 @@ func (d *Driver) mirrorService() string {
 		return d.mirrorSvc
 	}
 	return d.services[driver.KindGame]
-}
-
-func (d *Driver) isMirrorService(service string) bool {
-	svc := d.mirrorService()
-	return svc != "" && strings.EqualFold(service, svc)
 }
 
 // MirrorCheck tells pair.New what a 1C of a pair needs more: the mirror
@@ -110,8 +111,8 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 	}
 	var mirrors []rental
 	mirComplete := true
-	if d.c.mirrorPhone != "" && d.mirrorService() != "" {
-		if mirrors, mirComplete, err = d.rentalsOf(ctx, loc, mirrorClient, d.isMirrorService); err != nil {
+	if d.c.mirrorPhone != "" {
+		if mirrors, mirComplete, err = d.rentalsOf(ctx, loc, mirrorClient, anyService); err != nil {
 			return driver.Inventory{}, err
 		}
 	}
@@ -249,8 +250,8 @@ func (d *Driver) CreateBlock(ctx context.Context, req driver.BlockRequest) (driv
 }
 
 // DeleteBlock implements driver.Mirrorer: the rental is cancelled only
-// while it is among the mirror client's planned rentals of the mirror
-// service, in the court's room, with the same span, not started.
+// while it is among the mirror client's planned rentals (of any service),
+// in the court's room, with the same span, not started.
 func (d *Driver) DeleteBlock(ctx context.Context, it driver.MirrorItem) error {
 	rid, ok := parseOwnID(it.ID)
 	c, configured := d.byCourt[it.Court]
@@ -261,7 +262,7 @@ func (d *Driver) DeleteBlock(ctx context.Context, it driver.MirrorItem) error {
 	if err != nil {
 		return err
 	}
-	mirrors, _, err := d.rentalsOf(ctx, loc, mirrorClient, d.isMirrorService)
+	mirrors, _, err := d.rentalsOf(ctx, loc, mirrorClient, anyService)
 	if err != nil {
 		return err
 	}
