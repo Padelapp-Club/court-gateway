@@ -142,13 +142,18 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 		p.forget()
 		return rep
 	}
-	h := min(p.am.MirrorHorizon(), p.bm.MirrorHorizon())
-	from, to := now.Add(Lead), now.Add(h)
 	A := &side{typ: p.o.PrimaryType, d: p.a, m: p.am, name: crmName(p.o.PrimaryType)}
 	B := &side{typ: p.o.MirrorType, d: p.b, m: p.bm, name: crmName(p.o.MirrorType)}
-	q := driver.OccupancyQuery{Courts: p.o.Courts, From: from, To: to}
+	// the window ends at the shorter horizon of the two CRMs (D9: Lunda's
+	// is its club's booking depth, read now)
+	var ha, hb time.Duration
 	var ea, eb error
-	both(func() { A.inv, ea = A.m.MirrorInventory(ctx, q) }, func() { B.inv, eb = B.m.MirrorInventory(ctx, q) })
+	both(func() { ha, ea = A.m.MirrorHorizon(ctx) }, func() { hb, eb = B.m.MirrorHorizon(ctx) })
+	from, to := now.Add(Lead), now.Add(min(ha, hb))
+	if ea == nil && eb == nil {
+		q := driver.OccupancyQuery{Courts: p.o.Courts, From: from, To: to}
+		both(func() { A.inv, ea = A.m.MirrorInventory(ctx, q) }, func() { B.inv, eb = B.m.MirrorInventory(ctx, q) })
+	}
 	for _, s := range []struct {
 		sd  *side
 		err error

@@ -189,8 +189,10 @@ type Mirrorer interface {
 	// BlockSpan is the span a block for [start, end) takes (a CRM that
 	// books whole seances rounds it out to its grid).
 	BlockSpan(start, end time.Time) (time.Time, time.Time)
-	// MirrorHorizon is how far ahead the CRM's schedule is read whole.
-	MirrorHorizon() time.Duration
+	// MirrorHorizon is how far ahead of now the CRM's schedule can be read
+	// whole (a CRM that books only so many days ahead reads its setting);
+	// a pass reads no further than the shorter horizon of its pair.
+	MirrorHorizon(ctx context.Context) (time.Duration, error)
 }
 
 // MultiResourcer is implemented by drivers whose court is more than one

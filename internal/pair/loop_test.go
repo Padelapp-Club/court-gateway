@@ -27,6 +27,7 @@ type fakeCRM struct {
 	noLookup   bool                                              // MirrorLookup is ErrNotSupported
 	reread     func(q driver.OccupancyQuery) []driver.MirrorItem // more items a read of one court finds
 	round      time.Duration                                     // BlockSpan rounds out to it
+	horizon    time.Duration                                     // MirrorHorizon (14 days when 0)
 	created    []driver.BlockRequest
 	deleted    []string
 	seq        int
@@ -152,7 +153,14 @@ func (f *fakeCRM) DeleteBlock(_ context.Context, it driver.MirrorItem) error {
 	return nil
 }
 
-func (f *fakeCRM) MirrorHorizon() time.Duration { return 14 * 24 * time.Hour }
+func (f *fakeCRM) MirrorHorizon(context.Context) (time.Duration, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.horizon != 0 {
+		return f.horizon, nil
+	}
+	return 14 * 24 * time.Hour, nil
+}
 
 // loop is a pair of fake CRMs at a fixed time.
 type loop struct {

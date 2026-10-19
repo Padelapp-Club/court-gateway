@@ -28,7 +28,9 @@ var _ driver.Mirrorer = (*Driver)(nil)
 
 // MirrorHorizon implements driver.Mirrorer: records are listed for any
 // dates; the horizon of a zone check is far enough.
-func (d *Driver) MirrorHorizon() time.Duration { return driver.ZoneHorizon }
+func (d *Driver) MirrorHorizon(context.Context) (time.Duration, error) {
+	return driver.ZoneHorizon, nil
+}
 
 // BlockSpan implements driver.Mirrorer: records take the span exactly (a
 // span the court's services cannot make up is refused by CreateBlock).

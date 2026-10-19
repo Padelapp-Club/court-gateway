@@ -37,7 +37,9 @@ var _ driver.Mirrorer = (*Driver)(nil)
 
 // MirrorHorizon implements driver.Mirrorer: the grid is read for any
 // dates; the horizon of a zone check is far enough.
-func (d *Driver) MirrorHorizon() time.Duration { return driver.ZoneHorizon }
+func (d *Driver) MirrorHorizon(context.Context) (time.Duration, error) {
+	return driver.ZoneHorizon, nil
+}
 
 // BlockSpan implements driver.Mirrorer: the span rounded out to whole
 // seances of the club's day.

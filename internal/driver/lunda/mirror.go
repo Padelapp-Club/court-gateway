@@ -20,19 +20,32 @@ import (
 // "[cg-mirror:…]" a mirror's; without either it is the club's own (the
 // club books its tournaments on the same client, F4).
 
-// mirrorHorizon is how far ahead the reconciliation reads Lunda: its
-// booking depth as observed (14 days), less an hour, so that a day past it
-// is never asked around midnight when the clocks of the gateway and of
-// Lunda disagree by a little.
-const mirrorHorizon = 14*24*time.Hour - time.Hour
+// mirrorDays bounds the days ahead the reconciliation reads Lunda: the
+// partners' sale and the pair's horizon are two weeks (RR-L-3); a longer
+// booking depth is not read, so each pass reads at most 15 days.
+const mirrorDays = 14
 
 // reasonMirror is the reason Lunda shows for a mirror the loop removes.
 const reasonMirror = "Отражение брони из второй CRM снято шлюзом PadelApp: исходной брони больше нет"
 
 var _ driver.Mirrorer = (*Driver)(nil)
 
-// MirrorHorizon implements driver.Mirrorer.
-func (d *Driver) MirrorHorizon() time.Duration { return mirrorHorizon }
+// MirrorHorizon implements driver.Mirrorer: the club's booking depth
+// (club/settings bookingDepth, read every pass — a club that books 7 days
+// ahead answers every later day "beyond the booking depth", which would
+// leave every read incomplete), at most mirrorDays (14 when the settings
+// name none), less an hour, so that a day past it is never asked around
+// midnight when the clocks of the gateway and of Lunda disagree by a
+// little. [UNVERIFIED] live: that bookingDepth counts whole days after
+// today, as the stub has it.
+func (d *Driver) MirrorHorizon(ctx context.Context) (time.Duration, error) {
+	cs, err := readClubSettings(ctx, d.c)
+	if err != nil {
+		return 0, err
+	}
+	days := min(cs.depthDays(mirrorDays), mirrorDays)
+	return time.Duration(days)*24*time.Hour - time.Hour, nil
+}
 
 // BlockSpan implements driver.Mirrorer: a booking takes any span.
 func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) { return start, end }

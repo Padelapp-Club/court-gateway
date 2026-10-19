@@ -28,7 +28,9 @@ var _ driver.Mirrorer = (*Driver)(nil)
 
 // MirrorHorizon implements driver.Mirrorer: Viva lists any dates; the
 // horizon of a zone check is far enough.
-func (d *Driver) MirrorHorizon() time.Duration { return driver.ZoneHorizon }
+func (d *Driver) MirrorHorizon(context.Context) (time.Duration, error) {
+	return driver.ZoneHorizon, nil
+}
 
 // BlockSpan implements driver.Mirrorer: a break takes any span.
 func (d *Driver) BlockSpan(start, end time.Time) (time.Time, time.Time) { return start, end }
