@@ -461,7 +461,11 @@ func resources(srv *core.Server) []string {
 	}
 	var out []string
 	for _, c := range srv.Settings().Courts {
-		out = append(out, r.Resource(c.ID))
+		if m, ok := srv.Driver().(driver.MultiResourcer); ok {
+			out = append(out, m.Resources(c.ID)...)
+		} else {
+			out = append(out, r.Resource(c.ID))
+		}
 	}
 	return out
 }

@@ -447,3 +447,17 @@ no restart. Never use `set-password` for Lunda (it answers `NO_PASSWORD`). Then 
 
 `sudo ./court-gateway uninstall-service` (Windows: `.\court-gateway.exe uninstall-service`), then
 delete the folder. On macOS it removes whichever exists: the system service and the per-user one.
+
+## Optional second CRM (operator configuration)
+
+An installation whose primary `crm.type` is `viva`, `yclients` or `fitness1c`
+may add `mirror: {type: lunda, service_client: ..., max_removals: 3, max_creates: 50}`.
+This does not change the primary setup procedure. A staff member enters the
+second Lunda with `court-gateway login --mirror -config gateway.yaml`.
+Its separate session is `state_dir/mirror/crm-session`; never print it.
+The operator adds `lunda_court` to every court on the hub alongside the primary
+court key. No court mapping belongs in the installation file.
+For 1C the installation also needs `crm.mirror_client_phone`, distinct from
+`crm.client_phone`; the hub club sets `crm.mirror_service` (a free 30-minute
+rental service with no payment basis). Reception must use neither technical
+client. See README for the reconciliation fuse and `MIRROR_*` alarms.

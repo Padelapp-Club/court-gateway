@@ -204,7 +204,7 @@ func (d *Driver) ownRental(a appointment, loc *time.Location) (rental, bool, err
 	if a.ClubID != "" && !strings.EqualFold(a.ClubID, d.studio) {
 		return rental{}, false, nil // another club of the instance
 	}
-	if a.Service == nil || !d.ours(a.Service.ID) {
+	if !d.mirrorClient && (a.Service == nil || !d.ours(a.Service.ID)) {
 		return rental{}, false, nil
 	}
 	bad := func(what string) (rental, bool, error) {
@@ -267,6 +267,14 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 	own, complete, err := d.ownRentals(ctx, loc)
 	if err != nil {
 		return driver.Occupancy{}, err
+	}
+	if d.mirror != nil {
+		blocks, whole, e := d.mirror.ownRentals(ctx, loc)
+		if e != nil {
+			return driver.Occupancy{}, e
+		}
+		own = append(own, blocks...)
+		complete = complete && whole
 	}
 	_, known := d.clock()
 	occ := driver.Occupancy{Complete: known && complete, Intervals: []driver.Interval{}}

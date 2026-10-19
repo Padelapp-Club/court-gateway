@@ -495,15 +495,16 @@ type GatewayStatus struct {
 	Connected    bool   `json:"connected"`
 	LastSeen     string `json:"last_seen,omitempty"`
 	// State is pending, online, not_ready or offline (from heartbeats).
-	State         string `json:"state"`
-	LastHeartbeat string `json:"last_heartbeat,omitempty"`
-	OfflineSince  string `json:"offline_since,omitempty"`
-	Version       string `json:"version,omitempty"`
-	Build         string `json:"build,omitempty"`
-	Platform      string `json:"platform,omitempty"`
-	Outdated      bool   `json:"outdated"`
-	Ready         *bool  `json:"ready"`
-	ReadyReason   string `json:"ready_reason,omitempty"`
+	State             string `json:"state"`
+	LastHeartbeat     string `json:"last_heartbeat,omitempty"`
+	OfflineSince      string `json:"offline_since,omitempty"`
+	Version           string `json:"version,omitempty"`
+	Build             string `json:"build,omitempty"`
+	Platform          string `json:"platform,omitempty"`
+	Outdated          bool   `json:"outdated"`
+	Ready             *bool  `json:"ready"`
+	ReadyReasonDetail string `json:"ready_reason_detail,omitempty"`
+	ReadyReason       string `json:"ready_reason,omitempty"`
 	// ReadyReasonClubs are the clubs ReadyReason is about, when it is
 	// about clubs (e.g. TIMEZONE_MISMATCH).
 	ReadyReasonClubs []string `json:"ready_reason_clubs,omitempty"`
@@ -555,7 +556,7 @@ func (s *Server) statusRow(g GatewayRecord) GatewayStatus {
 		Installation: g.Installation, Name: g.Name, Connected: info.Connected, LastSeen: ts(info.LastSeen),
 		State: h.State, LastHeartbeat: ts(h.LastHeartbeat), OfflineSince: ts(h.OfflineSince),
 		Version: cleanVersion(info.Meta.Version), Build: cleanBuild(info.Meta.Build), Platform: info.Meta.Platform,
-		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), NextLogin: ts(h.NextLogin), ReadyReason: h.Reason, ReadyReasonClubs: h.ReasonClubs,
+		RegisteredAt: ts(g.RegisteredAt), LastCheck: ts(h.CheckedAt), NextLogin: ts(h.NextLogin), ReadyReason: h.Reason, ReadyReasonDetail: h.ReasonDetail, ReadyReasonClubs: h.ReasonClubs,
 		AppliedConfigVersion: h.ConfigVersion, ConfigError: h.ConfigError, ClubErrors: h.ClubErrors, ClubsServed: h.Clubs,
 		Duplicate: h.Duplicate, DuplicateSeenAt: ts(h.DuplicateAt), RefusedRequests: h.RefusedRequests,
 	}

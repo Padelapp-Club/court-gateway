@@ -109,6 +109,9 @@ func (d *Driver) list(ctx context.Context, kind string, dateFrom, dateTo time.Ti
 }
 
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
+	return d.occupancy(ctx, q, false)
+}
+func (d *Driver) occupancy(ctx context.Context, q driver.OccupancyQuery, all bool) (driver.Occupancy, error) {
 	rooms := map[string]string{}
 	for _, cid := range q.Courts {
 		c, ok := d.byCourt[cid]
@@ -160,6 +163,11 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 			prefix = "b-"
 		}
 		for _, it := range items {
+			if all && it.Room != nil && it.Room.ID != "" {
+				if _, ok := rooms[strings.ToLower(it.Room.ID)]; !ok {
+					rooms[strings.ToLower(it.Room.ID)] = ""
+				}
+			}
 			ivs, err := d.intervals(kind, prefix, it, rooms)
 			if err != nil {
 				return driver.Occupancy{}, err

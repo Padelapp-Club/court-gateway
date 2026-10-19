@@ -20,7 +20,12 @@ const markerPrefix = "[cg:"
 // what the CRM keeps, so the marker is never cut off.
 const maxComment = 1000
 
-func marker(partner string) string { return markerPrefix + partner + "]" }
+func marker(partner string) string {
+	if v := driver.ClassifyNote(partner, true, false); v.Class == driver.MirrorBooking {
+		return partner
+	}
+	return markerPrefix + partner + "]"
+}
 
 // buildComment puts the partner's marker in front of the note, cut to
 // maxComment. Ownership is read only from the start of the comment

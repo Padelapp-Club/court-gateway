@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -66,4 +67,29 @@ func resourceKey(d driver.Driver, court string) string {
 		return r.Resource(court)
 	}
 	return fmt.Sprintf("%p %s", d, court)
+}
+
+// lockResources also locks both resources of a pair, in stable order.
+func lockResources(ctx context.Context, d driver.Driver, court string) (func(), error) {
+	keys := []string{resourceKey(d, court)}
+	if m, ok := d.(driver.MultiResourcer); ok {
+		keys = m.Resources(court)
+	}
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+	var releases []func()
+	release := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	for _, key := range keys {
+		f, err := createLocks.lock(ctx, key)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		releases = append(releases, f)
+	}
+	return release, nil
 }

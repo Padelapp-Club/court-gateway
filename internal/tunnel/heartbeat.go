@@ -18,9 +18,10 @@ type Heartbeat struct {
 	Ready bool   `json:"ready"`
 	// Reason is a short upper-case code when Ready is false; ReasonClubs
 	// are the clubs it is about (none for the account or the hub).
-	Reason      string    `json:"reason,omitempty"`
-	ReasonClubs []string  `json:"reason_clubs,omitempty"`
-	CheckedAt   time.Time `json:"checked_at"`
+	ReasonDetail string    `json:"reason_detail,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	ReasonClubs  []string  `json:"reason_clubs,omitempty"`
+	CheckedAt    time.Time `json:"checked_at"`
 	// NextLogin is when the gateway tries a login the CRM rejected again
 	// (the club's set-password: at once); zero without a rejection.
 	NextLogin time.Time `json:"next_login,omitzero"`
@@ -48,8 +49,7 @@ const selfCheckTimeout = time.Minute
 const MaxHeartbeatBody = 64 << 10
 
 // SelfCheck runs the gateway's readiness check (CRM login and a narrow
-// occupancy request) at most once per Interval. It is the only scheduled
-// CRM call of a gateway: its result feeds both the local health status
+// occupancy request) at most once per Interval. Its result feeds both the local health status
 // file and the heartbeat to the hub. Step must be called from one
 // goroutine.
 type SelfCheck struct {
@@ -58,6 +58,8 @@ type SelfCheck struct {
 	// Reason maps a readiness error to a short code with no secrets,
 	// Clubs to the clubs it is about.
 	Reason func(error) string
+	// Detail returns only operator-safe text, never an arbitrary upstream error.
+	Detail func(error) string
 	Clubs  func(error) []string
 	// Interval between checks (default 60s); each is bounded by
 	// selfCheckTimeout.
@@ -95,6 +97,9 @@ func (s *SelfCheck) Step(ctx context.Context) (Heartbeat, bool) {
 		}
 		if s.Clubs != nil {
 			hb.ReasonClubs = s.Clubs(err)
+		}
+		if s.Detail != nil {
+			hb.ReasonDetail = s.Detail(err)
 		}
 	}
 	return hb, true

@@ -36,7 +36,12 @@ const (
 	reasonRollback = "Бронь шлюза PadelApp не завершена и отменена шлюзом"
 )
 
-func marker(partner string) string { return markerPrefix + partner + "]" }
+func marker(partner string) string {
+	if v := driver.ClassifyNote(partner, true, false); v.Class == driver.MirrorBooking {
+		return partner
+	}
+	return markerPrefix + partner + "]"
+}
 
 // buildNotes puts the partner's marker in front of the note, cut to
 // maxNotes. Ownership is read only from the start of the notes

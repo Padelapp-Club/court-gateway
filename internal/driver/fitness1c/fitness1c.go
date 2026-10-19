@@ -31,14 +31,14 @@ const APIKeyEnv = "FITNESS1C_APIKEY"
 // ClubCRMKeys are the keys of the crm section that belong to one club: the
 // club's id in 1C and, optionally, the rental service its grid is read by
 // and the one its prices come from.
-var ClubCRMKeys = []string{"studio", "occupancy_service", "price_service"}
+var ClubCRMKeys = []string{"studio", "occupancy_service", "price_service", "mirror_service"}
 
 // StudioKey (of the crm section) and RoomKey (of a court) hold the CRM
 // resources a club takes (drivers.ResourceKeys).
 const StudioKey, RoomKey = "studio", "fitness1c_room"
 
 // installKeys are the installation-level keys of the crm section.
-var installKeys = []string{"base_url", "username", "client_phone", "partner"}
+var installKeys = []string{"base_url", "username", "client_phone", "partner", "mirror_client_phone"}
 
 // seance is the only grid step proven by a run (D14 SUPPORTED_SEANCE_LENGTH_MIN):
 // a club whose smallest rental service has another step is not served.
@@ -77,6 +77,8 @@ type court struct {
 
 // Driver implements driver.Driver for 1C:Fitness.
 type Driver struct {
+	mirror           *Driver
+	mirrorClient     bool
 	c                *client
 	studio           string // the club's id in 1C (club_id)
 	occupancyService string // "" = the rental service with the smallest step
@@ -217,6 +219,36 @@ func NewDriver(cfg driver.Config) (*Driver, error) {
 	// a tournament is booked as a game unless it has its own service
 	if _, ok := d.services[driver.KindTournament]; !ok && d.services[driver.KindGame] != "" {
 		d.services[driver.KindTournament] = d.services[driver.KindGame]
+	}
+	if phone, e := p.String("crm", "mirror_client_phone", false); e != nil {
+		add(e)
+	} else if phone != "" {
+		clean := func(v string) string {
+			return strings.TrimPrefix(strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(v), "+")
+		}
+		if clean(phone) == clean(c.phone) {
+			add(errors.New("crm.mirror_client_phone: клиент отражений должен отличаться от клиента PadelApp"))
+		}
+		svc := id("mirror_service", true)
+		if len(errs) == 0 {
+			mc := cfg
+			mc.Account = nil
+			mc.CRM = map[string]any{}
+			for k, v := range p {
+				mc.CRM[k] = v
+			}
+			delete(mc.CRM, "mirror_client_phone")
+			delete(mc.CRM, "mirror_service")
+			mc.CRM["client_phone"], mc.CRM["partner"] = phone, "cg-mirror"
+			mc.Services = map[string]driver.Params{"booking": {"service": svc}}
+			md, e := NewDriver(mc)
+			add(e)
+			d.mirror = md
+			if md != nil {
+				md.c.parent = c
+				md.mirrorClient = true
+			}
+		}
 	}
 	if len(errs) > 0 {
 		return nil, errors.New(strings.Join(errs, "\n"))

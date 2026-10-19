@@ -173,10 +173,14 @@ func readyWord(h installationHealth) string {
 
 // reasonText is the reason code with the clubs it is about, if any.
 func reasonText(h installationHealth) string {
-	if len(h.clubs) == 0 {
-		return h.reason
+	text := h.reason
+	if len(h.clubs) > 0 {
+		text += " (clubs: " + strings.Join(h.clubs, ", ") + ")"
 	}
-	return h.reason + " (clubs: " + strings.Join(h.clubs, ", ") + ")"
+	if h.reasonDetail != "" {
+		text += ": " + h.reasonDetail
+	}
+	return text
 }
 
 type statusOptions struct {

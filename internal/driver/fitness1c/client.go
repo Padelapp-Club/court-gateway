@@ -74,6 +74,8 @@ type envelope struct {
 // request (1C has no session). Client tokens (usertoken) of the technical
 // client are kept in memory only.
 type client struct {
+	// A second technical client shares Basic credentials and rejection pause.
+	parent   *client
 	base     string // the instance address with apiPrefix
 	username string
 	apiKey   string
@@ -96,6 +98,9 @@ func (c *client) setPassword(p string) {
 }
 
 func (c *client) stopped() (time.Time, bool) {
+	if c.parent != nil {
+		return c.parent.stopped()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stopUntil, c.now().Before(c.stopUntil)
@@ -132,9 +137,13 @@ func (c *client) call(ctx context.Context, method, path string, query url.Values
 		if err != nil {
 			return nil, err
 		}
-		c.mu.Lock()
-		req.SetBasicAuth(c.username, c.password)
-		c.mu.Unlock()
+		auth := c
+		if c.parent != nil {
+			auth = c.parent
+		}
+		auth.mu.Lock()
+		req.SetBasicAuth(auth.username, auth.password)
+		auth.mu.Unlock()
 		req.Header.Set("apikey", c.apiKey)
 		req.Header.Set("Accept", "application/json")
 		if raw != nil {
@@ -169,9 +178,13 @@ func (c *client) call(ctx context.Context, method, path string, query url.Values
 		// IIS answers a refused Basic login with an HTML page: known by
 		// the status, not the body
 		if usertoken == "" {
-			c.mu.Lock()
-			c.stopUntil = c.now().Add(authPause)
-			c.mu.Unlock()
+			auth := c
+			if c.parent != nil {
+				auth = c.parent
+			}
+			auth.mu.Lock()
+			auth.stopUntil = auth.now().Add(authPause)
+			auth.mu.Unlock()
 		}
 		return nil, driver.Upstream(driver.UpstreamAuth, fmt.Sprintf("%s: 1C refused the login (HTTP %d)", op, s))
 	case core.IsRedirect(s):

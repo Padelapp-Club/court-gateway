@@ -347,3 +347,30 @@ func ReadyReason(err error) string {
 		return "CRM_ERROR"
 	}
 }
+
+// ReadyDetail exposes only reconciliation's fixed operator messages.
+// Arbitrary driver errors may contain upstream data and are never sent.
+func ReadyDetail(err error) string {
+	var messages []string
+	var visit func(error)
+	visit = func(e error) {
+		if e == nil {
+			return
+		}
+		if ca, ok := e.(*driver.ConfigAlert); ok && strings.HasPrefix(ca.Code, "MIRROR_") {
+			messages = append(messages, ca.Problems...)
+			return
+		}
+		switch w := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range w.Unwrap() {
+				visit(child)
+			}
+		case interface{ Unwrap() error }:
+			visit(w.Unwrap())
+		}
+	}
+	visit(err)
+	r := []rune(strings.Join(messages, "; "))
+	return string(r[:min(len(r), 2000)])
+}

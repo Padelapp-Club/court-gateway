@@ -171,6 +171,9 @@ func truncate(s string, n int) string {
 // read; an answer that does not parse, or a lost session, is an error. A
 // booking cut into several slots of one court is one interval.
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
+	return d.occupancy(ctx, q, false)
+}
+func (d *Driver) occupancy(ctx context.Context, q driver.OccupancyQuery, allCourts bool) (driver.Occupancy, error) {
 	want := map[string]string{}
 	for _, cid := range q.Courts {
 		c, ok := d.byCourt[cid]
@@ -193,6 +196,20 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 				break
 			}
 			return driver.Occupancy{}, err
+		}
+		if allCourts && ds.Courts != nil {
+			for _, ct := range *ds.Courts {
+				if _, ok := want[ct.CourtUID]; !ok {
+					want[ct.CourtUID] = ""
+				}
+				if ct.Slots != nil {
+					for _, sl := range *ct.Slots {
+						if sl != nil && !knownTypes[sl.Type] {
+							occ.Complete = false
+						}
+					}
+				}
+			}
 		}
 		ivs, err := d.dayIntervals(ds, want)
 		if err != nil {

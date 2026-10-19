@@ -40,6 +40,7 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "gateway.yaml")
+	mirror := fs.Bool("mirror", false, "войти в дополнительную Лунду")
 	method := fs.String("method", "", "qr or code (default: ask)")
 	phone := fs.String("phone", "", "the staff member's phone for --method code, +7…")
 	if fs.Parse(args) != nil {
@@ -53,6 +54,15 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	s, err := core.LoadFile(*cfgPath, env)
 	if err != nil {
 		return fail(err)
+	}
+	if *mirror {
+		if s.Mirror == nil {
+			return fail(errors.New("mirror: дополнительная Лунда не настроена"))
+		}
+		s.Driver = s.MirrorConfig()
+		s.CRMType = "lunda"
+		s.StateDir = filepath.Join(s.StateDir, "mirror")
+		s.Mirror = nil
 	}
 	acct, err := core.BuildAccount(s, drivers.Accounts, s.Driver)
 	if err != nil {
@@ -84,7 +94,11 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	}
 	fmt.Fprintln(stdout, "Вход в CRM выполнен. Служба шлюза подхватит его сама, перезапуск не нужен.")
 	if cp, ok := acct.(driver.ClientPicker); ok && s.Driver.CRM[cp.ClientKey()] == nil {
-		fmt.Fprintln(stdout, "Служебный клиент клуба не выбран: брони PadelApp не встанут. Выберите его: court-gateway setup --force с новым кодом подключения.")
+		if *mirror {
+			fmt.Fprintln(stdout, "Служебный клиент дополнительной Лунды не выбран: задайте mirror.service_client в gateway.yaml. Новый код подключения не нужен.")
+		} else {
+			fmt.Fprintln(stdout, "Служебный клиент клуба не выбран: брони PadelApp не встанут. Выберите его: court-gateway setup --force с новым кодом подключения.")
+		}
 	}
 	return 0
 }

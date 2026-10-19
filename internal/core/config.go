@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base32"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/Padelapp-Club/court-gateway/internal/auth"
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
+	"github.com/Padelapp-Club/court-gateway/internal/driver/pair"
 )
 
 // PasswordEnv is the environment variable holding the CRM password.
@@ -49,8 +51,20 @@ const MinKeyLength = 24
 
 // fileConfig mirrors gateway.yaml: the installation only (its clubs are on
 // the hub); `crm` driver keys are handed to the driver raw.
+type mirrorFile struct {
+	Type        string         `yaml:"type"`
+	MaxRemovals *int           `yaml:"max_removals"`
+	MaxCreates  *int           `yaml:"max_creates"`
+	Rest        map[string]any `yaml:",inline"`
+}
+type MirrorSettings struct {
+	CRM                     driver.Params
+	MaxRemovals, MaxCreates int
+	Account                 driver.Account
+}
 type fileConfig struct {
-	Hub *struct {
+	Mirror *mirrorFile `yaml:"mirror"`
+	Hub    *struct {
 		URL          string `yaml:"url"`
 		Installation string `yaml:"installation"`
 		Key          string `yaml:"key"`
@@ -177,6 +191,7 @@ type UpdateSettings struct {
 // Settings is a validated configuration: the installation and, after
 // WithClub, one club configured on the hub.
 type Settings struct {
+	Mirror   *MirrorSettings
 	ClubID   string
 	ClubName string
 	Hub      *HubSettings
@@ -357,6 +372,22 @@ func Load(data []byte, getenv func(string) string) (*Settings, error) {
 		add("crm.type: параметр обязателен (тип CRM клуба)")
 	}
 
+	if fc.Mirror != nil {
+		m := fc.Mirror
+		if !pair.Supported(s.CRMType, m.Type) {
+			add("mirror.type: неподдерживаемая пара CRM")
+		}
+		s.Mirror = &MirrorSettings{CRM: driver.Params(m.Rest), MaxRemovals: 3, MaxCreates: 50}
+		if m.MaxRemovals != nil {
+			s.Mirror.MaxRemovals = *m.MaxRemovals
+		}
+		if m.MaxCreates != nil {
+			s.Mirror.MaxCreates = *m.MaxCreates
+		}
+		if s.Mirror.MaxRemovals < 0 || s.Mirror.MaxCreates < 1 {
+			add("mirror: max_removals ≥ 0, max_creates ≥ 1")
+		}
+	}
 	// every club comes from the hub (WithClub)
 	s.installCRM = driver.Params(fc.CRM.Rest)
 	if s.installCRM == nil {
@@ -403,7 +434,16 @@ func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Drive
 		known := slices.Sorted(maps.Keys(factories))
 		return nil, &ConfigError{Problems: []string{fmt.Sprintf("crm.type: неизвестный тип CRM «%s» (поддерживаются: %s)", s.CRMType, strings.Join(known, ", "))}}
 	}
-	d, err := f(s.Driver)
+	cfg := s.Driver
+	if s.Mirror != nil {
+		cfg.Courts = make([]driver.CourtConfig, len(s.Driver.Courts))
+		for i, c := range s.Driver.Courts {
+			cfg.Courts[i] = c
+			cfg.Courts[i].Params = maps.Clone(c.Params)
+			delete(cfg.Courts[i].Params, pair.MirrorCourtKey)
+		}
+	}
+	d, err := f(cfg)
 	if err != nil {
 		var ce *ConfigError
 		if errors.As(err, &ce) {
@@ -411,7 +451,49 @@ func BuildDriver(s *Settings, factories map[string]driver.Factory) (driver.Drive
 		}
 		return nil, &ConfigError{Problems: strings.Split(err.Error(), "\n")}
 	}
-	return d, nil
+	if s.Mirror == nil {
+		return d, nil
+	}
+	mf, ok := factories[pair.MirrorType]
+	if !ok {
+		return nil, &ConfigError{Problems: []string{"mirror: драйвер lunda не зарегистрирован"}}
+	}
+	mc := s.MirrorConfig()
+	md, err := mf(mc)
+	if err != nil {
+		return nil, &ConfigError{Problems: []string{err.Error()}}
+	}
+	courts := make([]string, len(cfg.Courts))
+	for i, c := range cfg.Courts {
+		courts[i] = c.ID
+	}
+	var pd *pair.Driver
+	pd, err = pair.New(pair.Options{PrimaryType: s.CRMType, Primary: d, Mirror: md, Courts: courts, Clock: cfg.DecisionClock(), Logger: cfg.Logger, MaxRemovals: s.Mirror.MaxRemovals, MaxCreates: s.Mirror.MaxCreates,
+		Lock: func(ctx context.Context, c string) (func(), error) { return lockResources(ctx, pd, c) }})
+	if err != nil {
+		if c, ok := md.(interface{ Close() }); ok {
+			c.Close()
+		}
+		return nil, &ConfigError{Problems: []string{err.Error()}}
+	}
+	return pd, nil
+}
+
+// MirrorConfig carries the second account's login, never primary secrets.
+func (s *Settings) MirrorConfig() driver.Config {
+	c := s.Driver
+	c.CRM = maps.Clone(s.Mirror.CRM)
+	c.Password = ""
+	c.Secrets = nil
+	c.Rejections = nil
+	c.Account = s.Mirror.Account
+	c.Services = nil
+	c.Sessions = SessionStore(filepath.Join(s.StateDir, "mirror"))
+	c.Courts = make([]driver.CourtConfig, len(s.Driver.Courts))
+	for i, ct := range s.Driver.Courts {
+		c.Courts[i] = driver.CourtConfig{ID: ct.ID, Name: ct.Name, Params: driver.Params{pair.MirrorCourtKey: ct.Params[pair.MirrorCourtKey]}}
+	}
+	return c
 }
 
 // BuildAccount runs the account factory registered for the configured

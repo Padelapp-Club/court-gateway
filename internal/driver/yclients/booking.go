@@ -40,7 +40,12 @@ var (
 // all and stays within the API's 100 characters.
 const maxRecords = 8
 
-func marker(partner string) string { return markerPrefix + partner + "]" }
+func marker(partner string) string {
+	if v := driver.ClassifyNote(partner, true, false); v.Class == driver.MirrorBooking {
+		return partner
+	}
+	return markerPrefix + partner + "]"
+}
 
 // setTag follows the marker in every record of a booking: a key of its own
 // and how many records it has. Occupancy shows the records of one booking
@@ -76,7 +81,7 @@ func setOf(comment *string) (key string, n int, ok bool) {
 		return "", 0, false
 	}
 	c := strings.TrimSpace(*comment)
-	if !strings.HasPrefix(c, markerPrefix) {
+	if !strings.HasPrefix(c, markerPrefix) && driver.ClassifyNote(c, true, false).Class != driver.MirrorBooking {
 		return "", 0, false
 	}
 	end := strings.Index(c, "]")

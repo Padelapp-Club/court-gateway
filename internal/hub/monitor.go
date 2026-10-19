@@ -46,18 +46,19 @@ type Monitor struct {
 }
 
 type installationHealth struct {
-	lastBeat  time.Time // hub clock: when the last heartbeat arrived
-	checkedAt time.Time // gateway clock, informational only
-	version   string
-	build     string
-	ready     bool
-	reason    string
-	clubs     []string  // the clubs reason is about
-	nextLogin time.Time // gateway clock: when a rejected CRM login is tried again
-	notReady  int       // heartbeats in a row with ready=false
-	beats     int
-	applied   tunnel.AppliedConfig // as reported, cleaned
-	refused   int64                // requests the gateway refused as unsigned
+	lastBeat     time.Time // hub clock: when the last heartbeat arrived
+	checkedAt    time.Time // gateway clock, informational only
+	version      string
+	build        string
+	ready        bool
+	reasonDetail string
+	reason       string
+	clubs        []string  // the clubs reason is about
+	nextLogin    time.Time // gateway clock: when a rejected CRM login is tried again
+	notReady     int       // heartbeats in a row with ready=false
+	beats        int
+	applied      tunnel.AppliedConfig // as reported, cleaned
+	refused      int64                // requests the gateway refused as unsigned
 
 	state string // as of the last Tick
 
@@ -76,10 +77,11 @@ type Health struct {
 	Version       string
 	Build         string
 	// Checked is true once a heartbeat has arrived since the hub started.
-	Checked     bool
-	Ready       bool
-	Reason      string
-	ReasonClubs []string
+	Checked      bool
+	Ready        bool
+	ReasonDetail string
+	Reason       string
+	ReasonClubs  []string
 	// NextLogin is when the gateway tries a login the CRM rejected again
 	// (gateway clock); zero without a rejection.
 	NextLogin    time.Time
@@ -191,6 +193,10 @@ func (m *Monitor) Heartbeat(installation string, hb tunnel.Heartbeat, bound bool
 		return
 	}
 	h.beats++
+	h.reasonDetail = ""
+	if !hb.Ready && strings.HasPrefix(hb.Reason, "MIRROR_") {
+		h.reasonDetail = cleanConfigError(hb.ReasonDetail, 2000)
+	}
 	h.ready, h.reason, h.clubs, h.nextLogin = hb.Ready, cleanReason(hb.Ready, hb.Reason), nil, time.Time{}
 	if !hb.Ready {
 		h.clubs = cleanClubs(hb.ReasonClubs)
@@ -358,7 +364,7 @@ func (m *Monitor) Health(installation string) Health {
 	}
 	out := Health{
 		State: m.evaluate(h, g.RegisteredAt, now), LastHeartbeat: h.lastBeat, CheckedAt: h.checkedAt, Version: h.version, Build: h.build,
-		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, ReasonClubs: append([]string(nil), h.clubs...), NextLogin: h.nextLogin, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
+		Checked: h.beats > 0, Ready: h.ready, Reason: h.reason, ReasonDetail: h.reasonDetail, ReasonClubs: append([]string(nil), h.clubs...), NextLogin: h.nextLogin, Duplicate: m.duplicate(h, now), DuplicateAt: h.refusedAt, RefusedRequests: h.refused,
 		AppliedConfig: tunnel.AppliedConfig{ConfigVersion: h.applied.ConfigVersion, ConfigError: h.applied.ConfigError,
 			ClubErrors: maps.Clone(h.applied.ClubErrors), Clubs: append([]string(nil), h.applied.Clubs...)},
 	}

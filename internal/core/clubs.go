@@ -20,9 +20,10 @@ import (
 // restart and without disturbing requests in flight: each request is
 // served by the set that was current when it arrived.
 type Clubs struct {
-	log     *slog.Logger
-	cur     atomic.Pointer[clubTable]
-	pending atomic.Bool // SetPending
+	reconcileMu sync.Mutex
+	log         *slog.Logger
+	cur         atomic.Pointer[clubTable]
+	pending     atomic.Bool // SetPending
 	// readyNoClubs answers readiness while no club is configured (the
 	// CRM login of the account); nil means ready.
 	readyNoClubs func(context.Context) error
@@ -74,6 +75,8 @@ func (c *Clubs) SetGatewayAPI(h http.Handler) { c.gatewayAPI = h }
 // config that are not served because their config does not load: partners
 // get 503 for them rather than 404.
 func (c *Clubs) Set(run string, servers []*Server, unavailable ...string) {
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
 	t := &clubTable{loaded: true, byID: make(map[string]clubEntry, len(servers)), unavailable: map[string]bool{}, run: run}
 	for _, id := range unavailable {
 		t.unavailable[id] = true
@@ -225,4 +228,30 @@ func (c *Clubs) TunnelHandler() http.Handler {
 		WriteError(w, r, http.StatusNotFound, "NOT_FOUND", "no such endpoint")
 	})
 	return Observe(c.log, time.Now, mux)
+}
+
+// RunReconciliation runs only the current table. Set waits for a pass to
+// finish, so an old mapping cannot keep writing after a reload.
+func (c *Clubs) RunReconciliation(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		c.Reconcile(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+func (c *Clubs) Reconcile(ctx context.Context) {
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
+	var wg sync.WaitGroup
+	for _, e := range c.cur.Load().byID {
+		if r, ok := e.srv.drv.(driver.Reconciler); ok && !e.srv.mismatch.Load() {
+			wg.Go(func() { p, stop := context.WithTimeout(ctx, 55*time.Second); defer stop(); _ = r.Reconcile(p) })
+		}
+	}
+	wg.Wait()
 }

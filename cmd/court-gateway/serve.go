@@ -151,6 +151,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	// returning, as for the status loop
 	var bg sync.WaitGroup
 	bg.Go(func() { syncer.Run(ctx) })
+	bg.Go(func() { clubs.RunReconciliation(ctx) })
 	tunnelDone := make(chan struct{})
 	go func() {
 		defer close(tunnelDone)
@@ -169,7 +170,7 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 		defer t.Stop()
 		// each club has its own time limit (core.ReadyTimeout); this only
 		// bounds the whole round
-		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Clubs: core.ReadyClubs, Interval: statusInterval,
+		check := &tunnel.SelfCheck{Ready: syncer.Ready, Reason: core.ReadyReason, Detail: core.ReadyDetail, Clubs: core.ReadyClubs, Interval: statusInterval,
 			Version: version, Build: build()}
 		var st core.HealthStatus
 		var crm tunnel.Heartbeat // the last self-check
@@ -355,7 +356,16 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 		return nil, nil, err
 	}
 	s.Driver.Account = acct // one CRM session for the account and its clubs
-	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
+	ready := acct.CheckLogin
+	if s.Mirror != nil {
+		mirror, err := drivers.Accounts["lunda"](s.MirrorConfig())
+		if err != nil {
+			return nil, nil, err
+		}
+		s.Mirror.Account = mirror
+		ready = func(ctx context.Context) error { return errors.Join(acct.CheckLogin(ctx), mirror.CheckLogin(ctx)) }
+	}
+	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: ready})
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
 }
@@ -422,7 +432,15 @@ func (w *configWatch) read() (password, hub string, err error) {
 		return password, "", err
 	}
 	h := s.Hub
-	return password, strings.Join([]string{h.URL, h.Installation, core.EncodeHubKey(h.Key), tunnel.SecretSHA256(h.Secret), h.CAFile, strconv.Itoa(h.Polls)}, "\n"), nil
+	mirror := ""
+	if s.Mirror != nil {
+		b, _ := yaml.Marshal(struct {
+			CRM                     driver.Params
+			MaxRemovals, MaxCreates int
+		}{s.Mirror.CRM, s.Mirror.MaxRemovals, s.Mirror.MaxCreates})
+		mirror = string(b)
+	}
+	return password, strings.Join([]string{h.URL, h.Installation, core.EncodeHubKey(h.Key), tunnel.SecretSHA256(h.Secret), h.CAFile, strconv.Itoa(h.Polls), mirror}, "\n"), nil
 }
 
 func (w *configWatch) check() {
