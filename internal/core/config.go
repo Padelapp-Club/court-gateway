@@ -134,8 +134,8 @@ type MirrorClub struct {
 
 // Defaults and bounds of a club's mirror section.
 const (
-	DefaultMirrorMaxRemovals = 3
-	DefaultMirrorMaxCreates  = 50
+	DefaultMirrorMaxRemovals = pair.DefaultMaxRemovals
+	DefaultMirrorMaxCreates  = pair.DefaultMaxCreates
 	maxMirrorLimit           = 1000
 )
 

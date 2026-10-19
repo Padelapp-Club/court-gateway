@@ -131,7 +131,6 @@ type Report struct {
 // side is one CRM in a pass.
 type side struct {
 	typ  string
-	d    driver.Driver
 	m    driver.Mirrorer
 	inv  driver.Inventory
 	name string // as the club knows it
@@ -171,8 +170,8 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 		p.forget()
 		return rep
 	}
-	A := &side{typ: p.o.PrimaryType, d: p.a, m: p.am, name: crmName(p.o.PrimaryType)}
-	B := &side{typ: p.o.MirrorType, d: p.b, m: p.bm, name: crmName(p.o.MirrorType)}
+	A := &side{typ: p.o.PrimaryType, m: p.am, name: crmName(p.o.PrimaryType)}
+	B := &side{typ: p.o.MirrorType, m: p.bm, name: crmName(p.o.MirrorType)}
 	// the window ends at the shorter horizon of the two CRMs (D9: Lunda's
 	// is its club's booking depth, read now)
 	var ha, hb time.Duration
