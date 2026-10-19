@@ -34,11 +34,13 @@ import (
 //     made. Both raise an alarm;
 //   - two club bookings of the court that overlap across the CRMs, a
 //     partner's booking in one CRM only, a damaged marker: alarms, nothing
-//     touched.
+//     touched; so is a mirror off the court mapping, or one naming a CRM
+//     that is not the pair's other one (MIRROR_UNMAPPED).
 //
 // Which mirror belongs to which booking is read again every pass from the
 // CRMs; the pass remembers in memory only what the two-pass rules need
-// (memo), lost with the process.
+// (memo, in the club's Memory: kept across a new config of the club, lost
+// with the process).
 
 // The window of a pass (D8) starts at now, the hub's signed time: a club
 // booking under way or about to start is mirrored as well as a later one
