@@ -68,6 +68,14 @@ type CRM interface {
 	Live(t testing.TB) []Entry
 	// Fail makes the next write of kind (create or delete) fail upstream.
 	Fail(t testing.TB, write string)
+	// Raw is the record of handle as the stub stores it (cancelled or
+	// deleted too), serialized whole: two equal Raws are the same record
+	// byte for byte. "" when the stub has no such record.
+	Raw(t testing.TB, handle string) string
+	// Incomplete makes the next read of the CRM's schedule by the loop
+	// incomplete — or, where the CRM's driver has no incomplete answer,
+	// fail — and returns how ("incomplete", "failed") and what undoes it.
+	Incomplete(t testing.TB) (how string, undo func())
 }
 
 // Env is a club served by a pair.
@@ -87,6 +95,17 @@ type Env struct {
 	MarkerlessPrimary bool
 
 	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
+	respec  func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair
+	restart func(t *testing.T) built
+}
+
+// built is what build gives: the gateway's club, its pair and how to serve
+// it again with a new config.
+type built struct {
+	b       *contract.Built
+	p       *pair.Pair
+	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
+	respec  func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair
 }
 
 // Reconfigure serves the club again with mirror section m, as a new config
@@ -94,6 +113,30 @@ type Env struct {
 func (e *Env) Reconfigure(t *testing.T, m core.MirrorSpec) {
 	t.Helper()
 	e.Pair = e.rebuild(t, m)
+}
+
+// Respec serves the club again with its spec changed by f (its court
+// mapping, say), as a new config from the hub would, on the same CRMs and
+// in the same process (the club's pair.Memory is kept).
+func (e *Env) Respec(t *testing.T, f func(*core.ClubSpec)) {
+	t.Helper()
+	e.Pair = e.respec(t, f)
+}
+
+// Restart serves the club as a new process would on the same CRMs: the
+// config loaded again, the Lunda account logged in again, a new pair with
+// a new pair.Memory — nothing of the passes before is known.
+func (e *Env) Restart(t *testing.T) {
+	t.Helper()
+	e.Pair.Close()
+	n := e.restart(t)
+	e.Built, e.Pair, e.Handler, e.rebuild, e.respec = n.b, n.p, n.b.Handler(), n.rebuild, n.respec
+}
+
+// with fills in what build gave and how to build it again.
+func (e *Env) with(n built, restart func(t *testing.T) built) *Env {
+	e.Built, e.Pair, e.Handler, e.rebuild, e.respec, e.restart = n.b, n.p, n.b.Handler(), n.rebuild, n.respec, restart
+	return e
 }
 
 // Options adjust a setup.
@@ -252,8 +295,9 @@ func (m *memStore) SaveSession(b []byte) error {
 // build serves spec as a gateway would: the installation's crm and mirror
 // sections (YAML), the mirror's Lunda account logged in by a QR code on
 // lstub, the club from the hub, the pair from core.BuildDriver.
-func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map[string]string, primaryClient *http.Client, lstub *lundastub.Stub, lsrv *httptest.Server) (*contract.Built, *pair.Pair, func(*testing.T, core.MirrorSpec) *pair.Pair) {
+func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map[string]string, primaryClient *http.Client, lstub *lundastub.Stub, lsrv *httptest.Server) built {
 	t.Helper()
+	spec = cloneSpec(spec)
 	getenv := func(k string) string {
 		if k == core.DefaultHubSecretEnv {
 			return "test-hub-secret"
@@ -298,9 +342,9 @@ func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log})
 	clubs.Set("", []*core.Server{srv})
 	b := &contract.Built{Settings: s, Driver: d, Server: srv, Clubs: clubs, Logs: logs}
-	rebuild := func(t *testing.T, m core.MirrorSpec) *pair.Pair {
+	respec := func(t *testing.T, f func(*core.ClubSpec)) *pair.Pair {
 		t.Helper()
-		spec.Mirror = &m
+		f(&spec)
 		s, err := base.WithClub(spec, drivers.ClubCRMKeys(base.CRMType))
 		if err != nil {
 			t.Fatalf("club: %v", err)
@@ -314,7 +358,27 @@ func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map
 		b.Settings, b.Driver, b.Server = s, d, srv
 		return d.(*pair.Pair)
 	}
-	return b, p, rebuild
+	rebuild := func(t *testing.T, m core.MirrorSpec) *pair.Pair {
+		t.Helper()
+		return respec(t, func(s *core.ClubSpec) { s.Mirror = &m })
+	}
+	return built{b: b, p: p, rebuild: rebuild, respec: respec}
+}
+
+// cloneSpec copies spec deep enough that a Respec of one build does not
+// change another's (the courts' params).
+func cloneSpec(spec core.ClubSpec) core.ClubSpec {
+	out := spec
+	out.Courts = nil
+	for _, c := range spec.Courts {
+		params := map[string]any{}
+		for k, v := range c.Params {
+			params[k] = v
+		}
+		c.Params = params
+		out.Courts = append(out.Courts, c)
+	}
+	return out
 }
 
 // loginQR logs the Lunda account in as a staff member would by a QR code.

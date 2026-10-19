@@ -1,6 +1,7 @@
 package pairtest
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -147,7 +148,29 @@ func YclientsLunda(t *testing.T, o Options) *Env {
 	}
 	crm := fmt.Sprintf("crm: { type: yclients, api_url: %s/api/v1 }\n", srv.URL)
 	env := map[string]string{yclients.PartnerTokenEnv: yPartnerToken, yclients.UserTokenEnv: yUserToken}
-	b, p, rebuild := build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server)
-	return &Env{Primary: y, Mirror: l, Pair: p, Built: b, Handler: b.Handler(), Courts: []string{"court-1", "court-2"},
-		Location: b.Settings.Location, Partner: "booker", LundaStub: l.Stub, rebuild: rebuild}
+	mk := func(t *testing.T) built { return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server) }
+	n := mk(t)
+	return (&Env{Primary: y, Mirror: l, Courts: []string{"court-1", "court-2"},
+		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub}).with(n, mk)
+}
+
+// Raw: the record as the stub stores it.
+func (y *YclientsStub) Raw(t testing.TB, handle string) string {
+	r, ok := y.Stub.Record(y.id(t, handle))
+	if !ok {
+		return ""
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Incomplete: YCLIENTS's driver tells an incomplete list of records by its
+// total_count and refuses it (an error, not an incomplete answer): every
+// list promises a record more than it has until undone.
+func (y *YclientsStub) Incomplete(t testing.TB) (string, func()) {
+	y.Stub.LieTotal(1)
+	return "failed", func() { y.Stub.LieTotal(0) }
 }

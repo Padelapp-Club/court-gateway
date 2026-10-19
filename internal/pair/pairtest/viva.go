@@ -1,6 +1,7 @@
 package pairtest
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +88,10 @@ func (v *VivaStub) Annotate(t testing.TB, id, note string) {
 func (v *VivaStub) Fail(t testing.TB, write string) {
 	switch write {
 	case "create":
-		v.Stub.FailNext(http.MethodPost, "/", http.StatusBadRequest, `{"code":"BAD_REQUEST"}`)
+		// a partner's booking or a mirror (both breaks: the club has no
+		// service for the partners' games); not "/" — the token's POST would
+		// match it before the gateway has logged in, a login refused
+		v.Stub.FailNext(http.MethodPost, "/breaks", http.StatusBadRequest, `{"code":"BAD_REQUEST"}`)
 	case "delete":
 		v.Stub.FailNext(http.MethodDelete, "/", http.StatusInternalServerError, `{"code":"ERROR"}`)
 	default:
@@ -151,9 +155,36 @@ func VivaLunda(t *testing.T, o Options) *Env {
 		spec.Courts = append(spec.Courts, core.CourtSpec{ID: c, Name: "Корт " + c[len(c)-1:], Params: params})
 	}
 	crm := fmt.Sprintf("crm: { type: viva, username: %s, auth_url: %s/token, api_url: %s/api/v1 }\n", vivaUser, srv.URL, srv.URL)
-	b, p, rebuild := build(t, crm, l.YAML(), spec, map[string]string{"CRM_PASSWORD": vivaPass}, srv.Client(), l.Stub, l.Server)
-	return &Env{Primary: v, Mirror: l, Pair: p, Built: b, Handler: b.Handler(), Courts: []string{"court-1", "court-2"},
-		Location: b.Settings.Location, Partner: "booker", LundaStub: l.Stub, rebuild: rebuild}
+	mk := func(t *testing.T) built {
+		return build(t, crm, l.YAML(), spec, map[string]string{"CRM_PASSWORD": vivaPass}, srv.Client(), l.Stub, l.Server)
+	}
+	n := mk(t)
+	return (&Env{Primary: v, Mirror: l, Courts: []string{"court-1", "court-2"},
+		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub}).with(n, mk)
+}
+
+// Raw: the exercise or break as the stub stores it.
+func (v *VivaStub) Raw(t testing.TB, id string) string {
+	r := v.Stub.Exercise(id)
+	if r == nil {
+		r = v.Stub.Break(id)
+	}
+	if r == nil {
+		return ""
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Incomplete: Viva's driver has no incomplete answer a stub can give once
+// (a page-sized list is asked again day by day), so the next list of
+// exercises fails.
+func (v *VivaStub) Incomplete(t testing.TB) (string, func()) {
+	v.Stub.FailNext(http.MethodGet, "/exercises", http.StatusInternalServerError, "{}")
+	return "failed", func() {}
 }
 
 var _ = contract.BookKey

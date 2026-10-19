@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
@@ -201,6 +202,11 @@ type RentalView struct {
 	Phone      string
 	Start, End time.Time
 	Canceled   bool
+	// Temporary and Private are the rest of the record (a 15-minute
+	// reservation; the personal data of a club rental), for a test that
+	// compares a rental whole.
+	Temporary bool
+	Private   map[string]any
 }
 
 // RentalViews returns every rental, cancelled ones too.
@@ -209,7 +215,7 @@ func (s *Stub) RentalViews() []RentalView {
 	defer s.mu.Unlock()
 	var out []RentalView
 	for _, r := range s.rentals {
-		v := RentalView{ID: r.id, Room: r.room, Service: r.service, Start: r.start, End: r.end, Canceled: r.canceled}
+		v := RentalView{ID: r.id, Room: r.room, Service: r.service, Start: r.start, End: r.end, Canceled: r.canceled, Temporary: r.temporary, Private: maps.Clone(r.private)}
 		for _, c := range s.clients {
 			if c.id == r.client {
 				v.Phone = c.phone

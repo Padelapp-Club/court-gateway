@@ -1,6 +1,7 @@
 package pairtest
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,6 +99,32 @@ func (l *LundaStub) Fail(t testing.TB, write string) {
 		t.Fatalf("no failure %q", write)
 	}
 }
+
+// Raw: the booking as the stub stores it.
+func (l *LundaStub) Raw(t testing.TB, id string) string {
+	b := l.Stub.Booking(id)
+	if b == nil {
+		return ""
+	}
+	out, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// Incomplete: a day of the schedule three days ahead cannot be read: the
+// read is incomplete from that day on.
+func (l *LundaStub) Incomplete(t testing.TB) (string, func()) {
+	n := time.Now().In(l.Stub.Zone)
+	day := time.Date(n.Year(), n.Month(), n.Day()+3, 0, 0, 0, 0, l.Stub.Zone).Format("2006-01-02")
+	l.Stub.FailNextQuery(http.MethodGet, "/club/booking/slots-load", "date="+day, http.StatusServiceUnavailable, "{}")
+	return "incomplete", func() {}
+}
+
+// AddCourt adds a court of the club to the Lunda stub, under uid, no
+// gateway court mapped to it.
+func (l *LundaStub) AddCourt(uid, name string) { l.Stub.AddCourt(uid, name) }
 
 // Live: a booking on the service client is the gateway's by its notes.
 func (l *LundaStub) Live(t testing.TB) []Entry {

@@ -1,6 +1,7 @@
 package pairtest
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -120,7 +121,30 @@ func Fitness1CLunda(t *testing.T, o Options) *Env {
 	crm := fmt.Sprintf("crm: { type: fitness1c, base_url: %s, username: %s, client_phone: %q, partner: booker, mirror_client_phone: %q }\n",
 		srv.URL, f1cUser, F1CTechPhone, F1CMirrorTech)
 	env := map[string]string{"CRM_PASSWORD": f1cPass, fitness1c.APIKeyEnv: f1cKey}
-	b, p, rebuild := build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server)
-	return &Env{Primary: f, Mirror: l, Pair: p, Built: b, Handler: b.Handler(), Courts: []string{"court-1", "court-2"},
-		Location: b.Settings.Location, Partner: "booker", LundaStub: l.Stub, rebuild: rebuild, MarkerlessPrimary: true}
+	mk := func(t *testing.T) built { return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server) }
+	n := mk(t)
+	return (&Env{Primary: f, Mirror: l, Courts: []string{"court-1", "court-2"},
+		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub, MarkerlessPrimary: true}).with(n, mk)
+}
+
+// Raw: the rental as the stub stores it (RentalView: every field of it).
+func (f *Fitness1CStub) Raw(t testing.TB, id string) string {
+	for _, r := range f.Stub.RentalViews() {
+		if r.ID == id {
+			b, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(b)
+		}
+	}
+	return ""
+}
+
+// Incomplete: the next list of a technical client's rentals promises more
+// than it holds (1C's pagination total): the read is incomplete.
+func (f *Fitness1CStub) Incomplete(t testing.TB) (string, func()) {
+	f.Stub.Fail("GET /appointments/", fitness1cstub.Failure{
+		Body: `{"result":true,"data":[],"pagination_response":{"requested_offset":0,"page_size":30,"total_results":7}}`})
+	return "incomplete", func() {}
 }
