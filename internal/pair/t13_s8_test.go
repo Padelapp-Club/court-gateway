@@ -17,9 +17,13 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/pair/pairtest"
 )
 
-// copiedMarker is a mirror's marker naming the pair's primary as a club's
-// staff could paste it into a booking of their own.
-func copiedMarker(env *pairtest.Env) string {
+// copiedMarker is a mirror's marker as a club's staff could paste it from
+// a mirror of crm into a booking of their own there: it names the other
+// CRM of the pair, as the mirrors of crm do.
+func copiedMarker(env *pairtest.Env, crm pairtest.CRM) string {
+	if crm == env.Primary {
+		return "[cg-mirror:lunda:l-00000000-0000-4000-8000-0000000000fe]"
+	}
 	switch env.Primary.Type() {
 	case "viva":
 		return "[cg-mirror:viva:e-00000000-0000-4000-8000-0000000000ff]"
@@ -70,11 +74,11 @@ func TestT13S8ClubBookingsByteForByte(t *testing.T) {
 		}
 		book(env.Primary, "court-1", d(6, 8), d(6, 9), "the primary's club booking", "", true)
 		copied := env.Primary.Type() != "fitness1c" // a 1C rental has no comment to paste into
-		book(env.Primary, "court-1", d(6, 16), d(6, 17), "the primary's booking with a copied marker", copiedMarker(env), true)
+		book(env.Primary, "court-1", d(6, 16), d(6, 17), "the primary's booking with a copied marker", copiedMarker(env, env.Primary), true)
 		book(env.Mirror, "court-2", d(6, 12), d(6, 13), "Lunda's booking of a club's client", "", true)
 		// its mirror in Lunda's court 2 falls outside the mapping below
 		book(env.Primary, "court-2", d(6, 13), d(6, 14), "the primary's club booking on court-2", "", true)
-		book(env.Mirror, "court-1", d(6, 14), d(6, 15), "Lunda's booking of a club's client with a copied marker", copiedMarker(env), true)
+		book(env.Mirror, "court-1", d(6, 14), d(6, 15), "Lunda's booking of a club's client with a copied marker", copiedMarker(env, env.Mirror), true)
 		// two club bookings of court-2 overlapping across the CRMs: alarmed, neither mirrored
 		book(env.Primary, "court-2", d(6, 18), d(6, 19), "", "", false)
 		book(env.Mirror, "court-2", d(6, 18), d(6, 20), "", "", false)
