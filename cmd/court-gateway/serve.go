@@ -151,6 +151,10 @@ func serve(ctx context.Context, cfgPath, logFile string, stderr io.Writer, procE
 	// returning, as for the status loop
 	var bg sync.WaitGroup
 	bg.Go(func() { syncer.Run(ctx) })
+	if s.Mirror != nil {
+		// the reconciliation of the clubs kept in both CRMs: every minute
+		bg.Go(func() { core.RunMirrors(ctx, clubs, core.MirrorInterval, log) })
+	}
 	tunnelDone := make(chan struct{})
 	go func() {
 		defer close(tunnelDone)
@@ -355,7 +359,26 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 		return nil, nil, err
 	}
 	s.Driver.Account = acct // one CRM session for the account and its clubs
-	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: acct.CheckLogin})
+	ready := acct.CheckLogin
+	if s.Mirror != nil {
+		// the second CRM of the clubs (Lunda): one session of its own too,
+		// shared by every club the mirror serves
+		macct, err := core.BuildAccount(&core.Settings{CRMType: s.Mirror.CRMType}, drivers.Accounts, s.MirrorDriverConfig())
+		if err != nil {
+			return nil, nil, err
+		}
+		s.Mirror.Driver.Account = macct
+		ready = func(ctx context.Context) error {
+			if err := acct.CheckLogin(ctx); err != nil {
+				return err
+			}
+			if err := macct.CheckLogin(ctx); err != nil {
+				return &driver.MirrorError{Err: err}
+			}
+			return nil
+		}
+	}
+	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: ready})
 	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
 }
@@ -675,13 +698,18 @@ func cmdSelfcheck(args []string, stdout, stderr io.Writer, getenv func(string) s
 		if err := driver.EndSession(ectx, s.Driver.Account); err != nil {
 			fmt.Fprintln(stderr, "CRM session not ended (it expires by itself): "+err.Error())
 		}
+		if s.Mirror != nil {
+			if err := driver.EndSession(ectx, s.Mirror.Driver.Account); err != nil {
+				fmt.Fprintln(stderr, "mirror CRM session not ended (it expires by itself): "+err.Error())
+			}
+		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var alert *driver.ConfigAlert
 	if err := clubs.Ready(ctx); err != nil && !errors.As(err, &alert) { // an alert does not stop the update
 		fmt.Fprintln(stderr, "CRM: "+core.ReadyReason(err))
-		if core.ReadyReason(err) == "CRM_AUTH_FAILED" {
+		if r := core.ReadyReason(err); r == "CRM_AUTH_FAILED" || r == "MIRROR_CRM_AUTH_FAILED" {
 			return update.SelfCheckNotRunExit // the password, not this binary: one login, no verdict
 		}
 		return update.SelfCheckTransientExit
