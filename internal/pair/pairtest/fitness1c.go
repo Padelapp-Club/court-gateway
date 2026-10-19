@@ -29,9 +29,8 @@ const (
 
 // Fitness1CStub is the primary of a 1C:Fitness + Lunda pair.
 type Fitness1CStub struct {
-	Stub   *fitness1cstub.Stub
-	Server *httptest.Server
-	rooms  map[string]string // gateway court -> room
+	Stub  *fitness1cstub.Stub
+	rooms map[string]string // gateway court -> room
 }
 
 func (f *Fitness1CStub) Type() string { return "fitness1c" }
@@ -105,15 +104,12 @@ func Fitness1CLunda(t *testing.T, o Options) *Env {
 	stub.AddClient(F1CMirrorTech)
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	f := &Fitness1CStub{Stub: stub, Server: srv, rooms: map[string]string{"court-1": F1CRoom1, "court-2": F1CRoom2}}
+	f := &Fitness1CStub{Stub: stub, rooms: map[string]string{"court-1": F1CRoom1, "court-2": F1CRoom2}}
 	l := NewLunda(t)
 	l.Stub.Now = clock
 	spec := core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: lundaZoneName, SlotMinutes: 30,
 		Hours: map[string]string{"mon-sun": "07:00-23:00"}, CRM: map[string]any{"studio": F1CClub},
-		Services: map[string]map[string]any{"booking": {"service": F1CService}}, Mirror: o.Mirror}
-	if spec.Mirror == nil {
-		spec.Mirror = &core.MirrorSpec{}
-	}
+		Services: map[string]map[string]any{"booking": {"service": F1CService}}, Mirror: &core.MirrorSpec{}}
 	for _, c := range []string{"court-1", "court-2"} {
 		params := map[string]any{fitness1c.RoomKey: f.rooms[c]}
 		for k, val := range l.CourtParams(c) {
@@ -128,7 +124,7 @@ func Fitness1CLunda(t *testing.T, o Options) *Env {
 		return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server, clock)
 	}
 	n := mk(t)
-	return (&Env{Primary: f, Mirror: l, Courts: []string{"court-1", "court-2"},
+	return (&Env{Primary: f, Mirror: l,
 		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub, MarkerlessPrimary: true}).with(n, mk, clock)
 }
 

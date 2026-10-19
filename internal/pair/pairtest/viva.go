@@ -28,9 +28,8 @@ const vivaPricing = `{"id": "` + vivaPrices + `", "name": "Test", "basePrices": 
 
 // VivaStub is the primary of a Viva + Lunda pair.
 type VivaStub struct {
-	Stub   *vivastub.Stub
-	Server *httptest.Server
-	rooms  map[string]string // gateway court -> room
+	Stub  *vivastub.Stub
+	rooms map[string]string // gateway court -> room
 }
 
 func (v *VivaStub) Type() string { return "viva" }
@@ -141,14 +140,11 @@ func VivaLunda(t *testing.T, o Options) *Env {
 	stub.Now = clock
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	v := &VivaStub{Stub: stub, Server: srv, rooms: map[string]string{"court-1": VivaRoom1, "court-2": VivaRoom2}}
+	v := &VivaStub{Stub: stub, rooms: map[string]string{"court-1": VivaRoom1, "court-2": VivaRoom2}}
 	l := NewLunda(t)
 	l.Stub.Now = clock
 	spec := core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: lundaZoneName, SlotMinutes: 30,
-		Hours: map[string]string{"mon-sun": "07:00-23:00"}, CRM: map[string]any{"studio": VivaStudio}, Mirror: o.Mirror}
-	if spec.Mirror == nil {
-		spec.Mirror = &core.MirrorSpec{}
-	}
+		Hours: map[string]string{"mon-sun": "07:00-23:00"}, CRM: map[string]any{"studio": VivaStudio}, Mirror: &core.MirrorSpec{}}
 	for _, c := range []string{"court-1", "court-2"} {
 		params := map[string]any{"viva_room": v.rooms[c], "price_list": vivaPrices}
 		for k, val := range l.CourtParams(c) {
@@ -161,7 +157,7 @@ func VivaLunda(t *testing.T, o Options) *Env {
 		return build(t, crm, l.YAML(), spec, map[string]string{"CRM_PASSWORD": vivaPass}, srv.Client(), l.Stub, l.Server, clock)
 	}
 	n := mk(t)
-	return (&Env{Primary: v, Mirror: l, Courts: []string{"court-1", "court-2"},
+	return (&Env{Primary: v, Mirror: l,
 		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub}).with(n, mk, clock)
 }
 

@@ -84,7 +84,6 @@ type Env struct {
 	Pair            *pair.Pair
 	Built           *contract.Built
 	Handler         http.Handler
-	Courts          []string
 	Location        *time.Location
 	// Partner is the name of the partner of contract.BookKey.
 	Partner string
@@ -142,8 +141,6 @@ func (e *Env) with(n built, restart func(t *testing.T) built, clock func() time.
 
 // Options adjust a setup.
 type Options struct {
-	// Mirror is the club's mirror section (nil: mirror: {}).
-	Mirror *core.MirrorSpec
 	// At ("HH:MM"), when set, is the time of the club's day the CRM stubs
 	// and the hub (the gateway's decision clock) read when the Env is set
 	// up; their clock runs on in real time from there, so a scenario placed

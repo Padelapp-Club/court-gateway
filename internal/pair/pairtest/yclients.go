@@ -27,9 +27,8 @@ const (
 
 // YclientsStub is the primary of a YCLIENTS + Lunda pair.
 type YclientsStub struct {
-	Stub   *yclientsstub.Stub
-	Server *httptest.Server
-	staff  map[string]string // gateway court -> staff
+	Stub  *yclientsstub.Stub
+	staff map[string]string // gateway court -> staff
 }
 
 func (y *YclientsStub) Type() string { return "yclients" }
@@ -132,15 +131,12 @@ func YclientsLunda(t *testing.T, o Options) *Env {
 	stub.AddStaff(yclientsstub.Staff{ID: YStaff2, Name: "Корт 2", Bookable: true, Prepaid: "allowed", Services: services(32000)})
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
-	y := &YclientsStub{Stub: stub, Server: srv, staff: map[string]string{"court-1": YStaff1, "court-2": YStaff2}}
+	y := &YclientsStub{Stub: stub, staff: map[string]string{"court-1": YStaff1, "court-2": YStaff2}}
 	l := NewLunda(t)
 	l.Stub.Now = clock
 	spec := core.ClubSpec{ID: "test-club", Name: "Тестовый клуб", Timezone: lundaZoneName, SlotMinutes: 30,
 		Hours: map[string]string{"mon-sun": "07:00-23:00"},
-		CRM:   map[string]any{"company_id": YCompany, "client_phone": "+7 900 000-00-00"}, Mirror: o.Mirror}
-	if spec.Mirror == nil {
-		spec.Mirror = &core.MirrorSpec{}
-	}
+		CRM:   map[string]any{"company_id": YCompany, "client_phone": "+7 900 000-00-00"}, Mirror: &core.MirrorSpec{}}
 	for _, c := range []string{"court-1", "court-2"} {
 		params := map[string]any{yclients.RoomKey: y.staff[c]}
 		for k, val := range l.CourtParams(c) {
@@ -154,7 +150,7 @@ func YclientsLunda(t *testing.T, o Options) *Env {
 		return build(t, crm, l.YAML(), spec, env, srv.Client(), l.Stub, l.Server, clock)
 	}
 	n := mk(t)
-	return (&Env{Primary: y, Mirror: l, Courts: []string{"court-1", "court-2"},
+	return (&Env{Primary: y, Mirror: l,
 		Location: n.b.Settings.Location, Partner: "booker", LundaStub: l.Stub}).with(n, mk, clock)
 }
 

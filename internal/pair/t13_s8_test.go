@@ -159,7 +159,7 @@ func TestT13S8ClubBookingsByteForByte(t *testing.T) {
 		same("the fuse")
 
 		// court-2's Lunda room changes: Lunda's court 2 is mapped by no court
-		l.AddCourt(lundaCourt3, "Корт 3")
+		l.Stub.AddCourt(lundaCourt3, "Корт 3")
 		env.Respec(t, func(s *core.ClubSpec) { s.Courts[1].Params[lunda.CourtKey] = lundaCourt3 })
 		for range 2 {
 			rep := env.Settle(t)

@@ -114,10 +114,9 @@ func TestLundaHorizonIsTheBookingDepth(t *testing.T) {
 func TestUnmappedMirrorOnStubs(t *testing.T) {
 	t.Run("lunda", func(t *testing.T) {
 		env := pairtest.VivaLunda(t, pairtest.Options{})
-		const court3 = "00000000-0000-4000-8000-00000000a1c3"
-		env.LundaStub.AddCourt(court3, "Корт 3")
+		env.LundaStub.AddCourt(lundaCourt3, "Корт 3")
 		s := env.Day(2, 10, 0)
-		id := env.LundaStub.SeedBooking(lundastub.Booking{Court: court3, Begin: s, End: s.Add(time.Hour), Customer: pairtest.LundaService,
+		id := env.LundaStub.SeedBooking(lundastub.Booking{Court: lundaCourt3, Begin: s, End: s.Add(time.Hour), Customer: pairtest.LundaService,
 			Price: 0, Notes: "[cg-mirror:viva:e-00000000-0000-4000-8000-0000000000aa]"})
 		for i := range 2 {
 			if rep := env.Pass(t); !alarmed(rep, pair.AlarmUnmapped) || len(rep.Removed) > 0 {

@@ -122,10 +122,6 @@ func (l *LundaStub) Incomplete(t testing.TB) (string, func()) {
 	return "incomplete", func() {}
 }
 
-// AddCourt adds a court of the club to the Lunda stub, under uid, no
-// gateway court mapped to it.
-func (l *LundaStub) AddCourt(uid, name string) { l.Stub.AddCourt(uid, name) }
-
 // Live: a booking on the service client is the gateway's by its notes.
 func (l *LundaStub) Live(t testing.TB) []Entry {
 	var out []Entry
