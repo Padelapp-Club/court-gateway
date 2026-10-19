@@ -24,8 +24,7 @@ func TestCourtsAreReadFromInfos(t *testing.T) {
 		"old shape":        `{"result":[{"uid":"` + court1 + `","name":"Корт 1"}]}`,
 		"no infos":         `{"result":{"closureTypes":{}}}`,
 		"court without id": `{"result":{"infos":[{"title":"Корт 1"}]}}`,
-		// review r9: fields the driver does not read still have to be of
-		// their type
+		// fields the driver does not read still have to be of their type
 		"active not a boolean":       `{"result":{"infos":[{"courtUid":"` + court1 + `","active":"false","categoryInfo":{"id":"c"}},{"courtUid":"` + court2 + `","categoryInfo":{"id":"c"}}]}}`,
 		"category name not a string": `{"result":{"infos":[{"courtUid":"` + court1 + `","categoryInfo":{"id":"c","name":42}},{"courtUid":"` + court2 + `","categoryInfo":{"id":"c"}}]}}`,
 	} {

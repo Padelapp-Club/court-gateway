@@ -35,7 +35,7 @@ import (
 // lived 5 minutes, one with a ticket and no WebSocket 4+ minutes. Which of
 // the two is necessary is not separated, so the gateway does both, as the
 // admin does, for as long as it has a session: a keep-alive. Its frames
-// are dropped (the second wave will use them); neither a ticket nor a
+// are dropped (nothing reads them yet); neither a ticket nor a
 // frame is logged; its failure fails no call (WARN once per outage).
 // Through a proxy (Config.Proxy) the WebSocket is dialled directly.
 

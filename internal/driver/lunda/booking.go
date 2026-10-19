@@ -240,12 +240,11 @@ var decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
 // bookingGoal is the goal of every booking the gateway makes in Lunda, a
 // game or a tournament block alike: GENERAL ("other" in Lunda's own
 // labels, club/global-form-config), since a GAME or TOURNAMENT may surface
-// in Lunda's app to players (alex, 2026-10-17: «все наши записи надо
-// создавать как Other … чтобы не дай бог что-то не ушло в приложку лунды
-// пользователям»).
+// in Lunda's app to players, and nothing the gateway books may ever reach
+// them there.
 const bookingGoal = "GENERAL"
 
-// Create implements driver.Driver, as alex decided on 2026-10-17: an
+// Create implements driver.Driver: an
 // ordinary court booking of goal bookingGoal on the club's service client
 // (booking-create, placeholder false), adjusted by minus the booked court's
 // price (update-courts-price-adjustment) so it is PAID without any payment,
@@ -545,5 +544,5 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 }
 
 // MarkPaid implements driver.Driver: the gateway never writes a payment to
-// Lunda (REQ-394) — a payment there is a line in the club's till.
+// Lunda — a payment there is a line in the club's till.
 func (d *Driver) MarkPaid(context.Context, string, string) error { return driver.ErrNotSupported }

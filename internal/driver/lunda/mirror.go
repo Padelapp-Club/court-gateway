@@ -18,10 +18,10 @@ import (
 // whose notes are the marker and nothing else. A booking of the service
 // client is the gateway's by its notes: "[cg:<partner>]" a partner's,
 // "[cg-mirror:…]" a mirror's; without either it is the club's own (the
-// club books its tournaments on the same client, F4).
+// club books its tournaments on the same client).
 
 // mirrorDays bounds the days ahead the reconciliation reads Lunda: the
-// partners' sale and the pair's horizon are two weeks (RR-L-3); a longer
+// partners' sale and the pair's horizon are two weeks; a longer
 // booking depth is not read, so each pass reads at most 15 days.
 const mirrorDays = 14
 
@@ -149,7 +149,8 @@ func (d *Driver) MirrorInventory(ctx context.Context, q driver.OccupancyQuery) (
 }
 
 // unmappedMirrors are the gateway's mirrors on the day's courts that no
-// court of the config maps (F6, D14): bookings of the service client
+// court of the config maps (a court mapping changed under them):
+// bookings of the service client
 // whose notes, as the schedule gives them, read as a mirror's marker. One
 // listed without its notes is not read again: it is not the loop's to
 // judge, only to report when it can tell.

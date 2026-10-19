@@ -51,7 +51,7 @@ const (
 // refused as unknown (401 "missing auth token", seen 2026-10-17) — so it
 // is one fixed string that must never change between versions; the staff
 // member confirming a login sees it as "Linux / Chrome". No marker of the
-// gateway in it (alex 2026-10-17).
+// gateway in it.
 const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 // endpoint is one operation as the admin client calls it.
@@ -62,7 +62,7 @@ type endpoint struct {
 
 // endpoints are every call the driver makes, and the only ones it can make
 // (client.call refuses any other): each is a call of the club admin client
-// itself (REQ-394), as listed from its bundle and seen in its traffic on
+// itself, as listed from its bundle and seen in its traffic on
 // 2026-10-17. There is no payment, refund or external-payment operation
 // here, and there must never be one: the gateway does not touch the
 // club's till (add-ext-payment would write cash that is not in it).
@@ -126,7 +126,7 @@ type session struct {
 // client talks HTTP to Lunda. One client serves the installation's account
 // and all its clubs, with one session. A token Lunda refused is lost: it
 // is not sent again, nor taken again from the store, and while there is
-// no other no call at all is made — writes above all (REQ-395).
+// no other no call at all is made — writes above all.
 type client struct {
 	apiURL string
 	wsURL  string // the admin's WebSocket (keepalive.go)
@@ -568,7 +568,7 @@ func profileCurrent(ctx context.Context, c *client) error {
 // Active and CategoryInfo.Name are not read, but are decoded on purpose:
 // a court whose "active" is not a boolean or whose category name is not a
 // string fails decoding, so CheckConfig reports the answer as invalid
-// instead of passing a shape it does not know (review r9).
+// instead of passing a shape it does not know.
 type lundaCourt struct {
 	CourtUID     string `json:"courtUid"`
 	Title        string `json:"title"`

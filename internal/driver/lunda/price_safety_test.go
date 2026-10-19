@@ -2,7 +2,7 @@ package lunda_test
 
 // The price of a booking the gateway makes: the adjustment is minus the
 // price of the booked court alone, and the booking reads back at a net
-// court price of 0 (review r8, follow-ups 1 and 2).
+// court price of 0.
 
 import (
 	"context"

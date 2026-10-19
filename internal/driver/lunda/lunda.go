@@ -209,14 +209,16 @@ func (d *Driver) Resource(court string) string {
 	return "lunda " + d.c.apiURL + " " + d.byCourt[court].uid
 }
 
-// Capabilities: the gateway never writes a payment to Lunda (REQ-394);
+// Capabilities: the gateway never writes a payment to Lunda (a payment
+// there is a line in the club's till);
 // Lunda's prices are rubles.
 func (d *Driver) Capabilities() driver.Capabilities {
 	return driver.Capabilities{Payments: false, Currency: "RUB"}
 }
 
 // serviceClientAlert is the readiness alert of an installation whose
-// service client is not chosen: it reads, but does not book (REQ-396).
+// service client is not chosen: it reads, but does not book (bookings
+// are made on the service client).
 func serviceClientAlert() *driver.ConfigAlert {
 	return &driver.ConfigAlert{Code: "SERVICE_CLIENT_MISSING", Problems: []string{
 		"crm.service_client: служебный клиент клуба в Лунде не выбран — шлюз показывает расписание и цены, но брони в Лунду не ставит; выберите клиента при настройке шлюза (court-gateway setup)",

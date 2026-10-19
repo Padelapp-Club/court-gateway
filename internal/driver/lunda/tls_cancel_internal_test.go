@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Review r7: a stop that lands just as the wss TLS handshake returns
+// A stop that lands just as the wss TLS handshake returns
 // closes the raw connection; it never reads the connection variable the
 // TLS wrapper replaces (a data race on an interface value: run with -race).
 func TestTLSHandshakeCancelHasNoRace(t *testing.T) {

@@ -1,7 +1,8 @@
 package lunda
 
-// Regressions of review round r6: the reviewer's probes, asserting the
-// correct behaviour.
+// A constructor that fails sends nothing, and the WebSocket keep-alive
+// treats a Close or a frame RFC 6455 forbids as a protocol error and stops
+// its opening handshake with its context.
 
 import (
 	"bufio"
@@ -32,7 +33,7 @@ func (r *recordingRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: 500, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: req}, nil
 }
 
-// r6-1: a constructor that returns an error sends nothing — no saved token
+// A constructor that returns an error sends nothing — no saved token
 // to the rejected address above all: no client (and no keep-alive) is
 // made before the whole config is known valid.
 func TestInvalidConfigSendsNoToken(t *testing.T) {
@@ -105,7 +106,7 @@ func closeCode(p []byte) int {
 	return int(binary.BigEndian.Uint16(p))
 }
 
-// r6-2: a Close with a reserved or invalid status (or a bad reason) is a
+// A Close with a reserved or invalid status (or a bad reason) is a
 // protocol error: the gateway answers Close 1002, never echoes the status,
 // and drops the connection; a valid status is echoed.
 func TestWSCloseStatusIsValidated(t *testing.T) {
@@ -142,7 +143,7 @@ func TestWSCloseStatusIsValidated(t *testing.T) {
 	}
 }
 
-// r6-2: a frame RFC 6455 forbids — a fragmented ping, reserved bits, a
+// A frame RFC 6455 forbids — a fragmented ping, reserved bits, a
 // reserved opcode, a masked server frame, a control frame of more than 125
 // bytes, a continuation of nothing — is answered with Close 1002 and the
 // connection dropped; never a pong. A valid ping is answered with its pong.
@@ -180,7 +181,7 @@ func TestWSForbiddenFramesAreProtocolErrors(t *testing.T) {
 	}
 }
 
-// r6-3: a stop during the opening handshake ends it at once, not at the
+// A stop during the opening handshake ends it at once, not at the
 // handshake's deadline; EndSession waits no longer than its context.
 func TestHandshakeStopsWithItsContext(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

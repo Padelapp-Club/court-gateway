@@ -293,7 +293,7 @@ func upstreamKind(err error) driver.UpstreamKind {
 // every call and the WebSocket: Lunda binds a session to the User-Agent of
 // its login, so it may never change between versions (seen live
 // 2026-10-17: the same token with another one is 401 "missing auth
-// token"). It carries no marker of the gateway (alex 2026-10-17).
+// token"). It carries no marker of the gateway.
 const browserUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 // Every call, from the login on, and the WebSocket go with the one fixed

@@ -1,7 +1,7 @@
 package lunda_test
 
-// Regressions of the second review round: each asserts the correct
-// behaviour where the reviewer's probe showed the defect.
+// The price table's range, and rollbacks and cancel retries that go by
+// the booking as it is now.
 
 import (
 	"context"
@@ -32,8 +32,7 @@ func quote(t *testing.T, f *fixture, start time.Time) (int, int64) {
 	return rec.Code, q.Total
 }
 
-// r2-B1 (as of the live round: the range is the club's booking depth):
-// the price table covers exactly the dates it priced, from yesterday to
+// The price table covers exactly the dates it priced, from yesterday to
 // today plus the booking depth of club/settings, holidays included; a
 // date past it has no price — a holiday there is never quoted at its
 // weekday's rate.
@@ -72,7 +71,7 @@ func TestDatesOutsideTheReadCalendarHaveNoPrice(t *testing.T) {
 	}
 }
 
-// r2-B2: the rollback goes by the booking as it is now: one the club moved
+// The rollback goes by the booking as it is now: one the club moved
 // to a start that has passed is not cancelled; one that cannot be read
 // again is not cancelled either. Both stay, said and logged at ERROR.
 func TestRollbackGoesByTheBookingsCurrentStart(t *testing.T) {
@@ -141,7 +140,7 @@ func TestCancelRetryRechecksTheStart(t *testing.T) {
 	}
 }
 
-// Review r3: a cancel resent with a replacement session re-establishes
+// A cancel resent with a replacement session re-establishes
 // that the booking is still the gateway's, as it is NOW: the club may have
 // given it to one of its clients, rewritten its notes or moved it to a
 // court that is not the club's config. Then it is not sent again.
