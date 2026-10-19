@@ -17,7 +17,7 @@ import (
 // default fuse of 3 — no mirror removed, MIRROR_FUSE; the operator raises
 // mirror.max_removals on the hub and the very next pass removes them — in
 // 1C too, whose mirrors carry no marker: the club's new pair keeps what
-// the passes before it saw (D10).
+// the passes before it saw.
 func TestFuseOnStubs(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		var ids []string
@@ -71,7 +71,7 @@ func TestFailedPrimaryReadOnStubs(t *testing.T) {
 }
 
 // A Lunda booking of a club's client whose notes copy a mirror's marker is
-// the club's: never removed (F4).
+// the club's: never removed.
 func TestLundaMarkerOnClubClientIsTheClubs(t *testing.T) {
 	env := pairtest.VivaLunda(t, pairtest.Options{})
 	start := env.Day(4, 12, 0)

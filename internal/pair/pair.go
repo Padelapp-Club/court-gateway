@@ -1,16 +1,16 @@
 // Package pair serves a club kept in two CRMs of one installation — its
 // primary CRM (Viva, YCLIENTS or 1C:Fitness) and Lunda, the mirror — as one
-// driver.Driver, so for partners the club is one gateway club (REQ-397):
+// driver.Driver, so for partners the club is one gateway club:
 //
 //   - occupancy is the union of both, complete only when both are;
 //   - a partner's booking is made in the primary, then in the mirror; when
 //     the mirror refuses, the primary's is cancelled again and the partner
-//     refused (never half a booking, REQ-398 б);
+//     refused (never half a booking);
 //   - a cancel cancels the partner's booking in both;
 //   - reads, prices and hours are the primary's.
 //
 // Reconcile is one pass of the reconciliation loop (reconcile.go): what the
-// club booked directly in one CRM is blocked in the other (REQ-398 в–е).
+// club booked directly in one CRM is blocked in the other.
 // The pair keeps no CRM data between calls: which block mirrors which
 // booking is read every pass from the blocks' markers in the CRMs.
 package pair
@@ -74,7 +74,7 @@ type Options struct {
 // one CRM), the passes cut off by MaxCreates, and the alarms. It outlives
 // a pair: every new config of the club from the hub (the operator raising
 // mirror.max_removals among them) builds a new pair, and handing it the
-// Memory of the one before keeps that evidence (D10). The passes of every
+// Memory of the one before keeps that evidence. The passes of every
 // pair of one Memory run one at a time. A restart loses it: a removal then
 // waits for passes in a row again.
 type Memory struct {
@@ -115,7 +115,7 @@ type mirrorChecker interface {
 
 // New builds the pair of a club's primary driver a and mirror driver b.
 // A driver that cannot keep mirrors is refused: a club is never served by
-// two CRMs without the loop that keeps them in step (F13).
+// two CRMs without the loop that keeps them in step.
 func New(a, b driver.Driver, o Options) (*Pair, error) {
 	var problems []string
 	am, ok := a.(driver.Mirrorer)
@@ -296,7 +296,7 @@ func (p *Pair) PriceTable(ctx context.Context, court string) (driver.PriceTable,
 // primary's is cancelled again under its own context and the partner gets
 // the mirror's error; when that cancel fails too, the booking is in one
 // CRM only: the partner gets an error that says so, the log an ERROR and
-// the hub an alarm (RR-W2-1). The partner's id is the primary's: the
+// the hub an alarm. The partner's id is the primary's: the
 // mirror's half is found by its court, time and the partner's marker.
 func (p *Pair) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
 	bk, err := p.a.Create(ctx, req)
@@ -338,7 +338,7 @@ func (p *Pair) Cancel(ctx context.Context, id string, partner string) error {
 		return err
 	}
 	// the court's lock in both CRMs, the one a partner's create and the
-	// loop's writes hold (D18): no write of the loop on the court goes in
+	// loop's writes hold: no write of the loop on the court goes in
 	// between the two cancels
 	unlock, err := p.lock(ctx, bk.Court)
 	if err != nil {
@@ -377,7 +377,7 @@ func (p *Pair) halves(ctx context.Context, bk driver.Booking, partner string) ([
 }
 
 // MarkPaid implements driver.Driver: the primary's mark; nothing is ever
-// paid in the mirror (Lunda's till is not touched, REQ-394).
+// paid in the mirror (the gateway never writes a payment to Lunda's till).
 func (p *Pair) MarkPaid(ctx context.Context, id string, partner string) error {
 	return p.a.MarkPaid(ctx, id, partner)
 }

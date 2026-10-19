@@ -89,9 +89,9 @@ func (c *schedClock) next(t *testing.T, n int) {
 	}
 }
 
-// D11: a 1C mirror carries no marker, so it goes on the second pass in a
+// A 1C mirror carries no marker, so it goes on the second pass in a
 // row that finds its Lunda source gone — and that must still be within 2
-// minutes of the club's cancel (scenario 7). The schedule runs the club's
+// minutes of the club's cancel. The schedule runs the club's
 // extra pass core.MirrorRecheck after the pass that first found it invalid
 // started, not a whole interval later. The cancel lands at the worst
 // moment, right after a pass read Lunda; passes take no time, or 25 s each

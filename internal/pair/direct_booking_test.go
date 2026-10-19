@@ -1,6 +1,6 @@
 package pair_test
 
-// T13, scenario 7: a booking made directly in one CRM blocks the slot in
+// A booking made directly in one CRM blocks the slot in
 // the other CRM and in PadelApp's sale within 2 minutes of loop time; its
 // cancellation and its move free it within 2 minutes — both directions,
 // every pair.
@@ -34,7 +34,7 @@ const passTook = 25 * time.Second
 //     booking's (its marker, where the CRM keeps one);
 //  4. that one is cancelled: within 2 minutes no mirror is left and the
 //     slot sells (201).
-func TestT13S7WithinTwoMinutes(t *testing.T) {
+func TestDirectBookingBlocksOtherCRMWithinTwoMinutes(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		for i, d := range directions(env) {
 			t.Run(d.name, func(t *testing.T) {
@@ -157,7 +157,7 @@ func mirrorers(env *pairtest.Env, d direction) (src, dst driver.Mirrorer) {
 	return src, dst
 }
 
-// D8 on every pair, both ways: a club booking under way (begun 30 minutes
+// The window starting at now, on every pair, both ways: a club booking under way (begun 30 minutes
 // before the last step of the grid, ending on the grid) and one starting
 // in 3 minutes (off the grid) are blocked by the next pass — the one under
 // way from the next step of the grid, nothing in the past — and the passes
@@ -165,7 +165,7 @@ func mirrorers(env *pairtest.Env, d direction) (src, dst driver.Mirrorer) {
 // (one that has not begun and starts beyond the lead). The CRMs and the
 // hub read 15:10 of the club's day when it is set up (Options.At): the
 // next step of the grid is 20 minutes ahead whenever the test runs.
-func TestT13S7UnderWayAndAboutToStart(t *testing.T) {
+func TestDirectBookingUnderWayAndAboutToStart(t *testing.T) {
 	eachPairDirAt(t, pairtest.Options{At: "15:10"}, func(t *testing.T, env *pairtest.Env, d direction) {
 		srcM, dstM := mirrorers(env, d)
 		// the source as its CRM shows it (1C: its busy time, whole seances)
@@ -218,7 +218,7 @@ func TestT13S7UnderWayAndAboutToStart(t *testing.T) {
 // mirror itself carries no marker). Such a source crossing the window's
 // end when the window shrinks keeps its mirror pass after pass. The club's
 // time is 15:10 when it is set up (Options.At): the edge is in its hours.
-func TestT13S7HorizonEdgeWithoutPointRead(t *testing.T) {
+func TestDirectBookingHorizonEdgeWithoutPointRead(t *testing.T) {
 	eachPairAt(t, pairtest.Options{At: "15:10"}, func(t *testing.T, env *pairtest.Env) {
 		env.LundaStub.BookingDepth = 14
 		edge := env.Now().In(env.Location).Add(7*24*time.Hour - time.Hour)
@@ -243,7 +243,7 @@ func TestT13S7HorizonEdgeWithoutPointRead(t *testing.T) {
 	})
 }
 
-// T13-F1, scenario 7: a booking's cancellation frees its slot in the
+// A booking's cancellation frees its slot in the
 // other CRM — and in the partners' sale, the union of both — within 2
 // minutes, also when the club cancels it minutes before its start, so that
 // its block starts within pair.Lead: a block that has not started is
@@ -253,7 +253,7 @@ func TestT13S7HorizonEdgeWithoutPointRead(t *testing.T) {
 // booking starts at 15:29, off the grid, and its block within the lead on
 // every pair, both ways — in 1C, which books whole seances, from the next
 // step of the grid, 15:30.
-func TestT13S7FindingCancelWithinLead(t *testing.T) {
+func TestDirectBookingCancelWithinLead(t *testing.T) {
 	eachPairDirAt(t, pairtest.Options{At: "15:26"}, func(t *testing.T, env *pairtest.Env, d direction) {
 		n := env.Now().In(env.Location)
 		start := n.Truncate(time.Minute).Add(3 * time.Minute)
@@ -291,7 +291,7 @@ func TestT13S7FindingCancelWithinLead(t *testing.T) {
 // source crosses the window's end or lies wholly beyond it; with the depth
 // back the pass changes nothing. The club's time is 15:10 when it is set up
 // (Options.At): the edge is in its hours.
-func TestT13S7HorizonEdge(t *testing.T) {
+func TestDirectBookingHorizonEdge(t *testing.T) {
 	eachPairAt(t, pairtest.Options{At: "15:10"}, func(t *testing.T, env *pairtest.Env) {
 		for i, d := range directions(env) {
 			t.Run(d.name, func(t *testing.T) {

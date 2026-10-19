@@ -1,7 +1,8 @@
 package pair_test
 
-// Regressions of scenarios found by the probes of the dual-build
-// comparison (2026-10-20).
+// Reconciliation edge cases on the CRM stubs: a move, a slot booked
+// again, adjacent 1C rentals, a restart between a partner's two writes, a
+// Lunda half that lost its marker, and a large YCLIENTS club.
 
 import (
 	"context"

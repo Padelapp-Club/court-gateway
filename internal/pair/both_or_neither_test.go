@@ -1,6 +1,6 @@
 package pair_test
 
-// T13, scenario 6: a PadelApp booking lands in both CRMs or in neither, on
+// A PadelApp booking lands in both CRMs or in neither, on
 // every pair.
 
 import (
@@ -22,7 +22,7 @@ func partners(t testing.TB, env *pairtest.Env) (primary, mirror []pairtest.Entry
 
 // The first write is refused (the primary's): nothing is written to Lunda
 // at all, the partner is refused, the slot sells again at once.
-func TestT13S6PrimaryRefusesNeither(t *testing.T) {
+func TestBothOrNeitherPrimaryRefuses(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(2, 12, 0)
 		env.Primary.Fail(t, "create")
@@ -41,13 +41,13 @@ func TestT13S6PrimaryRefusesNeither(t *testing.T) {
 	})
 }
 
-// RR-W2-1 on the hub: Lunda refuses and the rollback of the primary's half
+// On the hub: Lunda refuses and the rollback of the primary's half
 // fails. The partner is refused; the club's readiness carries
 // MIRROR_HALF_BOOKING with a detail naming the court, the time and the
 // booking (no CRM words, no client data); the alarm stays pass after pass
 // (the sticky alarm hands over to the pass's own half-booking rule); no
 // pass repairs anything — the half is neither cancelled nor completed.
-func TestT13S6RollbackFailsReachesTheHub(t *testing.T) {
+func TestBothOrNeitherRollbackFailureReachesTheHub(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(2, 14, 0)
 		env.Mirror.Fail(t, "create")
@@ -88,7 +88,7 @@ func TestT13S6RollbackFailsReachesTheHub(t *testing.T) {
 
 // The primary's half fails to cancel: the partner's cancel is an error,
 // both halves stay (both, not one), and a retry cancels both.
-func TestT13S6CancelPrimaryHalfFails(t *testing.T) {
+func TestBothOrNeitherCancelPrimaryHalfFails(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(3, 12, 0)
 		st, id := env.Create(t, "court-2", start, start.Add(time.Hour))
@@ -118,7 +118,7 @@ func TestT13S6CancelPrimaryHalfFails(t *testing.T) {
 // first (nothing remembered from before it), and a restart between the two
 // passes starts the count again; nothing is ever cancelled, completed or
 // mirrored for it.
-func TestT13S6HalfBookingAfterRestart(t *testing.T) {
+func TestBothOrNeitherHalfBookingAfterRestart(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		for _, c := range []struct {
 			name  string

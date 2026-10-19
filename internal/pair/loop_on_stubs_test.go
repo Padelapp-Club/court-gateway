@@ -1,7 +1,8 @@
 package pair_test
 
-// Regressions of D8–D20 of the dual-build comparison (2026-10-20), on the
-// CRM stubs.
+// The reconciliation loop's rules on the CRM stubs: the window starting at
+// now, Lunda's horizon, unmapped mirrors, the fuse's alarm text, the
+// court's lock on a partner's cancel and the 1C mirror client.
 
 import (
 	"context"
@@ -28,7 +29,7 @@ func gridAfter(t time.Time, loc *time.Location) time.Time {
 	return step
 }
 
-// D8 on the stubs: a club booking
+// The window starts at now: a club booking
 // that starts in 3 minutes, and one under way since 10 minutes ago, get
 // their mirrors in the other CRM by the next pass — the one under way from
 // the next step of the 30-minute grid, never from the past — both ways.
@@ -64,7 +65,7 @@ func TestBookingAboutToStartOrUnderWayIsMirrored(t *testing.T) {
 	}
 }
 
-// D9: Lunda's horizon is its club's booking depth, read every pass. With a
+// Lunda's horizon is its club's booking depth, read every pass. With a
 // depth of 7 days a pass reads 7 days, is complete and mirrors; a booking
 // of the primary beyond the depth waits for the window (no alarm); when the
 // club lengthens its depth, the next pass mirrors it.
@@ -107,7 +108,7 @@ func TestLundaHorizonIsTheBookingDepth(t *testing.T) {
 	}
 }
 
-// D14 on the stubs (F6): the gateway's mirror on a court of the CRM that
+// The gateway's mirror on a court of the CRM that
 // the club's mapping does not name — Lunda's service-client booking with a
 // mirror's marker, 1C's rental of the mirror client — raises
 // MIRROR_UNMAPPED and is never touched.
@@ -147,7 +148,7 @@ func TestUnmappedMirrorOnStubs(t *testing.T) {
 	})
 }
 
-// D12 on the stubs: the fuse's alarm — its count, its limit and the way out
+// The fuse's alarm — its count, its limit and the way out
 // — is the readiness detail the heartbeat carries to the hub, the club's
 // readiness code MIRROR_FUSE; no CRM's words, no client's data in it.
 func TestFuseAlarmTextIsTheReadinessDetail(t *testing.T) {
@@ -171,7 +172,7 @@ func TestFuseAlarmTextIsTheReadinessDetail(t *testing.T) {
 	}
 }
 
-// D18: a partner's cancel takes the court's lock in both CRMs — the one
+// A partner's cancel takes the court's lock in both CRMs — the one
 // the loop's writes and a partner's create hold — so it waits while it is
 // held, and completes once it is released.
 func TestPartnerCancelTakesTheCourtLock(t *testing.T) {
@@ -207,7 +208,7 @@ func TestPartnerCancelTakesTheCourtLock(t *testing.T) {
 	}
 }
 
-// D15: a 1C mirror is told by the mirror client alone. A mirror whose
+// A 1C mirror is told by the mirror client alone. A mirror whose
 // service the club edits is still the gateway's: kept while its source
 // stands, never taken for the club's busy time (nor mirrored back into
 // Lunda), removed once its source is gone.

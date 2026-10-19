@@ -1,6 +1,6 @@
 package pair_test
 
-// T13, scenario 8: no pass ever cancels or changes a club's own booking —
+// No pass ever cancels or changes a club's own booking —
 // only the gateway's own mirrors — and the fuse and the incomplete read
 // that guard it, on every pair.
 
@@ -44,7 +44,7 @@ const lundaCourt3 = "00000000-0000-4000-8000-00000000a1c3"
 // mirror.max_removals, and a court mapping changed so that mirrors fall
 // outside it (and back). Every club booking that may be mirrored is (the
 // one with a copied marker too); every write of every pass is a mirror's.
-func TestT13S8ClubBookingsByteForByte(t *testing.T) {
+func TestClubBookingsStayByteForByte(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		d := func(day, h int) time.Time { return env.Day(day, h, 0) }
 		type want struct {
@@ -195,7 +195,7 @@ func TestT13S8ClubBookingsByteForByte(t *testing.T) {
 // limit, the hub's readiness MIRROR_FUSE with that text; the operator
 // raises mirror.max_removals on the hub and the very next pass removes all
 // four (1C's markerless mirrors too: the club's memory outlives the pair).
-func TestT13FuseBothWays(t *testing.T) {
+func TestFuseBothWays(t *testing.T) {
 	eachPairDir(t, func(t *testing.T, env *pairtest.Env, d direction) {
 		var ids []string
 		for i := range 4 {
@@ -238,7 +238,7 @@ func TestT13FuseBothWays(t *testing.T) {
 // incomplete answer) writes nothing at all — no create, no removal, in
 // either CRM — though a create and a removal are due both ways; the next
 // pass makes them.
-func TestT13IncompleteReadWritesNothing(t *testing.T) {
+func TestIncompleteReadWritesNothing(t *testing.T) {
 	for _, p := range pairs {
 		t.Run(p.name, func(t *testing.T) {
 			if p.name != "yclients+lunda" {

@@ -33,8 +33,8 @@ func alarmed(rep pair.Report, code string) bool {
 	return slices.ContainsFunc(rep.Alarms, func(a pair.Alarm) bool { return a.Code == code })
 }
 
-// Scenario 6: a partner's booking is in both CRMs or in neither.
-func TestScenario6BothOrNeither(t *testing.T) {
+// A partner's booking is in both CRMs or in neither.
+func TestPartnerBookingInBothOrNeither(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(2, 10, 0)
 		end := start.Add(time.Hour)
@@ -65,9 +65,9 @@ func TestScenario6BothOrNeither(t *testing.T) {
 	})
 }
 
-// Scenario 6: the mirror refuses — the primary's half is cancelled again
+// The mirror refuses — the primary's half is cancelled again
 // and the partner refused: in neither.
-func TestScenario6MirrorRefusesNeither(t *testing.T) {
+func TestMirrorRefusesBookingInNeither(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(2, 12, 0)
 		env.Mirror.Fail(t, "create")
@@ -85,9 +85,9 @@ func TestScenario6MirrorRefusesNeither(t *testing.T) {
 	})
 }
 
-// Scenario 6: the mirror's half fails to cancel — the partner's cancel is
+// The mirror's half fails to cancel — the partner's cancel is
 // an error, and a retry cancels both.
-func TestScenario6CancelBothOrError(t *testing.T) {
+func TestPartnerCancelBothOrError(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(3, 10, 0)
 		st, id := env.Create(t, "court-1", start, start.Add(90*time.Minute))
@@ -107,9 +107,9 @@ func TestScenario6CancelBothOrError(t *testing.T) {
 	})
 }
 
-// Scenario 7: a booking made in the mirror (Lunda) is blocked in the
+// A booking made in the mirror (Lunda) is blocked in the
 // primary within one pass, its cancel unblocks it.
-func TestScenario7MirrorToPrimary(t *testing.T) {
+func TestDirectBookingMirrorToPrimary(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(2, 18, 0)
 		end := start.Add(90 * time.Minute)
@@ -153,9 +153,9 @@ func TestScenario7MirrorToPrimary(t *testing.T) {
 	})
 }
 
-// Scenario 7: a booking made in the primary is blocked in Lunda within one
+// A booking made in the primary is blocked in Lunda within one
 // pass, its cancel unblocks it.
-func TestScenario7PrimaryToMirror(t *testing.T) {
+func TestDirectBookingPrimaryToMirror(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(4, 9, 0)
 		end := start.Add(time.Hour)
@@ -184,9 +184,9 @@ func TestScenario7PrimaryToMirror(t *testing.T) {
 	})
 }
 
-// Scenario 7: a booking moved in its CRM (its id kept) gets a mirror at
+// A booking moved in its CRM (its id kept) gets a mirror at
 // its new time, and loses the old one, in one pass.
-func TestScenario7Move(t *testing.T) {
+func TestDirectBookingMove(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(5, 11, 0)
 		id := env.Mirror.Book(t, "court-1", start, start.Add(time.Hour))
@@ -207,9 +207,9 @@ func TestScenario7Move(t *testing.T) {
 	})
 }
 
-// Scenario 7: within 2 minutes without anyone calling a pass — the loop
+// A direct booking is blocked within 2 minutes without anyone calling a pass — the loop
 // runs every core.MirrorInterval (1 minute) by itself.
-func TestScenario7LoopRunsByItself(t *testing.T) {
+func TestDirectBookingLoopRunsByItself(t *testing.T) {
 	if core.MirrorInterval > time.Minute {
 		t.Fatalf("the loop runs every %s: a booking would wait longer than 2 minutes", core.MirrorInterval)
 	}
@@ -230,9 +230,9 @@ func TestScenario7LoopRunsByItself(t *testing.T) {
 	})
 }
 
-// Scenario 8: no pass cancels or changes a club's booking — of either CRM,
+// No pass cancels or changes a club's booking — of either CRM,
 // whatever happens to the mirrors around it.
-func TestScenario8ClubBookingsUntouched(t *testing.T) {
+func TestClubBookingsUntouched(t *testing.T) {
 	each(t, func(t *testing.T, env *pairtest.Env) {
 		d := func(h int) time.Time { return env.Day(6, h, 0) }
 		env.Primary.Book(t, "court-1", d(8), d(9))
@@ -240,7 +240,7 @@ func TestScenario8ClubBookingsUntouched(t *testing.T) {
 		gone := env.Mirror.Book(t, "court-1", d(12), d(13))
 		env.Mirror.Book(t, "court-2", d(14), d(15))
 		// the club's booking carrying a copy of a mirror's marker of no
-		// existing source: still the club's (F4)
+		// existing source: still the club's
 		copied := env.Primary.Book(t, "court-1", d(16), d(17))
 		env.Primary.Annotate(t, copied, "[cg-mirror:lunda:l-00000000-0000-4000-8000-0000000000ff]")
 		// two club bookings overlapping across the CRMs: an alarm, nothing touched
@@ -289,9 +289,9 @@ func sameEntries(a, b []pairtest.Entry) bool {
 	return slices.Equal(ka, kb)
 }
 
-// Scenario 8: a club's booking on Lunda's service client without a marker
+// A club's booking on Lunda's service client without a marker
 // (the club's own tournament) is the club's: mirrored, never removed.
-func TestScenario8ServiceClientWithoutMarkerIsTheClubs(t *testing.T) {
+func TestServiceClientWithoutMarkerIsTheClubs(t *testing.T) {
 	env := pairtest.VivaLunda(t, pairtest.Options{})
 	lunda := env.Mirror.(*pairtest.LundaStub)
 	start := env.Day(3, 15, 0)
@@ -307,9 +307,9 @@ func TestScenario8ServiceClientWithoutMarkerIsTheClubs(t *testing.T) {
 	}
 }
 
-// Scenario 8, a damaged marker: a booking of the service client whose
+// A damaged marker: a booking of the service client whose
 // notes start like a mirror's but do not read is touched by nobody.
-func TestScenario8DamagedMarkerUntouched(t *testing.T) {
+func TestDamagedMarkerUntouched(t *testing.T) {
 	env := pairtest.VivaLunda(t, pairtest.Options{})
 	lunda := env.Mirror.(*pairtest.LundaStub)
 	start := env.Day(3, 9, 0)
@@ -323,7 +323,7 @@ func TestScenario8DamagedMarkerUntouched(t *testing.T) {
 	}
 }
 
-// Scenario 6, F2: a partner's booking found in one CRM only, in two
+// A partner's booking found in one CRM only, in two
 // passes in a row, raises an alarm; nothing is cancelled or made.
 func TestHalfBookingDetected(t *testing.T) {
 	env := pairtest.VivaLunda(t, pairtest.Options{})

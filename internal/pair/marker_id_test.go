@@ -38,7 +38,7 @@ func retag(t *testing.T, crm pairtest.CRM, handle, old, new string) {
 // and span — is not that booking's mirror: it is removed (its point read
 // finds no such source) and a mirror with the whole id is made. Both ways
 // where the target keeps a marker (1C's mirrors have none).
-func TestT13MarkerIDIsWhole(t *testing.T) {
+func TestMirrorMarkerIDIsWhole(t *testing.T) {
 	eachPairDir(t, func(t *testing.T, env *pairtest.Env, d direction) {
 		if d.markerless {
 			t.Skip("1C's mirrors carry no marker: no id to compare")

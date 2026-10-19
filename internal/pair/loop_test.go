@@ -295,7 +295,7 @@ func TestIncompleteReadAbortsPass(t *testing.T) {
 	}
 }
 
-// F11: a mirror whose source the full read missed is removed only after a
+// A mirror whose source the full read missed is removed only after a
 // point read of the source says it is gone; a point read that fails keeps
 // it.
 func TestPointReadBeforeRemoval(t *testing.T) {
@@ -362,7 +362,7 @@ func TestTwoPassesWithoutPointRead(t *testing.T) {
 	})
 }
 
-// "Two passes in a row" are two COMPLETE passes in a row (F11, D16): a pass
+// "Two passes in a row" are two COMPLETE passes in a row: a pass
 // aborted on an incomplete or failed read, or skipped without the hub's
 // time, between them starts the count again.
 func TestTwoPassesResetByAbortedPass(t *testing.T) {
@@ -404,7 +404,7 @@ func TestTwoPassesResetByAbortedPass(t *testing.T) {
 	}
 }
 
-// D14 (F6): a mirror on a room no court of the club maps, and a mirror
+// A mirror on a room no court of the club maps, and a mirror
 // whose marker names a CRM that is not the other one of the pair, are
 // never touched — not removed though no source is found, not taken for a
 // source's mirror — and each raises MIRROR_UNMAPPED, pass after pass.
@@ -434,7 +434,7 @@ func TestUnmappedMirrorsAreReportedNotTouched(t *testing.T) {
 	}
 }
 
-// D10: the fuse's way out for markerless mirrors. The club's Memory
+// The fuse's way out for markerless mirrors. The club's Memory
 // outlives its pair: a pair built for a new config (the operator raising
 // mirror.max_removals) with the Memory of the one before removes, in its
 // first pass, the markerless mirrors the passes before found invalid; a
@@ -504,7 +504,7 @@ func TestOnlyClubItemsAreMirrored(t *testing.T) {
 	}
 }
 
-// F9: under the court's lock the target is read again; something there
+// Under the court's lock the target is read again; something there
 // that the plan did not see stops the creation (and alarms).
 func TestReadAgainUnderLock(t *testing.T) {
 	l := newLoop(t)
@@ -549,7 +549,7 @@ func TestLoopWritesUnderCourtLock(t *testing.T) {
 	}
 }
 
-// The window starts at now (D8): a club's booking about to start (within
+// The window starts at now: a club's booking about to start (within
 // Lead) is mirrored whole, one under way from the first step of the
 // 30-minute grid after now — no block starts in the past — and both
 // mirrors stay valid as time goes on; one ending before that step, or past
@@ -586,13 +586,13 @@ func TestWindow(t *testing.T) {
 	}
 }
 
-// T13-F1's bound: a mirror within Lead is judged only while every source it
+// The bound on the lead: a mirror within Lead is judged only while every source it
 // could be valid for overlaps the range read whole. In a CRM that books
 // whole seances (1C, no marker) the block 09:30–10:00 within the lead at
 // 09:28 is also the block of a booking 09:30–09:32, which ends before the
 // range read (from 09:33) and need not be listed: invalid as it looks pass
 // after pass, it is left alone. (A block of more than one seance within
-// the lead is judged and removed: TestT13S7FindingCancelWithinLead.)
+// the lead is judged and removed: TestDirectBookingCancelWithinLead.)
 func TestLeadMirrorWhoseSourceMayEndBeforeTheReadIsKept(t *testing.T) {
 	l := newLoop(t, func(o *pair.Options) { o.PrimaryType = "fitness1c" })
 	l.a.typ = "fitness1c"
@@ -610,7 +610,7 @@ func TestLeadMirrorWhoseSourceMayEndBeforeTheReadIsKept(t *testing.T) {
 	}
 }
 
-// D8 with a CRM that books whole seances (1C): a booking starting at
+// The window starting at now, with a CRM that books whole seances (1C): a booking starting at
 // 09:15 when it is 09:05 is rounded out to 09:00, a seance begun — its
 // block starts at the next step, 09:30, not in the past.
 func TestWindowRoundedBlockNeverStartsInThePast(t *testing.T) {
@@ -711,7 +711,7 @@ func TestOverlapOfMirroredClubBookings(t *testing.T) {
 	}
 }
 
-// A pair is not made of a driver that cannot keep mirrors (F13).
+// A pair is not made of a driver that cannot keep mirrors.
 func TestPairNeedsMirrorers(t *testing.T) {
 	if _, err := pair.New(plainDriver{}, &fakeCRM{typ: "lunda"}, pair.Options{PrimaryType: "demo", MirrorType: "lunda"}); err == nil {
 		t.Fatal("a pair with a driver that cannot keep mirrors")

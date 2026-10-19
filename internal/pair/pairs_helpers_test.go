@@ -1,6 +1,8 @@
 package pair_test
 
-// Helpers of the T13 matrix (scenarios 6–8 on the three stub pairs).
+// Helpers of the tests run on the three stub pairs (a partner's booking in
+// both CRMs or neither, direct bookings blocked in the other CRM, club
+// bookings never touched).
 
 import (
 	"context"

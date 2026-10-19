@@ -145,7 +145,7 @@ func (l *LundaStub) Live(t testing.TB) []Entry {
 }
 
 // CheckMirrorBookings fails t unless every mirror of the stub is a
-// gateway booking as REQ-394 has it: PAID, no payment, net price 0.
+// gateway booking as the gateway writes it to Lunda: PAID, no payment, net price 0.
 func (l *LundaStub) CheckMirrorBookings(t testing.TB) {
 	t.Helper()
 	for _, b := range l.Stub.Bookings() {

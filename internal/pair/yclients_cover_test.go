@@ -7,7 +7,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/pair/pairtest"
 )
 
-// R4 (clean-room review of wave 2): a Lunda booking whose length the
+// A Lunda booking whose length the
 // YCLIENTS court's services (30, 60, 90 and 120 minutes on the stub) cannot
 // make up is blocked in YCLIENTS by the shortest length they make up that
 // covers it — over, never under — in one pass; the next passes leave that

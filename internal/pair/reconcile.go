@@ -12,7 +12,7 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
 )
 
-// The reconciliation loop (REQ-398 в–е). A pass reads both CRMs whole over
+// The reconciliation loop. A pass reads both CRMs whole over
 // its window, plans everything, then writes:
 //
 //   - a club booking of one CRM (an item of class club) with no valid
@@ -42,7 +42,7 @@ import (
 // (memo, in the club's Memory: kept across a new config of the club, lost
 // with the process).
 
-// The window of a pass (D8) starts at now, the hub's signed time: a club
+// The window of a pass starts at now, the hub's signed time: a club
 // booking under way or about to start is mirrored as well as a later one
 // (a booking that ends past the horizon is left for a later pass, when it
 // is within it).
@@ -54,7 +54,7 @@ import (
 // the lead is mirrored as the read lists it. A mirror is removed when it
 // lies within the range read whole — or when it starts within the lead but
 // has not started, and every source it could be valid for overlaps that
-// range (removable): the same evidence then holds for it (T13-F1, a club
+// range (removable): the same evidence then holds for it (so a club
 // booking cancelled minutes before its start frees its slot).
 const Lead = 5 * time.Minute
 
@@ -124,7 +124,7 @@ type Report struct {
 	// Recheck: the pass found a mirror invalid that only a second pass in
 	// a row may remove (no marker, no point read of its source) and had not
 	// found so before: the sooner the next pass, the sooner it goes (the
-	// scheduler runs one Recheck later, D11).
+	// scheduler runs one Recheck later).
 	Recheck bool
 }
 
@@ -172,7 +172,7 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 	}
 	A := &side{typ: p.o.PrimaryType, m: p.am, name: crmName(p.o.PrimaryType)}
 	B := &side{typ: p.o.MirrorType, m: p.bm, name: crmName(p.o.MirrorType)}
-	// the window ends at the shorter horizon of the two CRMs (D9: Lunda's
+	// the window ends at the shorter horizon of the two CRMs (Lunda's
 	// is its club's booking depth, read now)
 	var ha, hb time.Duration
 	var ea, eb error
@@ -199,7 +199,7 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 	}
 	if rep.Aborted {
 		// a pass that did not read both CRMs whole breaks "two complete
-		// passes in a row" (F11, D16): what the passes before saw is
+		// passes in a row": what the passes before saw is
 		// forgotten, the count starts again from the next complete pass
 		p.finish(&rep, &memo{})
 		return rep
@@ -297,7 +297,7 @@ func (p *Pair) alarmAlert() *driver.ConfigAlert {
 		out.Problems = append(out.Problems, a.Problem)
 	}
 	// the alarms' texts are the loop's own templates (courts, times,
-	// counts, ids; errText for a failure): the hub shows them (D12)
+	// counts, ids; errText for a failure): the hub shows them
 	out.Detail = slices.Clone(out.Problems)
 	return out
 }
@@ -353,7 +353,7 @@ func inWindow(start, end, from, to time.Time) bool { return !start.Before(from) 
 // [from, to), so a source still there was listed by the read (or, with a
 // marker, is found by the point read remove makes before any removal).
 // That holds for a mirror wholly within [from, to]; for one that starts
-// within the lead (T13-F1) only while it ends after the last end a source
+// within the lead only while it ends after the last end a source
 // ending by from could give it (dst rounds a block out: BlockSpan).
 func removable(m driver.MirrorItem, dst driver.Mirrorer, now, from, to time.Time) bool {
 	switch {
@@ -372,7 +372,7 @@ func overlaps(a, b driver.MirrorItem) bool {
 
 // units are the club items of s to mirror within the window [now, to),
 // opaque ones cut to the club's hours: every one that has not ended by
-// now — under way or about to start too (D8) — and ends within the
+// now — under way or about to start too — and ends within the
 // horizon.
 func (p *Pair) units(items []driver.MirrorItem, now, to time.Time) []unit {
 	var out []unit
@@ -474,7 +474,7 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 		}
 	}
 
-	// mirrors on rooms no court of the club maps: untouched, reported (F6)
+	// mirrors on rooms no court of the club maps: untouched, reported
 	for _, s := range []*side{A, B} {
 		for _, it := range s.inv.Unmapped {
 			if it.End.After(now) && it.Start.Before(to) {
@@ -527,7 +527,7 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 				continue
 			}
 			// a mirror whose marker names a CRM that is not the other one
-			// of this pair is not ours to judge: untouched, reported (F6)
+			// of this pair is not ours to judge: untouched, reported
 			if m.Source != nil && m.Source.Src != src.typ {
 				if m.End.After(now) {
 					alarm(AlarmUnmapped, "корт %s, %s: в %s отражение %s с меткой CRM «%s», а вторая CRM клуба — %s; шлюз его не трогает — проверьте, откуда оно, и снимите его в CRM вручную",
@@ -580,7 +580,7 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 	if n := len(pl.removals); n > p.o.MaxRemovals {
 		pl.fused = true
 		p.log.Error("reconciliation fuse: too many mirrors to remove in one pass, none is removed", "planned", n, "limit", p.o.MaxRemovals)
-		// the way out (F7, D10): not "for one pass" — a markerless mirror
+		// the way out: not "for one pass" — a markerless mirror
 		// (1C) is removed by the second pass that finds it invalid
 		alarm(AlarmFuse, "сверка CRM: к снятию %d отражений за один проход, а порог — %d; ничего не снято. Проверьте отмены в CRM; если они верны, поднимите mirror.max_removals клуба на хабе до %d или выше, держите порог поднятым, пока тревога не уйдёт, затем верните",
 			n, p.o.MaxRemovals, n)
