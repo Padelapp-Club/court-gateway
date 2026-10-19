@@ -151,9 +151,9 @@ func VivaLunda(t *testing.T, o Options) *Env {
 		spec.Courts = append(spec.Courts, core.CourtSpec{ID: c, Name: "Корт " + c[len(c)-1:], Params: params})
 	}
 	crm := fmt.Sprintf("crm: { type: viva, username: %s, auth_url: %s/token, api_url: %s/api/v1 }\n", vivaUser, srv.URL, srv.URL)
-	b, p := build(t, crm, l.YAML(), spec, map[string]string{"CRM_PASSWORD": vivaPass}, srv.Client(), l.Stub, l.Server)
+	b, p, rebuild := build(t, crm, l.YAML(), spec, map[string]string{"CRM_PASSWORD": vivaPass}, srv.Client(), l.Stub, l.Server)
 	return &Env{Primary: v, Mirror: l, Pair: p, Built: b, Handler: b.Handler(), Courts: []string{"court-1", "court-2"},
-		Location: b.Settings.Location, Partner: "booker", LundaStub: l.Stub}
+		Location: b.Settings.Location, Partner: "booker", LundaStub: l.Stub, rebuild: rebuild}
 }
 
 var _ = contract.BookKey

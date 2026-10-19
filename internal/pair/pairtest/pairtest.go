@@ -82,6 +82,15 @@ type Env struct {
 	Partner string
 	// LundaStub is the mirror's stub, for failures a scenario injects.
 	LundaStub *lundastub.Stub
+
+	rebuild func(t *testing.T, m core.MirrorSpec) *pair.Pair
+}
+
+// Reconfigure serves the club again with mirror section m, as a new config
+// from the hub would (the operator raising the fuse), on the same CRMs.
+func (e *Env) Reconfigure(t *testing.T, m core.MirrorSpec) {
+	t.Helper()
+	e.Pair = e.rebuild(t, m)
 }
 
 // Options adjust a setup.
@@ -224,7 +233,7 @@ func (m *memStore) SaveSession(b []byte) error {
 // build serves spec as a gateway would: the installation's crm and mirror
 // sections (YAML), the mirror's Lunda account logged in by a QR code on
 // lstub, the club from the hub, the pair from core.BuildDriver.
-func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map[string]string, primaryClient *http.Client, lstub *lundastub.Stub, lsrv *httptest.Server) (*contract.Built, *pair.Pair) {
+func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map[string]string, primaryClient *http.Client, lstub *lundastub.Stub, lsrv *httptest.Server) (*contract.Built, *pair.Pair, func(*testing.T, core.MirrorSpec) *pair.Pair) {
 	t.Helper()
 	getenv := func(k string) string {
 		if k == core.DefaultHubSecretEnv {
@@ -269,7 +278,24 @@ func build(t *testing.T, crmYAML, mirrorYAML string, spec core.ClubSpec, env map
 	srv := core.NewServer(s, d, log)
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log})
 	clubs.Set("", []*core.Server{srv})
-	return &contract.Built{Settings: s, Driver: d, Server: srv, Clubs: clubs, Logs: logs}, p
+	b := &contract.Built{Settings: s, Driver: d, Server: srv, Clubs: clubs, Logs: logs}
+	rebuild := func(t *testing.T, m core.MirrorSpec) *pair.Pair {
+		t.Helper()
+		spec.Mirror = &m
+		s, err := base.WithClub(spec, drivers.ClubCRMKeys(base.CRMType))
+		if err != nil {
+			t.Fatalf("club: %v", err)
+		}
+		d, err := core.BuildDriver(s, drivers.Factories)
+		if err != nil {
+			t.Fatalf("driver: %v", err)
+		}
+		srv := core.NewServer(s, d, log)
+		clubs.Set("", []*core.Server{srv})
+		b.Settings, b.Driver, b.Server = s, d, srv
+		return d.(*pair.Pair)
+	}
+	return b, p, rebuild
 }
 
 // loginQR logs the Lunda account in as a staff member would by a QR code.
