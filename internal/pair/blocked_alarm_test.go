@@ -2,6 +2,7 @@ package pair_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,18 +12,18 @@ import (
 )
 
 // blockedPairs are the pairs whose primary rounds a Lunda booking out
-// (BlockSpan): YCLIENTS to a length its services make up, 1C to whole
-// seances of 30 minutes. Back to back Lunda bookings 12:00–12:45 and
-// 12:45–13:45: the first is blocked 12:00–13:00, so the block of the second
-// (blocked2) overlaps it and is never made — 13:00–13:45 stays open in the
-// primary for good.
+// (BlockSpan): 1C to whole seances of 30 minutes. Back to back Lunda
+// bookings 12:00–12:45 and 12:45–13:45: the first is blocked 12:00–13:00,
+// so the block of the second (blocked2) overlaps it and is never made —
+// 13:00–13:45 stays open in the primary for good. YCLIENTS blocks the exact
+// span and does not belong here (see
+// TestYclientsLengthServicesCannotMakeFailsItsCreateOnly).
 var blockedPairs = []struct {
 	name     string
 	setup    pairtest.Setup
 	crm      string // the primary as the alarm names it
 	blocked2 [2]time.Duration
 }{
-	{"yclients", pairtest.YclientsLunda, "YCLIENTS", [2]time.Duration{45 * time.Minute, 105 * time.Minute}},
 	{"fitness1c", pairtest.Fitness1CLunda, "1С:Фитнес клуб", [2]time.Duration{30 * time.Minute, 120 * time.Minute}},
 }
 
@@ -82,10 +83,38 @@ func TestMirrorHeldByAnotherMirrorAlarmsOnSecondPass(t *testing.T) {
 	}
 }
 
+// YCLIENTS blocks a Lunda booking over its exact span. Back to back
+// bookings 12:00–12:45 and 12:45–13:45, with services of 30, 60, 90 and
+// 120 minutes: the 45-minute one cannot be made and raises
+// MIRROR_CREATE_FAILED in every pass; the second is blocked exactly in the
+// first pass and stays. Nothing is held by another mirror, so there is no
+// MIRROR_OVERLAP.
+func TestYclientsLengthServicesCannotMakeFailsItsCreateOnly(t *testing.T) {
+	env := pairtest.YclientsLunda(t, pairtest.Options{At: "10:00"})
+	s, _, _ := backToBack(t, env)
+	for i := range 3 {
+		rep := env.Pass(t)
+		created := 0
+		if i == 0 {
+			created = 1
+		}
+		if rep.Aborted || len(rep.Created) != created || len(rep.Removed) != 0 {
+			t.Fatalf("pass %d: aborted %v created %d removed %d, want %d made and nothing removed", i+1, rep.Aborted, len(rep.Created), len(rep.Removed), created)
+		}
+		if len(rep.Alarms) != 1 || rep.Alarms[0].Code != pair.AlarmCreateFailed || !strings.Contains(rep.Alarms[0].Problem, "12:00–12:45") {
+			t.Fatalf("pass %d: alarms %v, want exactly one MIRROR_CREATE_FAILED for 12:00–12:45", i+1, rep.Alarms)
+		}
+		m := mirrorsOn(t, env.Primary, "court-1")
+		if len(m) != 1 || !m[0].Start.Equal(s.Add(45*time.Minute)) || !m[0].End.Equal(s.Add(105*time.Minute)) {
+			t.Fatalf("pass %d: YCLIENTS mirrors %s, want the second booking's alone, 12:45–13:45", i+1, pairtest.Spans(m))
+		}
+		t.Logf("pass %d: created %d removed %d alarms %v", i+1, len(rep.Created), len(rep.Removed), rep.Alarms)
+	}
+}
+
 // A skip in one pass only raises no alarm: the booking whose mirror held
-// the span is cancelled before the next pass, which removes that mirror
-// (YCLIENTS: in the same pass, by its marker; 1C: the pass after, the
-// mirror found invalid twice) and blocks the second booking.
+// the span is cancelled before the next pass; the passes after it remove
+// that mirror (once found invalid twice) and block the second booking.
 func TestMirrorHeldForOnePassDoesNotAlarm(t *testing.T) {
 	for _, pc := range blockedPairs {
 		t.Run(pc.name, func(t *testing.T) {

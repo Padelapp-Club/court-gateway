@@ -63,7 +63,6 @@ type Driver struct {
 	courts  []string          // court ids in config order
 	log     *slog.Logger
 	clock   driver.Clock
-	tiles   tiles // the courts' services a mirror's span is rounded by (BlockSpan)
 }
 
 // bookingClient is who the gateway's records are booked for: the club's
