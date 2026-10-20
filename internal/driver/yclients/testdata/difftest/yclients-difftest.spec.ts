@@ -26,7 +26,10 @@ interface Req {
   body?: unknown;
 }
 
-const input = JSON.parse(readFileSync(process.env.YCLIENTS_DIFF_SCENARIOS as string, 'utf8'));
+// The older names D11_DIFF_SCENARIOS and D11_DIFF_OUT are still read when the new ones are unset.
+const scenariosPath = (process.env.YCLIENTS_DIFF_SCENARIOS || process.env.D11_DIFF_SCENARIOS) as string;
+const outPath = (process.env.YCLIENTS_DIFF_OUT || process.env.D11_DIFF_OUT) as string;
+const input = JSON.parse(readFileSync(scenariosPath, 'utf8'));
 const out: Record<string, unknown> = {};
 
 const slotsOf = (days: string[], tz: string): { fromMs: number; toMs: number }[] => {
@@ -48,7 +51,7 @@ describe('YCLIENTS differential scenarios', () => {
   });
 
   afterAll(() => {
-    writeFileSync(process.env.YCLIENTS_DIFF_OUT as string, JSON.stringify(out, null, 1) + '\n');
+    writeFileSync(outPath, JSON.stringify(out, null, 1) + '\n');
   });
 
   for (const sc of input.scenarios) {

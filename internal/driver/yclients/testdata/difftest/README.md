@@ -37,5 +37,7 @@ YCLIENTS_DIFF_OUT=<court-gateway>/internal/driver/yclients/testdata/difftest/ts-
 npx jest src/modules/admins/crm/integrations/yclients-crm/yclients-difftest.spec.ts
 ```
 
+The older variable names `D11_DIFF_SCENARIOS` and `D11_DIFF_OUT` still work; the new names win when both are set.
+
 `ts-golden.json` here was written that way from monorepo `origin/stage` 391bd2d8 on 2026-10-17
 (22 of 22 scenarios ran). A change of the backend adapter, or a new scenario, needs a new golden file.
