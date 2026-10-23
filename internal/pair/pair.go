@@ -5,7 +5,8 @@
 //   - occupancy is the union of both, complete only when both are;
 //   - a partner's booking is made in the primary, then in the mirror; when
 //     the mirror refuses, the primary's is cancelled again and the partner
-//     refused (never half a booking);
+//     refused (never half a booking; a cancel that fails is tried again by
+//     every pass until the booking starts);
 //   - a cancel cancels the partner's booking in both;
 //   - reads, prices and hours are the primary's.
 //
@@ -71,19 +72,22 @@ type Options struct {
 // Memory is what one pass of a club leaves the next, in memory only —
 // never in a file, never in a CRM: the evidence of passes in a row (a
 // mirror found invalid without a point read, a partner's booking found in
-// one CRM), the passes cut off by MaxCreates, and the alarms. It outlives
+// one CRM), the passes cut off by MaxCreates, the rollbacks to try again,
+// and the alarms. It outlives
 // a pair: every new config of the club from the hub (the operator raising
 // mirror.max_removals among them) builds a new pair, and handing it the
 // Memory of the one before keeps that evidence. The passes of every
 // pair of one Memory run one at a time. A restart loses it: a removal then
-// waits for passes in a row again.
+// waits for passes in a row again, and a failed rollback is not tried
+// again (its half is left to the half-booking alarm).
 type Memory struct {
 	pass sync.Mutex // one pass of the club at a time
 
-	mu     sync.Mutex
-	alarms []Alarm  // of the last pass
-	sticky []sticky // raised outside a pass, kept for a few passes
-	memo   memo     // what the previous pass saw
+	mu        sync.Mutex
+	alarms    []Alarm    // of the last pass
+	sticky    []sticky   // raised outside a pass, kept for a few passes
+	memo      memo       // what the previous pass saw
+	rollbacks []rollback // primary's halves whose rollback failed (Create)
 }
 
 // NewMemory is the Memory of a club with no pass yet.
@@ -296,8 +300,9 @@ func (p *Pair) PriceTable(ctx context.Context, court string) (driver.PriceTable,
 // primary's is cancelled again under its own context and the partner gets
 // the mirror's error; when that cancel fails too, the booking is in one
 // CRM only: the partner gets an error that says so, the log an ERROR and
-// the hub an alarm. The partner's id is the primary's: the
-// mirror's half is found by its court, time and the partner's marker.
+// the hub an alarm, and every pass tries the cancel again (retryRollbacks).
+// The partner's id is the primary's: the mirror's half is found by its
+// court, time and the partner's marker.
 func (p *Pair) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
 	bk, err := p.a.Create(ctx, req)
 	if err != nil {
@@ -309,15 +314,72 @@ func (p *Pair) Create(ctx context.Context, req driver.CreateRequest) (driver.Boo
 		if cerr := p.a.Cancel(rctx, bk.ID, req.Partner); cerr != nil {
 			p.log.Error("a booking stays in the primary CRM only: the mirror refused it and its cancel failed",
 				"booking", bk.ID, "court", req.Court, "start", req.Start.UTC().Format(time.RFC3339), "mirror_error", err, "cancel_error", cerr)
-			p.stick(Alarm{Code: AlarmHalfBooking, Problem: fmt.Sprintf(
-				"корт %s, %s: бронь партнёра %s %s есть только в %s — %s её не приняла, а отменить её не удалось; проверьте и отмените вручную",
-				req.Court, p.span(req.Start, req.End), req.Partner, bk.ID, crmName(p.o.PrimaryType), crmName(p.o.MirrorType))})
+			a := Alarm{Code: AlarmHalfBooking, Problem: fmt.Sprintf(
+				"корт %s, %s: бронь партнёра %s %s есть только в %s — %s её не приняла, а отменить её не удалось; шлюз повторит отмену, если бронь останется — отмените вручную",
+				req.Court, p.span(req.Start, req.End), req.Partner, bk.ID, crmName(p.o.PrimaryType), crmName(p.o.MirrorType))}
+			p.stick(a)
+			p.mu.Lock()
+			p.rollbacks = append(p.rollbacks, rollback{id: bk.ID, partner: req.Partner, court: req.Court, start: req.Start, alarm: a})
+			p.mu.Unlock()
 			return driver.Booking{}, fmt.Errorf("%w; the booking %s stays in the primary CRM: its cancel failed (%v)", &driver.MirrorError{Err: err}, bk.ID, cerr)
 		}
 		p.log.Warn("a booking the mirror refused was cancelled in the primary CRM again", "booking", bk.ID, "court", req.Court, "error", err)
 		return driver.Booking{}, &driver.MirrorError{Err: err}
 	}
 	return bk, nil
+}
+
+// rollback is the primary's half of a partner's booking the mirror refused
+// whose cancel failed.
+type rollback struct {
+	id, partner, court string
+	start              time.Time
+	alarm              Alarm
+}
+
+// retryRollbacks cancels again, under the court's lock, the primary's
+// halves whose rollback failed (Create): the partner was refused, so the
+// half is no one's booking. One that has started by now is not cancelled
+// (a started booking never is): it is dropped, its alarm left to the
+// operator; so is one the primary refuses for good.
+func (p *Pair) retryRollbacks(ctx context.Context, now time.Time) {
+	p.mu.Lock()
+	todo := p.rollbacks
+	p.rollbacks = nil
+	p.mu.Unlock()
+	var keep []rollback
+	for _, r := range todo {
+		if !now.Before(r.start) {
+			p.log.Error("a booking stays in the primary CRM only: it started before its cancel went through", "booking", r.id, "court", r.court)
+			continue
+		}
+		err := p.cancelHalf(ctx, r)
+		switch {
+		case err == nil || errors.Is(err, driver.ErrNotFound):
+			p.log.Warn("a booking the mirror refused was cancelled in the primary CRM on a retry", "booking", r.id, "court", r.court)
+			p.unstick(r.alarm)
+		case errors.Is(err, driver.ErrStarted) || errors.Is(err, driver.ErrNotOwned):
+			p.log.Error("a booking stays in the primary CRM only: its cancel is refused", "booking", r.id, "court", r.court, "error", err)
+		default:
+			p.log.Warn("the cancel of a booking the mirror refused failed again; the next pass tries again", "booking", r.id, "court", r.court, "error", err)
+			keep = append(keep, r)
+		}
+	}
+	p.mu.Lock()
+	p.rollbacks = append(keep, p.rollbacks...)
+	p.mu.Unlock()
+}
+
+// cancelHalf cancels r in the primary under the court's lock.
+func (p *Pair) cancelHalf(ctx context.Context, r rollback) error {
+	unlock, err := p.lock(ctx, r.court)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	rctx, stop := context.WithTimeout(ctx, rollbackTimeout)
+	defer stop()
+	return p.a.Cancel(rctx, r.id, r.partner)
 }
 
 // Get implements driver.Driver: the primary's booking.

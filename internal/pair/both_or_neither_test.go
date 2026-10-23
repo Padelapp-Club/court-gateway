@@ -44,9 +44,10 @@ func TestBothOrNeitherPrimaryRefuses(t *testing.T) {
 // On the hub: Lunda refuses and the rollback of the primary's half
 // fails. The partner is refused; the club's readiness carries
 // MIRROR_HALF_BOOKING with a detail naming the court, the time and the
-// booking (no CRM words, no client data); the alarm stays pass after pass
-// (the sticky alarm hands over to the pass's own half-booking rule); no
-// pass repairs anything — the half is neither cancelled nor completed.
+// booking (no CRM words, no client data). The passes try the rollback
+// again: while it fails, the half and the alarm stay; once it goes through
+// the half is gone from the primary, nothing was ever made in Lunda, the
+// alarm is cleared and the slot sells again.
 func TestBothOrNeitherRollbackFailureReachesTheHub(t *testing.T) {
 	eachPair(t, func(t *testing.T, env *pairtest.Env) {
 		start := env.Day(2, 14, 0)
@@ -67,21 +68,37 @@ func TestBothOrNeitherRollbackFailureReachesTheHub(t *testing.T) {
 			!strings.Contains(d, start.In(env.Location).Format("2006-01-02 15:04")) || strings.Contains(d, "PRIVACY-MARKER") {
 			t.Fatalf("readiness %q, detail %q", core.ReadyReason(err), d)
 		}
+		// the first retry fails too: the half and the alarm stay
 		before := env.Primary.Raw(t, half)
-		for i := range 5 {
+		env.Primary.Fail(t, "delete")
+		rep := env.Pass(t)
+		if !alarmed(rep, pair.AlarmHalfBooking) || len(rep.Created)+len(rep.Removed) > 0 || rep.Aborted {
+			t.Fatalf("pass with the retry failing: %+v", rep)
+		}
+		if now := env.Primary.Raw(t, half); now != before {
+			t.Fatalf("a failed retry changed the half:\nbefore %s\nafter  %s", before, now)
+		}
+		// the next one goes through
+		for i := range 3 {
 			rep := env.Pass(t)
-			if !alarmed(rep, pair.AlarmHalfBooking) || len(rep.Created)+len(rep.Removed) > 0 || rep.Aborted {
-				t.Fatalf("pass %d after the failed rollback: %+v", i+1, rep)
+			if alarmed(rep, pair.AlarmHalfBooking) || len(rep.Created)+len(rep.Removed) > 0 || rep.Aborted {
+				t.Fatalf("pass %d after the CRM healed: %+v", i+1, rep)
 			}
-			if r := core.ReadyReason(env.Built.Clubs.Ready(context.Background())); r != pair.AlarmHalfBooking {
+			if r := core.ReadyReason(env.Built.Clubs.Ready(context.Background())); r == pair.AlarmHalfBooking {
 				t.Fatalf("pass %d: readiness %s", i+1, r)
 			}
 		}
-		if now := env.Primary.Raw(t, half); now != before {
-			t.Fatalf("a pass touched the half:\nbefore %s\nafter  %s", before, now)
+		if p, m := partners(t, env); len(p)+len(m) > 0 {
+			t.Fatalf("the half was not rolled back: primary %s / mirror %s", pairtest.Spans(p), pairtest.Spans(m))
 		}
 		if n := len(env.Mirror.Live(t)); n != 0 {
 			t.Fatalf("a pass completed the half in Lunda: %s", pairtest.Spans(env.Mirror.Live(t)))
+		}
+		if st, _ := env.Create(t, "court-1", start, start.Add(time.Hour)); st != http.StatusCreated {
+			t.Fatalf("the slot does not sell after the rollback: %d", st)
+		}
+		if p, m := partners(t, env); len(p) != 1 || len(m) != 1 {
+			t.Fatalf("the booking is not in both: primary %s / mirror %s", pairtest.Spans(p), pairtest.Spans(m))
 		}
 	})
 }

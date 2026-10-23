@@ -170,6 +170,8 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 		p.forget()
 		return rep
 	}
+	// before the reads: a half cancelled now is not seen as half a booking
+	p.retryRollbacks(ctx, now)
 	A := &side{typ: p.o.PrimaryType, m: p.am, name: crmName(p.o.PrimaryType)}
 	B := &side{typ: p.o.MirrorType, m: p.bm, name: crmName(p.o.MirrorType)}
 	// the window ends at the shorter horizon of the two CRMs (Lunda's
@@ -269,6 +271,14 @@ func (p *Pair) forget() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.memo = memo{}
+}
+
+// unstick drops an alarm raised outside a pass whose cause is gone.
+func (p *Pair) unstick(a Alarm) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sticky = slices.DeleteFunc(p.sticky, func(s sticky) bool { return s.Alarm == a })
+	p.alarms = slices.DeleteFunc(p.alarms, func(x Alarm) bool { return x == a })
 }
 
 // stick raises an alarm outside a pass.
