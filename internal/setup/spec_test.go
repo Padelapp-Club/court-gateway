@@ -40,7 +40,7 @@ func TestMissingFollowsTheCRMTypesSpec(t *testing.T) {
 func TestRenderWritesTheDeclaredKeysAndSecrets(t *testing.T) {
 	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "spectest",
 		CRM: [][2]string{{"login", "admin"}, {"base_url", "https://crm.example.test"}}}
-	text, p := validate(d, driver.Params{"login": "admin", "base_url": "https://crm.example.test"}, "inst-1", "", "", "secret")
+	text, p := validate(d, driver.Params{"login": "admin", "base_url": "https://crm.example.test"}, nil, "inst-1", "", "", "secret")
 	if p != nil {
 		t.Fatal(p)
 	}

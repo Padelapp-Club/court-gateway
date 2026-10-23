@@ -445,10 +445,21 @@ no restart. Never use `set-password` for Lunda (it answers `NO_PASSWORD`). Then 
 
 ## A second CRM: Lunda next to the club's CRM (`mirror`)
 
-Only when the operator says the club keeps Lunda next to its CRM (Viva, YCLIENTS or 1C:Fitness): after
-step 3, add to `gateway.yaml` a `mirror:` section next to `crm:` — `type: lunda` and
-`service_client: <the club's service client id in Lunda>` (the human reads it in Lunda's admin) — then
-have the human log Lunda in, in a terminal they see, in the install folder:
+Only when the operator says the club keeps Lunda next to its CRM (Viva, YCLIENTS or 1C:Fitness).
+
+**At setup (preferred):** add `--mirror lunda` to the setup command of step 3 and have the human run it
+in a terminal they see (a member of the club's staff with the Lunda app logs Lunda in by QR or code —
+`--non-interactive` refuses it, `LOGIN_REQUIRED`). Setup asks the first CRM's questions, logs Lunda in,
+has the human choose the club's service client in Lunda and writes the `mirror:` section; for 1C:Fitness
+it also asks the phone of a second technical client of 1C for the mirrors (`--crm-mirror-client-phone`,
+never the one of `client_phone`). The result JSON has `"mirror": "lunda"`. A warning
+`NO_MIRROR_SERVICE_CLIENT` means no service client was chosen in Lunda: neither PadelApp's bookings nor
+the mirrors go into Lunda — have the human run setup again. A failure of the Lunda step names it
+(«вторая CRM (Лунда): …») and writes nothing; the join code is not spent. Then run step 5.
+
+**On an installation already set up** (no new join code): add to `gateway.yaml` a `mirror:` section next
+to `crm:` — `type: lunda` and `service_client: <the club's service client id in Lunda>` (the human reads it
+in Lunda's admin) — then have the human log Lunda in, in a terminal they see, in the install folder:
 
 ```sh
 ./court-gateway login --mirror -config "$PWD/gateway.yaml"; echo "exit=$?"

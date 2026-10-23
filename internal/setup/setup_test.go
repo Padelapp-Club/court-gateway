@@ -49,7 +49,7 @@ func TestEnvValueQuotesDollar(t *testing.T) {
 // The written config is an installation: hub and CRM login, no club.
 func TestRenderedConfigHasNoClub(t *testing.T) {
 	d := &draft{HubURL: "https://hub.example.test", HubKey: placeholderKey, CRMType: "viva", CRM: [][2]string{{"username", "admin@example.test"}}}
-	text, p := validate(d, driver.Params{"username": "admin@example.test"}, "inst-1", "Сеть", "pw", "secret")
+	text, p := validate(d, driver.Params{"username": "admin@example.test"}, nil, "inst-1", "Сеть", "pw", "secret")
 	if p != nil {
 		t.Fatalf("%v\n%s", p, d.render("inst-1", "Сеть"))
 	}

@@ -17,7 +17,10 @@ type draft struct {
 	// CRM are the installation's crm keys and Secrets the CRM secrets
 	// (environment variable, value), in the order the CRM type declares.
 	CRM, Secrets [][2]string
-	Now          time.Time
+	// Mirror is the second CRM's type ("" for none), MirrorCRM its keys.
+	Mirror    string
+	MirrorCRM [][2]string
+	Now       time.Time
 }
 
 func q(s string) string { return strconv.Quote(s) }
@@ -57,6 +60,16 @@ func (d *draft) render(installation, name string) string {
 	w("  type: %s", d.CRMType)
 	for _, kv := range d.CRM {
 		w("  %s: %s", kv[0], q(kv[1]))
+	}
+	if d.Mirror != "" {
+		w("")
+		w("# Вторая CRM тех же клубов: шлюз сверяет брони между обеими. Работает у клубов,")
+		w("# которым оператор на хабе включил раздел mirror.")
+		w("mirror:")
+		w("  type: %s", d.Mirror)
+		for _, kv := range d.MirrorCRM {
+			w("  %s: %s", kv[0], q(kv[1]))
+		}
 	}
 	return b.String()
 }

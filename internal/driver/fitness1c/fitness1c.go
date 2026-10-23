@@ -64,8 +64,8 @@ func init() {
 			{Key: "username", Flag: "crm-username", Env: "CRM_USERNAME", Prompt: "Пользователь 1С (роли «Удаленный доступ внешнее приложение» и «Запуск внешнего соединения»)", Required: true},
 			{Key: "client_phone", Flag: "crm-client-phone", Prompt: "Телефон технического клиента в 1С, на которого ставятся брони партнёра (пусто — только чтение)"},
 			{Key: "partner", Flag: "crm-partner", Prompt: "Партнёр хаба, чьи брони ставит этот клиент (например, padelapp)"},
-			// only with a second CRM (mirror: in gateway.yaml): no question
-			{Key: "mirror_client_phone", Flag: "crm-mirror-client-phone"},
+			{Key: "mirror_client_phone", Flag: "crm-mirror-client-phone", WithMirror: true,
+				Prompt: "Телефон второго технического клиента 1С — на него встают брони Лунды (не тот, что для броней партнёра)"},
 		},
 		Secrets: []driver.SetupSecret{
 			{Env: "CRM_PASSWORD", Prompt: "Пароль пользователя 1С", Required: true},

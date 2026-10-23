@@ -135,6 +135,9 @@ type SetupField struct {
 	// (an endpoint override for test doubles).
 	Prompt   string
 	Required bool
+	// WithMirror: the key is asked, and required, only when the
+	// installation has a second CRM (gateway.yaml mirror:).
+	WithMirror bool
 }
 
 // SetupSecret is a CRM secret setup writes to .env (mode 0600), never to

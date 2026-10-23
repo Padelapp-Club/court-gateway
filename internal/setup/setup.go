@@ -49,6 +49,11 @@ type Input struct {
 	// (driver.SetupSpec.Secrets), by environment variable.
 	Password string
 	Secrets  map[string]string
+	// Mirror is the installation's second CRM of its clubs (one of
+	// core.MirrorTypes), "" for none; MirrorCRM holds its keys
+	// (driver.SetupSpec.Fields of that type), by key.
+	Mirror    string
+	MirrorCRM map[string]string
 }
 
 // Spec is the setup of the input's CRM type (empty for an unknown type).
@@ -91,8 +96,10 @@ type Deps struct {
 	// with "" chosen, the gateway reads and does not book.
 	PickClient func(context.Context, driver.ClientPicker) (string, error)
 	// Sessions keeps the session of an interactive login; default: the
-	// state directory of the config being written.
-	Sessions driver.SessionStore
+	// state directory of the config being written. MirrorSessions keeps
+	// the second CRM's (default: core.MirrorSessionFile there).
+	Sessions       driver.SessionStore
+	MirrorSessions driver.SessionStore
 }
 
 // Warning is something the administrator must look at.
@@ -110,6 +117,7 @@ type Result struct {
 	EnvFile      string           `json:"env_file,omitempty"`
 	Installation *InstallationRef `json:"installation,omitempty"`
 	Hub          string           `json:"hub,omitempty"`
+	Mirror       string           `json:"mirror,omitempty"` // the second CRM's type
 	Warnings     []Warning        `json:"warnings"`
 }
 
@@ -145,7 +153,7 @@ func (in Input) Missing() []string {
 	}
 	spec := in.Spec()
 	for _, f := range spec.Fields {
-		if f.Required && strings.TrimSpace(in.CRM[f.Key]) == "" {
+		if (f.Required || f.WithMirror && in.Mirror != "") && strings.TrimSpace(in.CRM[f.Key]) == "" {
 			out = append(out, "--"+f.Flag)
 		}
 	}
@@ -234,44 +242,57 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 			d.Secrets = append(d.Secrets, [2]string{x.Env, v})
 		}
 	}
-	notProtected := func(err error) (Result, error) {
-		return fail(problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err))
+	notProtectedProblem := func(err error) *Problem {
+		return problem("FOLDER_NOT_RESTRICTED", "не удалось закрыть папку %s от других пользователей (запустите setup от имени администратора): %v", filepath.Dir(cfgPath), err)
 	}
+	notProtected := func(err error) (Result, error) { return fail(notProtectedProblem(err)) }
 	sessions := deps.Sessions
-	loginRequired := func() (Result, error) {
-		return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", cmp.Or(spec.Name, d.CRMType)))
+	loginRequired := func(name string) (Result, error) {
+		return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", name))
 	}
-	if spec.Interactive {
-		if deps.Login == nil {
-			return loginRequired() // before anything is written
-		}
-		// the login saves a session: the folders that will hold it are
-		// closed before it exists, and a setup that fails leaves none
-		stateDir := core.StateDir(cfgPath, nil)
-		if sessions == nil {
-			sessions = core.SessionStore(stateDir)
-		}
+	stateDir := core.StateDir(cfgPath, nil)
+	var cleanups []func() // undo what a setup that fails leaves: saved sessions
+	// keepSession prepares the state directory for the session an
+	// interactive login saves in store (file): the folders are closed
+	// before it exists, and a setup that fails leaves none
+	keepSession := func(store driver.SessionStore, file string) *Problem {
 		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
-			return fail(problem("WRITE_FAILED", "%v", err))
+			return problem("WRITE_FAILED", "%v", err)
 		}
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
-			return fail(problem("WRITE_FAILED", "%v", err))
+			return problem("WRITE_FAILED", "%v", err)
 		}
 		if deps.ProtectSecrets != nil {
 			for _, p := range []string{filepath.Dir(cfgPath), stateDir} {
 				if err := deps.ProtectSecrets(p); err != nil {
-					return notProtected(err)
+					return notProtectedProblem(err)
 				}
 			}
 		}
-		defer func() {
-			if res.OK {
-				return
+		cleanups = append(cleanups, func() {
+			if err := store.SaveSession(nil); err != nil && deps.Note != nil {
+				deps.Note("сессия входа в CRM осталась в папке состояния, удалите её вручную (" + file + "): " + err.Error())
 			}
-			if err := sessions.SaveSession(nil); err != nil && deps.Note != nil {
-				deps.Note("сессия входа в CRM осталась в папке состояния, удалите её вручную (" + core.SessionFile + "): " + err.Error())
+		})
+		return nil
+	}
+	defer func() {
+		if !res.OK {
+			for _, c := range cleanups {
+				c()
 			}
-		}()
+		}
+	}()
+	if spec.Interactive {
+		if deps.Login == nil {
+			return loginRequired(cmp.Or(spec.Name, d.CRMType)) // before anything is written
+		}
+		if sessions == nil {
+			sessions = core.SessionStore(stateDir)
+		}
+		if p := keepSession(sessions, core.SessionFile); p != nil {
+			return fail(p)
+		}
 	}
 	acct, err := factory(driver.Config{CRM: crm, Password: in.Password, Secrets: secrets, HTTPClient: deps.CRMClient, Now: deps.Now, Sessions: sessions})
 	if err != nil {
@@ -281,7 +302,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		// a person logs the gateway in, every setup: the session is the
 		// one the service will use (saved in its state directory)
 		if deps.Login == nil {
-			return loginRequired()
+			return loginRequired(cmp.Or(spec.Name, d.CRMType))
 		}
 		if err := deps.Login(ctx, il); err != nil {
 			return fail(loginProblem(err))
@@ -305,8 +326,72 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 				Message: "служебный клиент клуба не выбран: шлюз будет только показывать занятость, брони PadelApp не встанут — выберите его, запустив setup ещё раз"})
 		}
 	}
+	// 1b. the second CRM of the clubs (mirror): its own login, session and
+	// service client, under the same rules as the first
+	mirror := driver.Params{}
+	if in.Mirror != "" {
+		mspec, _ := driver.SetupFor(in.Mirror)
+		mname := cmp.Or(mspec.Name, in.Mirror)
+		mfactory, ok := deps.Accounts[in.Mirror]
+		if !ok || !slices.Contains(core.MirrorTypes, in.Mirror) || in.Mirror == d.CRMType {
+			return fail(problem("INVALID_INPUT", "второй CRM установки может быть только %s, и не та же, что основная (%s)", strings.Join(core.MirrorTypes, ", "), d.CRMType))
+		}
+		d.Mirror = in.Mirror
+		for _, f := range mspec.Fields {
+			if v := strings.TrimSpace(in.MirrorCRM[f.Key]); v != "" {
+				mirror[f.Key] = v
+				d.MirrorCRM = append(d.MirrorCRM, [2]string{f.Key, v})
+			}
+		}
+		msessions := deps.MirrorSessions
+		if mspec.Interactive {
+			if deps.Login == nil {
+				return loginRequired(mname)
+			}
+			if msessions == nil {
+				msessions = core.NamedSessionStore{Dir: stateDir, File: core.MirrorSessionFile}
+			}
+			if p := keepSession(msessions, core.MirrorSessionFile); p != nil {
+				return fail(p)
+			}
+		}
+		macct, err := mfactory(driver.Config{CRM: mirror, Now: deps.Now, Sessions: msessions})
+		if err != nil {
+			return fail(problem("INVALID_INPUT", "%s: %v", mname, err))
+		}
+		if il, ok := macct.(driver.InteractiveLogin); ok {
+			if deps.Login == nil {
+				return loginRequired(mname)
+			}
+			if deps.Note != nil {
+				deps.Note("Теперь вход во вторую CRM — " + mname + ".")
+			}
+			if err := deps.Login(ctx, il); err != nil {
+				return fail(mirrorProblem(mname, loginProblem(err)))
+			}
+		}
+		if p := checkLogin(ctx, macct, deps.Note); p != nil {
+			return fail(mirrorProblem(mname, p))
+		}
+		if cp, ok := macct.(driver.ClientPicker); ok && mirror[cp.ClientKey()] == nil {
+			id := ""
+			if deps.PickClient != nil {
+				if id, err = deps.PickClient(ctx, cp); err != nil {
+					return fail(mirrorProblem(mname, problem("CLIENT_NOT_CHOSEN", "служебный клиент не выбран: %v", err)))
+				}
+			}
+			if id = strings.TrimSpace(id); id != "" {
+				mirror[cp.ClientKey()] = id
+				d.MirrorCRM = append(d.MirrorCRM, [2]string{cp.ClientKey(), id})
+			} else {
+				res.Warnings = append(res.Warnings, Warning{Code: "NO_MIRROR_SERVICE_CLIENT",
+					Message: "служебный клиент клуба в " + mname + " не выбран: ни брони PadelApp, ни отражения броней в " + mname + " не встанут — выберите его, запустив setup ещё раз"})
+			}
+		}
+	}
+
 	d.HubKey = placeholderKey
-	if _, p := validate(d, crm, "pending", "", in.Password, "placeholder-secret"); p != nil {
+	if _, p := validate(d, crm, mirror, "pending", "", in.Password, "placeholder-secret"); p != nil {
 		return fail(p)
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
@@ -377,7 +462,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		return fail(problem("HUB_KEY_MISMATCH", "ответ хаба на код подключения не подписан его ключом: соединение с хабом перехвачено — ничего не записано; код подключения израсходован, попросите у оператора новый"))
 	}
 	d.HubKey = core.EncodeHubKey(key)
-	text, p := validate(d, crm, reg.Installation, reg.Name, in.Password, reg.Secret)
+	text, p := validate(d, crm, mirror, reg.Installation, reg.Name, in.Password, reg.Secret)
 	if p != nil {
 		return fail(p)
 	}
@@ -394,7 +479,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		return fail(problem("WRITE_FAILED", "не удалось записать %s: %v", cfgPath, err))
 	}
 	res.OK = true
-	res.Config, res.EnvFile, res.Hub = cfgPath, envPath, d.HubURL
+	res.Config, res.EnvFile, res.Hub, res.Mirror = cfgPath, envPath, d.HubURL, d.Mirror
 	res.Installation = &InstallationRef{ID: reg.Installation, Name: cmp.Or(strings.TrimSpace(reg.Name), reg.Installation)}
 	return res, nil
 }
@@ -423,6 +508,11 @@ func checkLogin(ctx context.Context, acct driver.Account, note func(string)) *Pr
 	default:
 		return problem("CRM_UNREACHABLE", "CRM недоступна, попробуйте позже")
 	}
+}
+
+// mirrorProblem names a failure of the second CRM as its.
+func mirrorProblem(name string, p *Problem) *Problem {
+	return &Problem{Code: p.Code, Message: "вторая CRM (" + name + "): " + p.Message}
 }
 
 // loginProblem names the failure of an interactive login.
@@ -461,8 +551,9 @@ func envFor(password, secret string) func(string) string {
 var placeholderKey = core.EncodeHubKey(make([]byte, 32))
 
 // validate renders the config about to be written and checks that it
-// loads with exactly the CRM settings of this computer's inputs (crm).
-func validate(d *draft, crm driver.Params, installation, name, password, secret string) (string, *Problem) {
+// loads with exactly the CRM settings of this computer's inputs (crm, and
+// mirror for the second CRM).
+func validate(d *draft, crm, mirror driver.Params, installation, name, password, secret string) (string, *Problem) {
 	if password == "" {
 		password = "placeholder"
 	}
@@ -471,7 +562,9 @@ func validate(d *draft, crm driver.Params, installation, name, password, secret 
 	if err != nil {
 		return "", problem("INTERNAL", "собранная конфигурация не прошла проверку: %v", err)
 	}
-	if s.CRMType != d.CRMType || !reflect.DeepEqual(map[string]any(s.Driver.CRM), map[string]any(crm)) {
+	if s.CRMType != d.CRMType || !reflect.DeepEqual(map[string]any(s.Driver.CRM), map[string]any(crm)) ||
+		(s.Mirror == nil) != (d.Mirror == "") ||
+		s.Mirror != nil && (s.Mirror.CRMType != d.Mirror || !reflect.DeepEqual(map[string]any(s.Mirror.Driver.CRM), map[string]any(mirror))) {
 		return "", problem("INTERNAL", "в собранную конфигурацию попали настройки CRM не из установки — ничего не записано")
 	}
 	return text, nil
