@@ -1,7 +1,8 @@
 package lunda_test
 
-// Regressions of the first review round (B1–B6): each asserts the correct
-// behaviour where the reviewer's probe showed the defect.
+// Fail-closed behaviour where an answer leaves the outcome unclear: a
+// create whose outcome is unknown, the rollback of a failed create, a court
+// with no slot list, a booking past midnight and the calendar's prices.
 
 import (
 	"context"
@@ -50,7 +51,7 @@ func errorLogged(logs string, parts ...string) bool {
 	return false
 }
 
-// B1: a create whose outcome is unknown cancels nothing. The club books
+// A create whose outcome is unknown cancels nothing. The club books
 // its own tournaments on the same service client: a booking of that
 // client found on the court and time — here the club's, made between the
 // gateway's check and its create — may not be the gateway's. The partner
@@ -83,7 +84,7 @@ func TestUnknownOutcomeNeverCancelsAForeignBooking(t *testing.T) {
 	}
 }
 
-// B4: a 200 whose body does not read, or has no booking id, is an unknown
+// A 200 whose body does not read, or has no booking id, is an unknown
 // outcome too — the booking may have been made: it is named, not
 // cancelled, and not left unmentioned.
 func TestMalformedCreateAnswerIsUnknownOutcome(t *testing.T) {
@@ -113,7 +114,7 @@ func TestMalformedCreateAnswerIsUnknownOutcome(t *testing.T) {
 	}
 }
 
-// B5: the rollback of a failed create goes by the decision clock, as
+// The rollback of a failed create goes by the decision clock, as
 // Cancel does: a booking that has started meanwhile is not cancelled — it
 // stays, the error says so and it is logged at ERROR; with the hub's time
 // not known nothing is cancelled either.
@@ -141,7 +142,7 @@ func TestRollbackNeverCancelsAStartedBooking(t *testing.T) {
 	}
 }
 
-// B2: a court whose slots are absent or null is an answer that does not
+// A court whose slots are absent or null is an answer that does not
 // read — never a free court; only an explicit empty list is free.
 func TestCourtWithoutSlotsIsNeverFree(t *testing.T) {
 	day := futureDay().Format("2006-01-02")
@@ -165,7 +166,7 @@ func TestCourtWithoutSlotsIsNeverFree(t *testing.T) {
 	}
 }
 
-// B3: a booking running past midnight is seen however late into the
+// A booking running past midnight is seen however late into the
 // morning the range starts: the day before is always read.
 func TestOvernightBookingSeenAllMorning(t *testing.T) {
 	f, d := loggedIn(t)
@@ -193,7 +194,7 @@ func nextWeekday(wd time.Weekday) time.Time {
 	return d
 }
 
-// B6: a date the calendar prices apart is priced by its category, through
+// A date the calendar prices apart is priced by its category, through
 // PriceTable.Dates: a holiday at the holiday rate, a working Saturday at
 // the working-day rate, a category without prices as no price; a date of
 // its weekday's own category stays weekly. The quote a partner gets on the
@@ -261,7 +262,7 @@ func qe(t time.Time) string {
 	return strings.NewReplacer("+", "%2B", ":", "%3A").Replace(t.Format(time.RFC3339))
 }
 
-// B6: a calendar that does not read gives no prices at all — never the
+// A calendar that does not read gives no prices at all — never the
 // weekday's prices on what may be a holiday.
 func TestUnreadableCalendarGivesNoPrices(t *testing.T) {
 	for name, fail := range map[string]func(*lundastub.Stub){

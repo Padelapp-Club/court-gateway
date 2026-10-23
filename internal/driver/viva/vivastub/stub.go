@@ -206,6 +206,37 @@ func (s *Stub) Exercise(id string) map[string]any { return s.get(s.exercises, id
 // Break returns a copy of a stored break.
 func (s *Stub) Break(id string) map[string]any { return s.get(s.breaks, id) }
 
+// EditExercise changes a stored exercise as the club's admin would in
+// Viva (edit gets the stored record itself).
+func (s *Stub) EditExercise(id string, edit func(map[string]any)) { s.edit(s.exercises, id, edit) }
+
+// EditBreak changes a stored break like EditExercise.
+func (s *Stub) EditBreak(id string, edit func(map[string]any)) { s.edit(s.breaks, id, edit) }
+
+func (s *Stub) edit(m map[string]map[string]any, id string, edit func(map[string]any)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := m[strings.ToLower(id)]; r != nil {
+		edit(r)
+	}
+}
+
+// Exercises returns copies of every stored exercise, cancelled ones too.
+func (s *Stub) Exercises() []map[string]any { return s.all(s.exercises) }
+
+// Breaks returns copies of every stored break, cancelled ones too.
+func (s *Stub) Breaks() []map[string]any { return s.all(s.breaks) }
+
+func (s *Stub) all(m map[string]map[string]any) []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]map[string]any, 0, len(m))
+	for _, r := range m {
+		out = append(out, copyMap(r))
+	}
+	return out
+}
+
 func (s *Stub) get(m map[string]map[string]any, id string) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()

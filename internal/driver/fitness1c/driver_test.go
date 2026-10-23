@@ -183,8 +183,8 @@ func occupancy(t *testing.T, f *fixture, from, to time.Time, courts ...string) d
 	return o
 }
 
-// Outside 1C's grid every half-hour is busy (D14: a slot outside 1C's
-// hours is not sold); a block that is no rental is busy too.
+// Outside 1C's grid every half-hour is busy (a slot outside 1C's hours
+// is not sold); a block that is no rental is busy too.
 func TestOutsideTheGridIsBusy(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	f.stub.FirstSlot, f.stub.LastSlot = 7*60, 22*60+30
@@ -472,7 +472,7 @@ func TestATimeoutDoesNotCarryThePhone(t *testing.T) {
 
 // The club moves the gateway's rental off the grid (10:15–11:15) next to
 // a class at 10:00–10:15: the 10:00 half-hour is only partly the gateway's,
-// so it stays busy (clean-room round 2).
+// so it stays busy.
 func TestAPartlyOwnHalfHourStaysBusy(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	d := day()
@@ -484,7 +484,7 @@ func TestAPartlyOwnHalfHourStaysBusy(t *testing.T) {
 }
 
 // The club moves the gateway's rental to a room no court of this club is
-// on, under another service: it is not gone (clean-room round 2).
+// on, under another service: it is not gone.
 func TestAMovedOwnRentalIsNotGone(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	d := day()
@@ -499,7 +499,7 @@ func TestAMovedOwnRentalIsNotGone(t *testing.T) {
 }
 
 // A rental of the gateway that has ended is no longer listed as planned:
-// cancelling it is BOOKING_STARTED, not NOT_OWNED (clean-room round 2).
+// cancelling it is BOOKING_STARTED, not NOT_OWNED.
 func TestCancelOfAnEndedRentalIsStarted(t *testing.T) {
 	clock := newClock()
 	f := newFixture(t, fixtureOpts{now: clock.Now})
@@ -518,7 +518,7 @@ func TestCancelOfAnEndedRentalIsStarted(t *testing.T) {
 }
 
 // A booking service with a price would leave the technical client a debt
-// at the club for every partner booking (clean-room round 2).
+// at the club for every partner booking.
 func TestCheckConfigRefusesAPricedBookingService(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	f.stub.Fail("GET /rental_services/", fitness1cstub.Failure{Body: `{"result":true,"data":[{"id":"` + gridSvc + `","seance_length":30,"price":"875","payment_required":true},{"id":"` + padelSvc + `","seance_length":30,"price":"875","payment_required":false}]}`})
@@ -529,8 +529,7 @@ func TestCheckConfigRefusesAPricedBookingService(t *testing.T) {
 }
 
 // A non-temporary rental in another status (reserved_and_payed: a payment
-// basis was found) is not a free booking either: removed, refused
-// (clean-room round 3).
+// basis was found) is not a free booking either: removed, refused.
 func TestCreateOfAnotherStatusIsUndone(t *testing.T) {
 	f := newFixture(t, fixtureOpts{wrap: rewriteCreate(answeredConfirmed, `"status":"reserved_and_payed","temporarily_reserved":false`)})
 	d := day()
@@ -543,7 +542,7 @@ func TestCreateOfAnotherStatusIsUndone(t *testing.T) {
 
 // The club changes the booking service after its config was checked: a
 // price, a payment basis or another step each refuse the create before
-// anything is written (clean-room round 3).
+// anything is written.
 func TestCreateChecksTheBookingServiceNow(t *testing.T) {
 	d := day()
 	for name, svc := range map[string]string{
@@ -565,7 +564,7 @@ func TestCreateChecksTheBookingServiceNow(t *testing.T) {
 
 // 1C makes the rental and its answer is cut off after the headers: the
 // POST is sent once more and 1C, idempotent per client and slot, gives the
-// same rental (clean-room round 3).
+// same rental.
 func TestCreateRetriesABodyCutOff(t *testing.T) {
 	posts := 0
 	f := newFixture(t, fixtureOpts{wrap: func(stub http.Handler) http.Handler {

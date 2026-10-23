@@ -240,12 +240,11 @@ var decimalRe = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,2})?$`)
 // bookingGoal is the goal of every booking the gateway makes in Lunda, a
 // game or a tournament block alike: GENERAL ("other" in Lunda's own
 // labels, club/global-form-config), since a GAME or TOURNAMENT may surface
-// in Lunda's app to players (alex, 2026-10-17: «все наши записи надо
-// создавать как Other … чтобы не дай бог что-то не ушло в приложку лунды
-// пользователям»).
+// in Lunda's app to players, and nothing the gateway books may ever reach
+// them there.
 const bookingGoal = "GENERAL"
 
-// Create implements driver.Driver, as alex decided on 2026-10-17: an
+// Create implements driver.Driver: an
 // ordinary court booking of goal bookingGoal on the club's service client
 // (booking-create, placeholder false), adjusted by minus the booked court's
 // price (update-courts-price-adjustment) so it is PAID without any payment,
@@ -259,12 +258,25 @@ const bookingGoal = "GENERAL"
 // nothing: the club books its own tournaments on the same service client
 // (unknownOutcome). Without a service client nothing is sent.
 func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
+	uid, err := d.book(ctx, req, buildNotes(req.Note, req.Partner), func(notes string) bool { return hasMarker(notes, req.Partner) })
+	if err != nil {
+		return driver.Booking{}, err
+	}
+	d.log.Info("booking created in Lunda", "booking", "l-"+uid, "court", req.Court)
+	return driver.Booking{ID: "l-" + uid, Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
+}
+
+// book makes a booking of the gateway as Create describes, with notes,
+// and returns its id: read back, its notes must be marked (they carry the
+// marker they were written with). A mirror's block is made by it too
+// (CreateBlock), the same kind of booking with a mirror's marker.
+func (d *Driver) book(ctx context.Context, req driver.CreateRequest, notes string, marked func(notes string) bool) (string, error) {
 	c, ok := d.byCourt[req.Court]
 	if !ok {
-		return driver.Booking{}, fmt.Errorf("court %q: %w", req.Court, driver.ErrNotFound)
+		return "", fmt.Errorf("court %q: %w", req.Court, driver.ErrNotFound)
 	}
 	if d.service == "" {
-		return driver.Booking{}, errNoServiceClient()
+		return "", errNoServiceClient()
 	}
 	begin, end := formatLocal(req.Start, d.loc), formatLocal(req.End, d.loc)
 	status, res, err := d.c.call(ctx, opCreate, nil, map[string]any{
@@ -274,22 +286,22 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	if err != nil {
 		var ue *driver.UpstreamError
 		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ue) && (ue.Kind == driver.UpstreamUnavailable || ue.Kind == driver.UpstreamInvalid) {
-			return driver.Booking{}, d.unknownOutcome(ctx, req, c, err) // the booking may exist
+			return "", d.unknownOutcome(ctx, req, c, err) // the booking may exist
 		}
-		return driver.Booking{}, err // refused before it was made (or not sent at all)
+		return "", err // refused before it was made (or not sent at all)
 	}
 	switch {
 	case status == http.StatusOK || status == http.StatusCreated:
 	case status == http.StatusConflict:
-		return driver.Booking{}, fmt.Errorf("POST /%s: %w", opCreate, driver.ErrSlotUnavailable)
+		return "", fmt.Errorf("POST /%s: %w", opCreate, driver.ErrSlotUnavailable)
 	case status >= 200 && status < 300: // accepted, but not as observed: it may exist
-		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /%s answered HTTP %d", opCreate, status)))
+		return "", d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, fmt.Sprintf("POST /%s answered HTTP %d", opCreate, status)))
 	default:
-		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /%s answered HTTP %d", opCreate, status))
+		return "", driver.Upstream(driver.UpstreamRejected, fmt.Sprintf("POST /%s answered HTTP %d", opCreate, status))
 	}
 	var b lundaBooking
 	if json.Unmarshal(res, &b) != nil || !uidRe.MatchString(b.ID) {
-		return driver.Booking{}, d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
+		return "", d.unknownOutcome(ctx, req, c, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid booking id"))
 	}
 	uid := b.ID
 	// the price is that of the booked court alone: an entry on another
@@ -297,32 +309,31 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	// not read
 	price, ok := b.courtsNet(c.uid, false)
 	if !ok {
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price of the court"))
+		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "POST /"+opCreate+": the answer has no valid price of the court"))
 	}
 	if price.Sign() != 0 { // a booking of price 0 needs no adjustment
 		minus := strings.TrimRight(strings.TrimRight(price.FloatString(2), "0"), ".")
 		if err := d.write(ctx, opAdjust, map[string]any{"bookingId": uid, "priceAdjustment": json.Number("-" + minus)}); err != nil {
-			return driver.Booking{}, d.rollback(ctx, uid, req, err)
+			return "", d.rollback(ctx, uid, req, err)
 		}
 	}
-	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "bookingType": "COURT", "notes": buildNotes(req.Note, req.Partner)}); err != nil {
-		return driver.Booking{}, d.rollback(ctx, uid, req, err)
+	if err := d.write(ctx, opNotes, map[string]any{"bookingId": uid, "bookingType": "COURT", "notes": notes}); err != nil {
+		return "", d.rollback(ctx, uid, req, err)
 	}
 	got, found, err := d.load(ctx, uid)
 	switch {
 	case err != nil:
-		return driver.Booking{}, d.rollback(ctx, uid, req, err)
+		return "", d.rollback(ctx, uid, req, err)
 	case !found:
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
+		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
 	case !strings.EqualFold(got.Status, "PAID") || !got.noPayments():
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
+		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
 	case !got.netZero(c.uid):
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back at a net court price of 0"))
-	case got.Notes == nil || !hasMarker(*got.Notes, req.Partner) || got.customer() != d.service:
-		return driver.Booking{}, d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
+		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back at a net court price of 0"))
+	case got.Notes == nil || !marked(*got.Notes) || got.customer() != d.service:
+		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
 	}
-	d.log.Info("booking created in Lunda", "booking", "l-"+uid, "court", req.Court)
-	return driver.Booking{ID: "l-" + uid, Court: req.Court, Start: req.Start, End: req.End, Status: driver.StatusActive}, nil
+	return uid, nil
 }
 
 // write sends a change of a booking: anything but a 2xx is an error.
@@ -533,5 +544,5 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 }
 
 // MarkPaid implements driver.Driver: the gateway never writes a payment to
-// Lunda (REQ-394) — a payment there is a line in the club's till.
+// Lunda — a payment there is a line in the club's till.
 func (d *Driver) MarkPaid(context.Context, string, string) error { return driver.ErrNotSupported }

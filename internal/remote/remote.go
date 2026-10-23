@@ -436,6 +436,11 @@ func (s *Syncer) without(old *core.Server, gone func(court string) bool) (*core.
 		return old, nil
 	}
 	st.Driver.Courts = slices.DeleteFunc(slices.Clone(st.Driver.Courts), func(c driver.CourtConfig) bool { return gone(c.ID) })
+	if st.Mirror != nil { // a pair: the same courts of its second CRM
+		m := *st.Mirror
+		m.Driver.Courts = slices.DeleteFunc(slices.Clone(m.Driver.Courts), func(c driver.CourtConfig) bool { return gone(c.ID) })
+		st.Mirror = &m
+	}
 	d, err := core.BuildDriver(&st, s.factories)
 	if err != nil {
 		return nil, err
@@ -455,11 +460,17 @@ func resource(srv *core.Server, court string) string {
 // resources are the CRM resources the courts of srv book
 // (driver.Resourcer; none when the driver does not name them).
 func resources(srv *core.Server) []string {
+	var out []string
+	if mr, ok := srv.Driver().(driver.MultiResourcer); ok { // a pair: its room in each CRM
+		for _, c := range srv.Settings().Courts {
+			out = append(out, mr.Resources(c.ID)...)
+		}
+		return out
+	}
 	r, ok := srv.Driver().(driver.Resourcer)
 	if !ok {
 		return nil
 	}
-	var out []string
 	for _, c := range srv.Settings().Courts {
 		out = append(out, r.Resource(c.ID))
 	}

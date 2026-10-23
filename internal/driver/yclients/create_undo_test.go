@@ -10,7 +10,8 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/yclients/yclientsstub"
 )
 
-// Review of the round-1 fix (067f6d5): one regression per blocker.
+// The undo of a failed create: every failed answer is undone, and only
+// the booking's own records are deleted.
 
 func oneHourCourt(o opts) opts {
 	prev := o.stub
@@ -26,17 +27,17 @@ func oneHourCourt(o opts) opts {
 // liveOnCourt1 is every live interval of court-1 on day d.
 func liveOnCourt1(t *testing.T, f *fixture, d time.Time) []driver.Interval {
 	t.Helper()
-	occ, err := f.d11Occ(d, d.AddDate(0, 0, 1), "court-1")
+	occ, err := f.ycOcc(d, d.AddDate(0, 0, 1), "court-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return occ.Intervals
 }
 
-// R1, R2: whatever book_record answers after it wrote — an unreadable
+// Whatever book_record answers after it wrote — an unreadable
 // 201, success=false, one id for two records — the create fails and no
 // record of it is left.
-func TestReviewR2AnyFailedAnswerIsUndone(t *testing.T) {
+func TestAnyFailedCreateAnswerIsUndone(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		set  func(*yclientsstub.Stub)
@@ -48,8 +49,8 @@ func TestReviewR2AnyFailedAnswerIsUndone(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t, oneHourCourt(opts{stub: c.set}))
-			d := d11Day(f)
-			_, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
+			d := ycDay(f)
+			_, err := f.drv.Create(ycCtx, driver.CreateRequest{Court: "court-1", Start: ycAt(d, 10, 0), End: ycAt(d, 12, 0), Kind: driver.KindGame, Partner: "booker"})
 			if err == nil {
 				t.Fatalf("the create passed")
 			}
@@ -60,10 +61,10 @@ func TestReviewR2AnyFailedAnswerIsUndone(t *testing.T) {
 	}
 }
 
-// R3: the undo of a failed create deletes only that booking's records: a
+// The undo of a failed create deletes only that booking's records: a
 // club's copy of one — the comment kept, for another client, or at
 // another time — stays.
-func TestReviewR2UndoSparesClubCopies(t *testing.T) {
+func TestUndoSparesClubCopies(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		offset time.Duration
@@ -78,13 +79,13 @@ func TestReviewR2UndoSparesClubCopies(t *testing.T) {
 				s.CopyAfterBook(c.offset, c.phone)
 				s.BookThenFail(http.StatusInternalServerError)
 			}}))
-			d := d11Day(f)
-			_, err := f.drv.Create(d11ctx, driver.CreateRequest{Court: "court-1", Start: d11At(d, 10, 0), End: d11At(d, 11, 0), Kind: driver.KindGame, Partner: "booker"})
+			d := ycDay(f)
+			_, err := f.drv.Create(ycCtx, driver.CreateRequest{Court: "court-1", Start: ycAt(d, 10, 0), End: ycAt(d, 11, 0), Kind: driver.KindGame, Partner: "booker"})
 			if err == nil {
 				t.Fatalf("the create passed")
 			}
 			ivs := liveOnCourt1(t, f, d)
-			if len(ivs) != 1 || !ivs[0].Start.Equal(d11At(d, 10, 0).Add(c.offset)) {
+			if len(ivs) != 1 || !ivs[0].Start.Equal(ycAt(d, 10, 0).Add(c.offset)) {
 				t.Fatalf("after the undo the court holds %+v, want only the club's copy", ivs)
 			}
 			var id int64

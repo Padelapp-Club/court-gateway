@@ -176,7 +176,8 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 }
 
 // assertOnlyAllowedCalls fails the test, at its end, if the driver called
-// anything but its operations — add-ext-payment above all (REQ-394).
+// anything but its operations — add-ext-payment above all: the gateway
+// never writes a payment to Lunda.
 func assertOnlyAllowedCalls(t *testing.T, stub *lundastub.Stub) {
 	t.Helper()
 	allowed := lunda.Operations()

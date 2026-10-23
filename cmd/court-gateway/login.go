@@ -42,6 +42,7 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	cfgPath := fs.String("config", defaultConfig, "gateway.yaml")
 	method := fs.String("method", "", "qr or code (default: ask)")
 	phone := fs.String("phone", "", "the staff member's phone for --method code, +7…")
+	mirror := fs.Bool("mirror", false, "log in to the installation's second CRM (gateway.yaml mirror:, Lunda)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -54,13 +55,21 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	if err != nil {
 		return fail(err)
 	}
-	acct, err := core.BuildAccount(s, drivers.Accounts, s.Driver)
+	crmType, crmKeys, cfg := s.CRMType, s.Driver.CRM, s.Driver
+	if *mirror {
+		if s.Mirror == nil {
+			return fail(errors.New("у установки нет второй CRM: раздела mirror в gateway.yaml нет"))
+		}
+		// the mirror's own session file (core.MirrorSessionFile)
+		crmType, crmKeys, cfg = s.Mirror.CRMType, s.Mirror.Driver.CRM, s.MirrorDriverConfig()
+	}
+	acct, err := core.BuildAccount(&core.Settings{CRMType: crmType}, drivers.Accounts, cfg)
 	if err != nil {
 		return fail(err)
 	}
 	il, ok := acct.(driver.InteractiveLogin)
 	if !ok {
-		return fail(fmt.Errorf("в CRM %s входят паролем, а не сотрудником: если пароль сменился — court-gateway set-password", s.CRMType))
+		return fail(fmt.Errorf("в CRM %s входят паролем, а не сотрудником: если пароль сменился — court-gateway set-password", crmType))
 	}
 	// the session is written in the state folder: closed to other users
 	// first (Windows: protectSecrets; elsewhere the file is 0600 in 0700)
@@ -83,8 +92,12 @@ func cmdLogin(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		return fail(fmt.Errorf("вход выполнен, но CRM не отвечает на проверку: %s", core.ReadyReason(err)))
 	}
 	fmt.Fprintln(stdout, "Вход в CRM выполнен. Служба шлюза подхватит его сама, перезапуск не нужен.")
-	if cp, ok := acct.(driver.ClientPicker); ok && s.Driver.CRM[cp.ClientKey()] == nil {
-		fmt.Fprintln(stdout, "Служебный клиент клуба не выбран: брони PadelApp не встанут. Выберите его: court-gateway setup --force с новым кодом подключения.")
+	if cp, ok := acct.(driver.ClientPicker); ok && crmKeys[cp.ClientKey()] == nil {
+		if *mirror {
+			fmt.Fprintf(stdout, "Служебный клиент клуба во второй CRM не выбран: брони PadelApp и отражения не встанут. Впишите его в gateway.yaml: mirror.%s.\n", cp.ClientKey())
+		} else {
+			fmt.Fprintln(stdout, "Служебный клиент клуба не выбран: брони PadelApp не встанут. Выберите его: court-gateway setup --force с новым кодом подключения.")
+		}
 	}
 	return 0
 }
@@ -252,7 +265,7 @@ func chooseClub(ctx context.Context, il driver.InteractiveLogin, r *bufio.Reader
 }
 
 // pickClient has the person find and choose the club's service client
-// (REQ-396); an empty answer chooses none.
+// that bookings are written on; an empty answer chooses none.
 func pickClient(r *bufio.Reader, w io.Writer) func(context.Context, driver.ClientPicker) (string, error) {
 	return func(ctx context.Context, cp driver.ClientPicker) (string, error) {
 		fmt.Fprintln(w, "Служебный клиент клуба для броней PadelApp: брони PadelApp встают в CRM на этого клиента (обычно клиент с именем клуба).")

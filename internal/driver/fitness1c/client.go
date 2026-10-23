@@ -31,7 +31,8 @@ const maxBody = 8 << 20
 // password (SetPassword) ends the pause at once.
 const authPause = 2 * time.Minute
 
-// Codes of 1C's application errors the driver branches on (D14 runs, §27).
+// Codes of 1C's application errors the driver branches on (as the backend
+// adapter's live runs saw them).
 const (
 	codeRoomBusy        = 1060 // the room is taken at that time
 	codeAlreadyCanceled = 1037 // the rental is already cancelled
@@ -87,6 +88,10 @@ type client struct {
 	password  string
 	stopUntil time.Time // no request before (a refused login)
 	token     string    // the technical client's usertoken
+
+	// the technical client of a pair's mirrors ("" when none) and its token
+	mirrorPhone string
+	mirrorToken string
 }
 
 func (c *client) setPassword(p string) {
@@ -106,7 +111,7 @@ func (c *client) stopped() (time.Time, bool) {
 // refused login UpstreamAuth, 1C's numeric error an *apiError, an answer
 // that is not {result: true, data} UpstreamInvalid. retry repeats the
 // request once when no answer came at all (a lost answer: 1C is idempotent
-// per client and slot, D14 §27).
+// per client and slot).
 func (c *client) call(ctx context.Context, method, path string, query url.Values, body any, usertoken string, retry bool) (*envelope, error) {
 	op := method + " " + path
 	if until, stop := c.stopped(); stop && usertoken == "" {
@@ -212,34 +217,52 @@ func (c *client) get(ctx context.Context, path string, query url.Values, usertok
 	return env, nil
 }
 
-// userToken is the technical client's token: kept until 1C refuses it,
+// techClient is one of the installation's technical clients in 1C.
+type techClient int
+
+const (
+	// gatewayClient makes the partners' bookings (crm.client_phone).
+	gatewayClient techClient = iota
+	// mirrorClient makes the mirrors of a pair (crm.mirror_client_phone):
+	// 1C keeps no comment on a rental, so a mirror is told by its client.
+	mirrorClient
+)
+
+// tokenOf is a technical client's token: kept until 1C refuses it,
 // issued again by phone (GET /client_usertoken/, no secret needed).
-func (c *client) userToken(ctx context.Context, fresh bool) (string, error) {
+func (c *client) tokenOf(ctx context.Context, who techClient, fresh bool) (string, error) {
 	c.mu.Lock()
-	tok := c.token
+	phone, slot := c.phone, &c.token
+	if who == mirrorClient {
+		phone, slot = c.mirrorPhone, &c.mirrorToken
+	}
+	tok := *slot
 	c.mu.Unlock()
 	if tok != "" && !fresh {
 		return tok, nil
 	}
+	if phone == "" {
+		return "", fmt.Errorf("the 1C technical client is not configured: %w", driver.ErrBookingNotConfigured)
+	}
 	var data struct {
 		UserToken string `json:"usertoken"`
 	}
-	if _, err := c.get(ctx, "/client_usertoken/", url.Values{"phone": {c.phone}}, "", &data); err != nil {
+	if _, err := c.get(ctx, "/client_usertoken/", url.Values{"phone": {phone}}, "", &data); err != nil {
 		return "", err
 	}
 	if data.UserToken == "" {
 		return "", driver.Upstream(driver.UpstreamInvalid, "GET /client_usertoken/: no usertoken")
 	}
 	c.mu.Lock()
-	c.token = data.UserToken
+	*slot = data.UserToken
 	c.mu.Unlock()
 	return data.UserToken, nil
 }
 
-// asClient runs f with the technical client's token; when 1C refuses the
-// token, it is issued again and f runs once more.
-func (c *client) asClient(ctx context.Context, f func(tok string) error) error {
-	tok, err := c.userToken(ctx, false)
+// as runs f with a technical client's token; when 1C refuses the token,
+// it is issued again and f runs once more.
+func (c *client) as(ctx context.Context, who techClient, f func(tok string) error) error {
+	tok, err := c.tokenOf(ctx, who, false)
 	if err != nil {
 		return err
 	}
@@ -249,7 +272,7 @@ func (c *client) asClient(ctx context.Context, f func(tok string) error) error {
 	if !refused {
 		return err
 	}
-	if tok, err = c.userToken(ctx, true); err != nil {
+	if tok, err = c.tokenOf(ctx, who, true); err != nil {
 		return err
 	}
 	return f(tok)

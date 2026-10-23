@@ -156,6 +156,7 @@ func (c *Clubs) Ready(ctx context.Context) error {
 				alerts = &ReadyError{Err: err}
 			}
 			alerts.Clubs = append(alerts.Clubs, t.ids[i])
+			alerts.alerts = append(alerts.alerts, err)
 		default:
 			return &ReadyError{Clubs: []string{t.ids[i]}, Err: err}
 		}

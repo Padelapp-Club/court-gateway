@@ -1,5 +1,5 @@
 // Package yclientsstub is an in-memory YCLIENTS for tests: the calls the
-// yclients driver makes, answered the way the D11 probes of a live branch
+// yclients driver makes, answered the way the live probes of a branch
 // (2270517, October 2026) saw YCLIENTS answer — the envelope, the paging of
 // records, schedules with bare local times, 422 on a busy time, deleted
 // records still readable, masked client phones. What the probes did not
@@ -30,7 +30,8 @@ type Service struct {
 	From, To     int
 }
 
-// Staff is a court of the branch, with the D11 restriction fields.
+// Staff is a court of the branch, with the restriction fields the
+// config check reads.
 type Staff struct {
 	ID           string
 	Name         string
@@ -82,7 +83,7 @@ type Stub struct {
 	Zone      *time.Location
 	TZName    string // timezone_name of the card; "" = Zone's name
 
-	// Card restrictions (D11): Active false = inactive, TimetableOff.
+	// Card restrictions: Active false = inactive, TimetableOff.
 	Inactive     bool
 	TimetableOff bool
 
@@ -222,6 +223,27 @@ func (s *Stub) SetServices(staff string, svc []Service) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.staff[staff].Services = svc
+}
+
+// EditRecord changes a record as the club would in the journal (edit gets
+// the stored record itself).
+func (s *Stub) EditRecord(id int64, edit func(*Record)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r := s.records[id]; r != nil {
+		edit(r)
+	}
+}
+
+// Records returns copies of every record, deleted ones too.
+func (s *Stub) Records() []Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Record, 0, len(s.records))
+	for _, r := range s.records {
+		out = append(out, *r)
+	}
+	return out
 }
 
 // Delete deletes a record as the club would in the journal.
@@ -468,8 +490,8 @@ func (s *Stub) listRecords(w http.ResponseWriter, r *http.Request) {
 	var list []*Record
 	for _, rec := range s.records {
 		// [ASSUMPTION] records are selected by the local date of their start;
-		// deleted ones are left out unless ListDeleted (D11 saw deleted:true
-		// only by id, and the driver skips it either way)
+		// deleted ones are left out unless ListDeleted (the live probes saw
+		// deleted:true only by id, and the driver skips it either way)
 		if !rec.Start.Before(from) && rec.Start.Before(to) && (!rec.Deleted || s.listDel) {
 			list = append(list, rec)
 		}
@@ -629,7 +651,7 @@ func (s *Stub) book(w http.ResponseWriter, body []byte) {
 			fail(w, http.StatusUnprocessableEntity, "Неверная запись")
 			return
 		}
-		// the same service twice in one appointment counts once (D11 probe)
+		// the same service twice in one appointment counts once (live probe)
 		seen := map[int64]bool{}
 		p := planned{staff: staff, start: start}
 		for _, id := range a.Services {

@@ -10,11 +10,12 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/yclients/yclientsstub"
 )
 
-// The form doctor takes as a driver's own config alert code (4019ffe).
+// The form doctor takes as a driver's own config alert code
+// (doctor.alertCode).
 var doctorAlertCode = regexp.MustCompile(`^[A-Z][A-Z_]{2,40}$`)
 
 // What may refuse some calls is a ConfigAlert — the club served, the code
-// shown — and a misconfiguration still wins over it (D28 RR-T10a-7).
+// shown — and a misconfiguration still wins over it.
 func TestConfigAlerts(t *testing.T) {
 	short := time.Now().AddDate(0, 0, 5).Format("2006-01-02")
 	for _, c := range []struct {
@@ -28,10 +29,10 @@ func TestConfigAlerts(t *testing.T) {
 		{"both: the first is the code", func(s *yclientsstub.Staff) { s.Hidden, s.ScheduleTill = true, short }, "SCHEDULE_SHORT", 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			f := newFixture(t, d11TileCourt(opts{}, c.set))
+			f := newFixture(t, ycTileCourt(opts{}, c.set))
 			for name, check := range map[string]func() error{
-				"CheckConfig": func() error { return f.drv.CheckConfig(d11ctx) },
-				"Ready":       func() error { return f.drv.Ready(d11ctx) },
+				"CheckConfig": func() error { return f.drv.CheckConfig(ycCtx) },
+				"Ready":       func() error { return f.drv.Ready(ycCtx) },
 			} {
 				var ca *driver.ConfigAlert
 				err := check()
@@ -45,9 +46,9 @@ func TestConfigAlerts(t *testing.T) {
 		})
 	}
 	t.Run("a misconfiguration wins", func(t *testing.T) {
-		f := newFixture(t, d11TileCourt(opts{}, func(s *yclientsstub.Staff) { s.Hidden, s.Prepaid = true, "required" }))
+		f := newFixture(t, ycTileCourt(opts{}, func(s *yclientsstub.Staff) { s.Hidden, s.Prepaid = true, "required" }))
 		var me *driver.MisconfigError
-		if err := f.drv.CheckConfig(d11ctx); !errors.As(err, &me) {
+		if err := f.drv.CheckConfig(ycCtx); !errors.As(err, &me) {
 			t.Fatalf("err = %v, want MisconfigError", err)
 		}
 	})

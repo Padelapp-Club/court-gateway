@@ -19,7 +19,8 @@ import (
 	"github.com/Padelapp-Club/court-gateway/internal/driver/yclients"
 )
 
-// The D11 differential check (testdata/d11diff/README.md): the scenarios
+// The differential check against the backend adapter
+// (testdata/difftest/README.md): the scenarios
 // went through the backend's TypeScript adapter, which wrote what it read
 // as occupied and every request it sent (ts-golden.json); here they go
 // through the gateway driver, answered the same, and must give the same.
@@ -178,15 +179,15 @@ func slots(days []string, loc *time.Location) [][2]time.Time {
 	return out
 }
 
-func TestD11Differential(t *testing.T) {
+func TestBackendDifferential(t *testing.T) {
 	var input struct {
 		SupportPhone string         `json:"support_phone"`
 		SupportEmail string         `json:"support_email"`
 		Scenarios    []diffScenario `json:"scenarios"`
 	}
 	var golden map[string]diffResult
-	readJSON(t, "testdata/d11diff/scenarios.json", &input)
-	readJSON(t, "testdata/d11diff/ts-golden.json", &golden)
+	readJSON(t, "testdata/difftest/scenarios.json", &input)
+	readJSON(t, "testdata/difftest/ts-golden.json", &golden)
 	if len(input.Scenarios) == 0 || len(golden) != len(input.Scenarios) {
 		t.Fatalf("%d scenarios, %d golden results: regenerate ts-golden.json", len(input.Scenarios), len(golden))
 	}
@@ -264,13 +265,13 @@ func TestD11Differential(t *testing.T) {
 				gotErr = d.MarkPaid(ctx, "y-"+joinIDs(sc.Records, "-"), "padelapp")
 			}
 			if (gotErr != nil) != (want.Error != "") {
-				t.Fatalf("error: gateway %v, D11 %q", gotErr, want.Error)
+				t.Fatalf("error: gateway %v, backend %q", gotErr, want.Error)
 			}
 			if !reflect.DeepEqual(got.Busy, want.Busy) && !(len(got.Busy) == 0 && len(want.Busy) == 0) {
-				t.Fatalf("occupied slots differ:\n gateway %v\n D11     %v", got.Busy, want.Busy)
+				t.Fatalf("occupied slots differ:\n gateway %v\n backend %v", got.Busy, want.Busy)
 			}
 			if got.ID != want.ID {
-				t.Fatalf("booking id: gateway %q, D11 %q", got.ID, want.ID)
+				t.Fatalf("booking id: gateway %q, backend %q", got.ID, want.ID)
 			}
 			compareRequests(t, sc.Kind, *reqs, want.Requests)
 		})
@@ -287,7 +288,8 @@ func joinIDs(records []map[string]any, sep string) string {
 
 // compareRequests: the writes (and the services read that decides what a
 // booking books) must be the same requests — method, path, token, query,
-// body. Known, intended differences: the comment of book_record (D11 writes
+// body. Known, intended differences: the comment of book_record (the
+// backend writes
 // the player, the gateway its marker and the partner's note), and the
 // reads, which differ by design (the gateway reads records from the day
 // before and reads a record before deleting it).
@@ -304,7 +306,7 @@ func compareRequests(t *testing.T, kind string, got, want []diffRequest) {
 	}
 	g, w := pick(got), pick(want)
 	if len(g) != len(w) {
-		t.Fatalf("%s: %d writes, D11 %d:\n gateway %s\n D11     %s", kind, len(g), len(w), dump(g), dump(w))
+		t.Fatalf("%s: %d writes, backend %d:\n gateway %s\n backend %s", kind, len(g), len(w), dump(g), dump(w))
 	}
 	for i := range g {
 		gb, wb := normBody(t, g[i].Body), normBody(t, w[i].Body)
@@ -314,14 +316,14 @@ func compareRequests(t *testing.T, kind string, got, want []diffRequest) {
 				t.Fatalf("book_record comment %q lacks the marker", gc)
 			}
 			if _, ok := wb["comment"].(string); !ok {
-				t.Fatalf("D11 book_record without a comment")
+				t.Fatalf("backend book_record without a comment")
 			}
 			delete(gb, "comment")
 			delete(wb, "comment")
 		}
 		if g[i].Method != w[i].Method || g[i].Path != w[i].Path || g[i].Auth != w[i].Auth ||
 			!reflect.DeepEqual(normQuery(g[i].Query), normQuery(w[i].Query)) || !reflect.DeepEqual(gb, wb) {
-			t.Fatalf("request %d differs:\n gateway %s %s %s %v %v\n D11     %s %s %s %v %v", i,
+			t.Fatalf("request %d differs:\n gateway %s %s %s %v %v\n backend %s %s %s %v %v", i,
 				g[i].Method, g[i].Path, g[i].Auth, normQuery(g[i].Query), gb, w[i].Method, w[i].Path, w[i].Auth, normQuery(w[i].Query), wb)
 		}
 	}

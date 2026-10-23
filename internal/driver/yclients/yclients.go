@@ -1,7 +1,7 @@
 // Package yclients is the gateway driver for YCLIENTS (api.yclients.com):
 // occupancy from the branch's records and the courts' schedules, bookings
 // through book_record, cancellation and the payment mark on the record.
-// It is the D11 adapter of the PadelApp backend moved into the gateway,
+// It is the YCLIENTS adapter of the PadelApp backend moved into the gateway,
 // with the same rules; the driver keeps no CRM data, only the user token
 // of a login.
 //
@@ -237,7 +237,7 @@ func (d *Driver) Resource(court string) string {
 // Studio implements driver.AccountClub: the club's branch.
 func (d *Driver) Studio() string { return d.company }
 
-// Capabilities: the payment mark goes into the record's comment (D11);
+// Capabilities: the payment mark goes into the record's comment;
 // no prices (see PriceTable); the CRM's currency is the ruble.
 func (d *Driver) Capabilities() driver.Capabilities {
 	return driver.Capabilities{Payments: true, NoPrices: true, Currency: "RUB"}

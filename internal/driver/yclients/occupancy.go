@@ -27,9 +27,9 @@ var (
 	clockRe = regexp.MustCompile(`^\d{2}:\d{2}$`)
 )
 
-// record is the part of a YCLIENTS record the driver reads. The client
-// and every other field are never decoded; the comment only to recognize
-// the gateway's own records (marker, set tag).
+// record is the part of a YCLIENTS record the driver reads. Every other
+// field is never decoded; the comment and the client's phone only to
+// recognize the gateway's own records (marker, set tag, service client).
 type record struct {
 	ID       json.Number `json:"id"`
 	StaffID  json.Number `json:"staff_id"`
@@ -37,6 +37,21 @@ type record struct {
 	Length   *float64    `json:"length"`
 	Deleted  bool        `json:"deleted"`
 	Comment  *string     `json:"comment"`
+	// Client is read leniently (phoneOf): an answer whose client is of an
+	// unexpected form must not fail the read of occupancy.
+	Client json.RawMessage `json:"client"`
+}
+
+// phoneOf is the phone of a record's client ("" when it has none, or
+// not in the form seen).
+func phoneOf(raw json.RawMessage) string {
+	var c struct {
+		Phone string `json:"phone"`
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return ""
+	}
+	return c.Phone
 }
 
 // span is a record's interval, ok=false when it is not readable.

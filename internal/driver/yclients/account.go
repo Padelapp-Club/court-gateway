@@ -57,7 +57,7 @@ type companyItem struct {
 
 // companies lists the branches the user may manage (GET /companies?my=1,
 // user-authorized). [UNVERIFIED] read from YCLIENTS' documentation, not
-// yet seen in a live answer (D11 probed one known branch).
+// yet seen in a live answer (the live probes used one known branch).
 func (a *Account) companies(ctx context.Context) ([]companyItem, error) {
 	r, err := a.c.do(ctx, http.MethodGet, "/companies", url.Values{"my": {"1"}}, nil, userAuth)
 	if err != nil {

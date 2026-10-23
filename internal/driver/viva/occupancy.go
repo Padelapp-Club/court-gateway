@@ -27,6 +27,9 @@ type slot struct {
 		ID string `json:"id"`
 	} `json:"studio"`
 	Canceled *bool `json:"canceled"`
+	// Comment is decoded only to tell the gateway's own records (their
+	// markers); it is never logged or passed on.
+	Comment json.RawMessage `json:"comment"`
 }
 
 // parseTime accepts RFC3339 only. A timestamp without a zone is refused
@@ -127,34 +130,11 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 	for _, kind := range []string{"exercises", "breaks"} {
 		dateFrom, dateTo, complete := d.window(kind, loc, q.From, q.To, now)
 		occ.Complete = occ.Complete && complete
-		step := listDays
-		if kind == "breaks" {
-			step = 1 << 20 // breaks are few: one request, however long the look-back
+		items, whole, err := d.listRange(ctx, kind, dateFrom, dateTo)
+		if err != nil {
+			return driver.Occupancy{}, err
 		}
-		var items []slot
-		for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
-			last := f.AddDate(0, 0, step-1)
-			if last.After(dateTo) {
-				last = dateTo
-			}
-			part, whole, err := d.list(ctx, kind, f, last)
-			if err == nil && !whole && last.After(f) {
-				// a page-sized list may be a first page: asked once more day
-				// by day, it is whole when no day's list is page-sized
-				part, whole = nil, true
-				for g := f; err == nil && !g.After(last); g = g.AddDate(0, 0, 1) {
-					var p []slot
-					var w bool
-					p, w, err = d.list(ctx, kind, g, g)
-					part, whole = append(part, p...), whole && w
-				}
-			}
-			if err != nil {
-				return driver.Occupancy{}, err
-			}
-			occ.Complete = occ.Complete && whole
-			items = append(items, part...)
-		}
+		occ.Complete = occ.Complete && whole
 		prefix := "e-"
 		if kind == "breaks" {
 			prefix = "b-"
@@ -172,6 +152,41 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 	}
 	return occ, nil
+}
+
+// listRange lists one kind for the dates [dateFrom, dateTo], exercises a
+// week at a time; whole is false when a list may be one page of a longer
+// one even day by day (pageSizes).
+func (d *Driver) listRange(ctx context.Context, kind string, dateFrom, dateTo time.Time) (items []slot, whole bool, err error) {
+	step := listDays
+	if kind == "breaks" {
+		step = 1 << 20 // breaks are few: one request, however long the look-back
+	}
+	whole = true
+	for f := dateFrom; !f.After(dateTo); f = f.AddDate(0, 0, step) {
+		last := f.AddDate(0, 0, step-1)
+		if last.After(dateTo) {
+			last = dateTo
+		}
+		part, w, err := d.list(ctx, kind, f, last)
+		if err == nil && !w && last.After(f) {
+			// a page-sized list may be a first page: asked once more day
+			// by day, it is whole when no day's list is page-sized
+			part, w = nil, true
+			for g := f; err == nil && !g.After(last); g = g.AddDate(0, 0, 1) {
+				var p []slot
+				var pw bool
+				p, pw, err = d.list(ctx, kind, g, g)
+				part, w = append(part, p...), w && pw
+			}
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		whole = whole && w
+		items = append(items, part...)
+	}
+	return items, whole, nil
 }
 
 // intervals validates one list item and returns the courts it occupies

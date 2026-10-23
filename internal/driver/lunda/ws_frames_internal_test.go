@@ -1,7 +1,7 @@
 package lunda
 
-// Regressions of review round r8 (keep-alive follow-ups 4, 6 and 7, and
-// mutation m8).
+// The WebSocket keep-alive's frames: one Close only, long data frames
+// discarded as they stream, a stop at the upgrade and valid fragmentation.
 
 import (
 	"bufio"
@@ -40,7 +40,7 @@ func clientFrames(b net.Conn) chan []byte {
 	return out
 }
 
-// r8-4: after a Close nothing is sent — not a second Close (the stop and
+// After a Close nothing is sent — not a second Close (the stop and
 // the loop's own Close racing), nor a pong.
 func TestWSSendsOneCloseOnly(t *testing.T) {
 	a, b := net.Pipe()
@@ -61,7 +61,7 @@ func TestWSSendsOneCloseOnly(t *testing.T) {
 	}
 }
 
-// r8-6: a data frame longer than any bound is discarded as it streams
+// A data frame longer than any bound is discarded as it streams
 // in, not refused: the connection stays and the next ping is answered.
 // Only a 64-bit length with its top bit set is a protocol error.
 func TestWSLongDataFrameIsDiscarded(t *testing.T) {
@@ -120,7 +120,7 @@ func (c *stopAtAnswer) Close() error {
 	return c.Conn.Close()
 }
 
-// m8: a stop that lands after the upgrade's answer was read, but while the
+// A stop that lands after the upgrade's answer was read, but while the
 // handshake watch is still on, has closed the connection: dialWS says the
 // opening was stopped and returns no connection (never a closed one,
 // which would log a false "up again").

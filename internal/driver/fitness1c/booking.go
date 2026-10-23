@@ -13,7 +13,7 @@ import (
 )
 
 // statusConfirmed is the status of a rental of a free service right after
-// it is created (D14 §27); anything else (a temporary reservation that
+// it is created; anything else (a temporary reservation that
 // lapses in 15 minutes) is not a booking.
 const statusConfirmed = "reserved"
 
@@ -75,7 +75,7 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 		"count":      minutes / seance,
 	}
 	var out created1C
-	err = d.c.asClient(ctx, func(tok string) error {
+	err = d.c.as(ctx, gatewayClient, func(tok string) error {
 		env, err := d.c.call(ctx, http.MethodPost, "/rental/", nil, body, tok, true)
 		if err != nil {
 			return err
@@ -98,7 +98,7 @@ func (d *Driver) Create(ctx context.Context, req driver.CreateRequest) (driver.B
 	}
 	id := strings.ToLower(out.Rental.ID)
 	if out.TemporarilyReserved == nil || *out.TemporarilyReserved || out.Status == nil || *out.Status != statusConfirmed {
-		d.compensate(ctx, id, "not confirmed without payment")
+		d.compensate(ctx, gatewayClient, id, "not confirmed without payment")
 		return driver.Booking{}, driver.Upstream(driver.UpstreamRejected,
 			"POST /rental/: 1C made a temporary reservation, not a booking: the service must not require a payment basis")
 	}
@@ -126,14 +126,14 @@ func (d *Driver) bookingServiceNow(ctx context.Context, svc string) error {
 	return fmt.Errorf("the booking service is not among the club's rental services: %w", driver.ErrBookingNotConfigured)
 }
 
-// compensate removes a rental that must not exist, up to three times; the
-// last failure is logged as an error with the rental's id (no personal
-// data) for removal by hand.
-func (d *Driver) compensate(ctx context.Context, id, why string) {
+// compensate removes a rental of technical client who that must not
+// exist, up to three times; the last failure is logged as an error with
+// the rental's id (no personal data) for removal by hand.
+func (d *Driver) compensate(ctx context.Context, who techClient, id, why string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
 	for attempt := 1; attempt <= compensationAttempts; attempt++ {
-		err := d.deleteRental(ctx, id)
+		err := d.deleteRental(ctx, who, id)
 		if err == nil {
 			d.log.Warn("1C: rental removed", "why", why, "rental", id)
 			return
@@ -149,9 +149,10 @@ func (d *Driver) compensate(ctx context.Context, id, why string) {
 	d.log.Error("1C: a rental stayed in 1C, remove it by hand", "why", why, "rental", id)
 }
 
-// deleteRental cancels a rental; 1037 "already cancelled" is success.
-func (d *Driver) deleteRental(ctx context.Context, id string) error {
-	err := d.c.asClient(ctx, func(tok string) error {
+// deleteRental cancels a rental of technical client who; 1037 "already
+// cancelled" is success.
+func (d *Driver) deleteRental(ctx context.Context, who techClient, id string) error {
+	err := d.c.as(ctx, who, func(tok string) error {
 		_, err := d.c.call(ctx, http.MethodDelete, "/rental/", url.Values{"rental_id": {id}}, nil, tok, false)
 		return err
 	})
@@ -202,7 +203,7 @@ func (d *Driver) Cancel(ctx context.Context, id string, partner string) error {
 		case r.started || !r.Start.After(now):
 			return driver.ErrStarted
 		}
-		if err := d.deleteRental(ctx, rid); err != nil {
+		if err := d.deleteRental(ctx, gatewayClient, rid); err != nil {
 			return err
 		}
 		d.log.Info("rental cancelled")

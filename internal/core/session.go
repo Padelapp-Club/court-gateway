@@ -18,12 +18,33 @@ const SessionFile = "crm-session"
 // SessionStore is the driver.SessionStore in the state directory dir.
 type SessionStore string
 
-var _ driver.SessionStore = SessionStore("")
+var (
+	_ driver.SessionStore = SessionStore("")
+	_ driver.SessionStore = NamedSessionStore{}
+)
 
 // LoadSession implements driver.SessionStore. A session file anyone but
 // the owner can read is refused, not used: it may have been read already.
 func (d SessionStore) LoadSession() ([]byte, error) {
-	p := filepath.Join(string(d), SessionFile)
+	return NamedSessionStore{Dir: string(d), File: SessionFile}.LoadSession()
+}
+
+// SaveSession implements driver.SessionStore: the file is replaced
+// atomically with mode 0600 in a 0700 directory; nil removes it.
+func (d SessionStore) SaveSession(b []byte) error {
+	return NamedSessionStore{Dir: string(d), File: SessionFile}.SaveSession(b)
+}
+
+// NamedSessionStore is a driver.SessionStore in file File of the state
+// directory Dir: the mirror's CRM session (MirrorSessionFile) is kept
+// apart from the primary's, as SessionStore keeps that.
+type NamedSessionStore struct {
+	Dir, File string
+}
+
+// LoadSession implements driver.SessionStore, as SessionStore does.
+func (n NamedSessionStore) LoadSession() ([]byte, error) {
+	p := filepath.Join(n.Dir, n.File)
 	fi, err := os.Stat(p)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -37,17 +58,16 @@ func (d SessionStore) LoadSession() ([]byte, error) {
 	return os.ReadFile(p)
 }
 
-// SaveSession implements driver.SessionStore: the file is replaced
-// atomically with mode 0600 in a 0700 directory; nil removes it.
-func (d SessionStore) SaveSession(b []byte) error {
-	p := filepath.Join(string(d), SessionFile)
+// SaveSession implements driver.SessionStore, as SessionStore does.
+func (n NamedSessionStore) SaveSession(b []byte) error {
+	p := filepath.Join(n.Dir, n.File)
 	if b == nil {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
-	if err := os.MkdirAll(string(d), 0o700); err != nil {
+	if err := os.MkdirAll(n.Dir, 0o700); err != nil {
 		return err
 	}
 	return WriteFileAtomic(p, b, 0o600)

@@ -12,8 +12,8 @@ import (
 // room, the half-hours of a rental service, each either listed free,
 // listed with is_busy (a temporary reservation of the rental contour), or
 // not listed at all (a confirmed rental, a class, a closed hour: 1C does
-// not say which). The rules here are the backend adapter's (D14,
-// fitness1c-crm.service.ts normalizeGrid / getBreaksForSlots), checked
+// not say which). The rules here are the backend adapter's
+// (fitness1c-crm.service.ts normalizeGrid / getBreaksForSlots), checked
 // against it on the same bodies (difftest_test.go):
 //
 //   - a half-hour is busy unless 1C listed it free and never busy;

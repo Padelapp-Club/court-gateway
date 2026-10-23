@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Builds scenarios.json for the D11 differential check (see README.md).
+"""Builds scenarios.json for the YCLIENTS differential check (see README.md).
 
-The live fixtures (company-*, records-*, schedule-*) are the D11 adapter's
+The live fixtures (company-*, records-*, schedule-*) are the backend adapter's
 own, copied from monorepo backend/src/modules/admins/crm/integrations/
 yclients-crm/__fixtures__ (origin/stage 391bd2d8): answers of branch 2270517
 on 2026-10-06, without client data. Everything else is synthetic.

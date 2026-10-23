@@ -64,8 +64,8 @@ const discoverDays = 7
 
 // Discover implements driver.Account: the clubs of the external system;
 // for the asked one (or the only one) its rooms as courts, its zone, and
-// hours drafted from a week of its grid (1C's work_time is not the grid's,
-// D14 §15.1). The services a booking can be made by are named in notices.
+// hours drafted from a week of its grid (1C's work_time is not the
+// grid's). The services a booking can be made by are named in notices.
 func (a *Account) Discover(ctx context.Context, q driver.DiscoverQuery) (driver.Discovery, error) {
 	var out driver.Discovery
 	list, err := listClubs(ctx, a.c)

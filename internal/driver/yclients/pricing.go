@@ -8,7 +8,8 @@ import (
 )
 
 // PriceTable implements driver.Driver: not supported. A YCLIENTS club's
-// prices of sale live in PadelApp (as with D11, which read none), and
+// prices of sale live in PadelApp (the backend adapter read none either),
+// and
 // YCLIENTS prices the time of day with services in effect at some hours,
 // which no single read turns into a week of rules. What a booking costs
 // in YCLIENTS is what its services cost there (Create).
