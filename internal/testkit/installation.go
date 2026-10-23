@@ -162,7 +162,7 @@ func StartInstallation(t *testing.T, h *Hub, id string, o InstallationOptions) *
 		co.ReadyNoClubs = acct.CheckLogin
 	}
 	clubs := core.NewClubs(co)
-	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
+	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, nil, clubs, log))
 	syncer := remote.New(remote.Options{Base: base, Factories: map[string]driver.Factory{o.CRMType: o.Factory}, Clubs: clubs,
 		Logger: log, DriverHook: o.Hook, Retry: 100 * time.Millisecond})
 	in := &Installation{Clubs: clubs, Syncer: syncer, Logs: logs}

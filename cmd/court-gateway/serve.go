@@ -379,7 +379,11 @@ func buildInstallation(s *core.Settings, log *slog.Logger) (*core.Clubs, *remote
 		}
 	}
 	clubs := core.NewClubs(core.ClubsOptions{Logger: log, ReadyNoClubs: ready})
-	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, clubs, log))
+	var macct driver.Account
+	if s.Mirror != nil {
+		macct = s.Mirror.Driver.Account
+	}
+	clubs.SetGatewayAPI(remote.DiscoverHandler(acct, macct, clubs, log))
 	return clubs, remote.New(remote.Options{Base: s, Factories: drivers.Factories, Clubs: clubs, Logger: log}), nil
 }
 
