@@ -58,6 +58,8 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 	offered := setupTypes(getenv)
 	fs.StringVar(&in.CRMType, "crm", "", "CRM type: "+strings.Join(offered, ", ")+" (default "+drivers.DefaultCRM+")")
 	fields := crmFlags(fs)
+	mirrorType := fs.String("mirror", "", "second CRM of the same clubs: "+strings.Join(core.MirrorTypes, ", ")+" (default: none; setup asks)")
+	mirrorFields := mirrorFlags(fs)
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -88,7 +90,17 @@ func cmdSetup(args []string, stdout, stderr io.Writer, getenv func(string) strin
 		}
 		in.CRMType = t
 	}
+	in.Mirror = strings.ToLower(strings.TrimSpace(*mirrorType))
+	if !*nonInteractive && in.Mirror == "" && !slices.Contains(core.MirrorTypes, in.CRMType) {
+		m, err := askMirror(reader, stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "setup: %v\n", err)
+			return 2
+		}
+		in.Mirror = m
+	}
 	fillCRM(&in, fields, getenv)
+	fillMirror(&in, mirrorFields)
 	if !*nonInteractive {
 		if err := prompt(&in, reader, stderr); err != nil {
 			fmt.Fprintf(stderr, "setup: %v\n", err)
@@ -238,8 +250,12 @@ func prompt(in *setup.Input, r *bufio.Reader, w io.Writer) error {
 			return err
 		}
 	}
+	if in.Mirror != "" {
+		mspec, _ := driver.SetupFor(in.Mirror)
+		fmt.Fprintf(w, "Для второй CRM (%s) понадобится %s.\n", cmp.Or(mspec.Name, in.Mirror), cmp.Or(mspec.Needs, "вход в неё"))
+	}
 	for _, f := range spec.Fields {
-		if f.Prompt == "" || in.CRM[f.Key] != "" {
+		if f.Prompt == "" || in.CRM[f.Key] != "" || f.WithMirror && in.Mirror == "" {
 			continue
 		}
 		if in.CRM == nil {
@@ -365,6 +381,66 @@ func fillCRM(in *setup.Input, flags map[string]crmField, getenv func(string) str
 	}
 }
 
+// mirrorFlags define a flag for every key of a CRM an installation may
+// hold as its second (core.MirrorTypes): the key's own flag with mirror-
+// for crm-, e.g. --mirror-service-client.
+func mirrorFlags(fs *flag.FlagSet) map[string]crmField {
+	out := map[string]crmField{}
+	for _, t := range core.MirrorTypes {
+		spec, _ := driver.SetupFor(t)
+		for _, f := range spec.Fields {
+			name := "mirror-" + strings.TrimPrefix(f.Flag, "crm-")
+			if _, dup := out[name]; dup || f.Flag == "" {
+				continue
+			}
+			f.Flag = name
+			out[name] = crmField{value: fs.String(name, "", "second CRM key "+f.Key), field: f}
+		}
+	}
+	return out
+}
+
+// fillMirror takes the second CRM's keys from their flags.
+func fillMirror(in *setup.Input, flags map[string]crmField) {
+	if in.Mirror == "" {
+		return
+	}
+	spec, _ := driver.SetupFor(in.Mirror)
+	in.MirrorCRM = map[string]string{}
+	for _, f := range spec.Fields {
+		if fl, ok := flags["mirror-"+strings.TrimPrefix(f.Flag, "crm-")]; ok {
+			if v := strings.TrimSpace(*fl.value); v != "" {
+				in.MirrorCRM[f.Key] = v
+			}
+		}
+	}
+}
+
+// askMirror asks whether the clubs also keep their bookings in a second
+// CRM (Lunda): its type, or "" for none.
+func askMirror(r *bufio.Reader, w io.Writer) (string, error) {
+	for _, t := range core.MirrorTypes {
+		spec, _ := driver.SetupFor(t)
+		for {
+			fmt.Fprintf(w, "Есть ли у клубов ещё и %s — вторая CRM, брони между ними будет сверять шлюз? (да/нет) [нет]: ", cmp.Or(spec.Name, t))
+			s, err := r.ReadString('\n')
+			if err != nil && s == "" {
+				return "", fmt.Errorf("ввод прерван")
+			}
+			switch strings.ToLower(strings.TrimSpace(s)) {
+			case "да", "д", "yes", "y":
+				return t, nil
+			case "", "нет", "н", "no", "n":
+			default:
+				fmt.Fprintln(w, "Ответьте «да» или «нет»")
+				continue
+			}
+			break
+		}
+	}
+	return "", nil
+}
+
 // askCRM asks which CRM the club has.
 func askCRM(r *bufio.Reader, w io.Writer, offered []string) (string, error) {
 	var names []string
@@ -401,6 +477,10 @@ func printSetup(w io.Writer, r setup.Result) {
 		for _, x := range r.Warnings {
 			fmt.Fprintf(w, "  - %s\n", x.Message)
 		}
+	}
+	if r.Mirror != "" {
+		spec, _ := driver.SetupFor(r.Mirror)
+		fmt.Fprintf(w, "Вторая CRM: %s. Сверку броней между CRM оператор включает у клуба на хабе.\n", cmp.Or(spec.Name, r.Mirror))
 	}
 	fmt.Fprintln(w, "Дальше: court-gateway install-service, затем court-gateway doctor.")
 	fmt.Fprintln(w, "Больше ничего делать не нужно: клубы подключает оператор на хабе, шлюз получит их сам.")

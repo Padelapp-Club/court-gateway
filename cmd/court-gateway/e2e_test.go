@@ -263,8 +263,10 @@ func TestSetupInteractiveAndPasswordStdin(t *testing.T) {
 	isTerminal = func() bool { return false }
 
 	// password, join code: nothing about clubs; the CRM type only when
-	// several are offered (Enter takes the default, Viva)
+	// several are offered (Enter takes the default, Viva), then whether
+	// there is a second CRM (Enter: no)
 	answers := strings.Join([]string{crmPass, s.hub.JoinCode("club-two", "Клуб Два")}, "\n") + "\n"
+	answers = "\n" + answers
 	if len(setupTypes(env{}.get)) > 1 {
 		answers = "\n" + answers
 	}
