@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -300,7 +301,7 @@ func (p *Pair) PriceTable(ctx context.Context, court string) (driver.PriceTable,
 // primary's is cancelled again under its own context and the partner gets
 // the mirror's error; when that cancel fails too, the booking is in one
 // CRM only: the partner gets an error that says so, the log an ERROR and
-// the hub an alarm, and every pass tries the cancel again (retryRollbacks).
+// the hub an alarm, and the passes try the cancel again (retryRollback).
 // The partner's id is the primary's: the mirror's half is found by its
 // court, time and the partner's marker.
 func (p *Pair) Create(ctx context.Context, req driver.CreateRequest) (driver.Booking, error) {
@@ -315,7 +316,7 @@ func (p *Pair) Create(ctx context.Context, req driver.CreateRequest) (driver.Boo
 			p.log.Error("a booking stays in the primary CRM only: the mirror refused it and its cancel failed",
 				"booking", bk.ID, "court", req.Court, "start", req.Start.UTC().Format(time.RFC3339), "mirror_error", err, "cancel_error", cerr)
 			a := Alarm{Code: AlarmHalfBooking, Problem: fmt.Sprintf(
-				"корт %s, %s: бронь партнёра %s %s есть только в %s — %s её не приняла, а отменить её не удалось; шлюз повторит отмену, если бронь останется — отмените вручную",
+				"корт %s, %s: бронь партнёра %s %s есть только в %s — %s её не приняла, а отменить её не удалось; шлюз повторяет отмену на каждой сверке до начала брони — если тревога не уходит, отмените бронь вручную",
 				req.Court, p.span(req.Start, req.End), req.Partner, bk.ID, crmName(p.o.PrimaryType), crmName(p.o.MirrorType))}
 			p.stick(a)
 			p.mu.Lock()
@@ -337,37 +338,57 @@ type rollback struct {
 	alarm              Alarm
 }
 
-// retryRollbacks cancels again, under the court's lock, the primary's
-// halves whose rollback failed (Create): the partner was refused, so the
-// half is no one's booking. One that has started by now is not cancelled
-// (a started booking never is): it is dropped, its alarm left to the
-// operator; so is one the primary refuses for good.
-func (p *Pair) retryRollbacks(ctx context.Context, now time.Time) {
+// retryRollback cancels again, under the court's lock, the first of the
+// primary's halves whose rollback failed (Create) — one a pass, so a CRM
+// that hangs on cancels takes at most one cancel's time from the pass's
+// reads. The partner was refused, so the half is no one's booking. One that
+// has started by now is dropped, never cancelled (a started booking never
+// is), as is one the primary refuses for good: their alarm then runs out as
+// any raised outside a pass. While a half waits, its alarm is kept up.
+func (p *Pair) retryRollback(ctx context.Context, now time.Time) {
 	p.mu.Lock()
-	todo := p.rollbacks
-	p.rollbacks = nil
-	p.mu.Unlock()
-	var keep []rollback
-	for _, r := range todo {
-		if !now.Before(r.start) {
-			p.log.Error("a booking stays in the primary CRM only: it started before its cancel went through", "booking", r.id, "court", r.court)
-			continue
+	p.rollbacks = slices.DeleteFunc(p.rollbacks, func(r rollback) bool {
+		if now.Before(r.start) {
+			return false
 		}
-		err := p.cancelHalf(ctx, r)
-		switch {
-		case err == nil || errors.Is(err, driver.ErrNotFound):
-			p.log.Warn("a booking the mirror refused was cancelled in the primary CRM on a retry", "booking", r.id, "court", r.court)
-			p.unstick(r.alarm)
-		case errors.Is(err, driver.ErrStarted) || errors.Is(err, driver.ErrNotOwned):
-			p.log.Error("a booking stays in the primary CRM only: its cancel is refused", "booking", r.id, "court", r.court, "error", err)
-		default:
-			p.log.Warn("the cancel of a booking the mirror refused failed again; the next pass tries again", "booking", r.id, "court", r.court, "error", err)
-			keep = append(keep, r)
-		}
+		p.log.Error("a booking stays in the primary CRM only: it started before its cancel went through", "booking", r.id, "court", r.court)
+		return true
+	})
+	if len(p.rollbacks) == 0 {
+		p.mu.Unlock()
+		return
 	}
-	p.mu.Lock()
-	p.rollbacks = append(keep, p.rollbacks...)
+	r := p.rollbacks[0]
 	p.mu.Unlock()
+	err := p.cancelHalf(ctx, r)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// a Create may have added halves meanwhile: r is taken out by its id
+	p.rollbacks = slices.DeleteFunc(p.rollbacks, func(x rollback) bool { return x.id == r.id })
+	switch {
+	case err == nil || errors.Is(err, driver.ErrNotFound):
+		p.log.Warn("a booking the mirror refused was cancelled in the primary CRM on a retry", "booking", r.id, "court", r.court)
+		p.unstickLocked(r.alarm)
+	case errors.Is(err, driver.ErrStarted) || errors.Is(err, driver.ErrNotOwned):
+		p.log.Error("a booking stays in the primary CRM only: its cancel is refused", "booking", r.id, "court", r.court, "error", err)
+	default:
+		p.log.Warn("the cancel of a booking the mirror refused failed again; a later pass tries again", "booking", r.id, "court", r.court, "error", err)
+		p.rollbacks = append(p.rollbacks, r) // behind the others
+	}
+	for _, w := range p.rollbacks {
+		p.keepUpLocked(w.alarm)
+	}
+}
+
+// pendingRollbacks are the ids of the primary's halves whose rollback waits.
+func (p *Pair) pendingRollbacks() map[string]bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := map[string]bool{}
+	for _, r := range p.rollbacks {
+		out[r.id] = true
+	}
+	return out
 }
 
 // cancelHalf cancels r in the primary under the court's lock.

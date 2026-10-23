@@ -68,12 +68,20 @@ func TestBothOrNeitherRollbackFailureReachesTheHub(t *testing.T) {
 			!strings.Contains(d, start.In(env.Location).Format("2006-01-02 15:04")) || strings.Contains(d, "PRIVACY-MARKER") {
 			t.Fatalf("readiness %q, detail %q", core.ReadyReason(err), d)
 		}
-		// the first retry fails too: the half and the alarm stay
+		// the retries fail too: the half and its one alarm stay (the pass's
+		// own half-booking rule, which says nothing is cancelled, keeps out)
 		before := env.Primary.Raw(t, half)
-		env.Primary.Fail(t, "delete")
-		rep := env.Pass(t)
-		if !alarmed(rep, pair.AlarmHalfBooking) || len(rep.Created)+len(rep.Removed) > 0 || rep.Aborted {
-			t.Fatalf("pass with the retry failing: %+v", rep)
+		for i := range 3 {
+			env.Primary.Fail(t, "delete")
+			rep := env.Pass(t)
+			if !alarmed(rep, pair.AlarmHalfBooking) || len(rep.Created)+len(rep.Removed) > 0 || rep.Aborted {
+				t.Fatalf("pass %d with the retry failing: %+v", i+1, rep)
+			}
+			for _, a := range rep.Alarms {
+				if a.Code == pair.AlarmHalfBooking && !strings.Contains(a.Problem, "повторяет отмену") {
+					t.Fatalf("pass %d with the retry failing: alarms %+v", i+1, rep.Alarms)
+				}
+			}
 		}
 		if now := env.Primary.Raw(t, half); now != before {
 			t.Fatalf("a failed retry changed the half:\nbefore %s\nafter  %s", before, now)

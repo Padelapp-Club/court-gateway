@@ -116,7 +116,8 @@ type memo struct {
 type Report struct {
 	// Skipped: the hub's time is not known yet; nothing was read.
 	Skipped bool
-	// Aborted: a read failed or may be incomplete; nothing was written.
+	// Aborted: a read failed or may be incomplete; nothing of the plan was
+	// written (a rollback retried before the reads may have been).
 	Aborted bool
 	Created []driver.MirrorItem
 	Removed []driver.MirrorItem
@@ -171,7 +172,7 @@ func (p *Pair) Reconcile(ctx context.Context) Report {
 		return rep
 	}
 	// before the reads: a half cancelled now is not seen as half a booking
-	p.retryRollbacks(ctx, now)
+	p.retryRollback(ctx, now)
 	A := &side{typ: p.o.PrimaryType, m: p.am, name: crmName(p.o.PrimaryType)}
 	B := &side{typ: p.o.MirrorType, m: p.bm, name: crmName(p.o.MirrorType)}
 	// the window ends at the shorter horizon of the two CRMs (Lunda's
@@ -273,12 +274,23 @@ func (p *Pair) forget() {
 	p.memo = memo{}
 }
 
-// unstick drops an alarm raised outside a pass whose cause is gone.
-func (p *Pair) unstick(a Alarm) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// unstickLocked drops an alarm raised outside a pass whose cause is gone
+// (p.mu held). p.alarms is left as it is: the pass's finish replaces it, and
+// the Report of the pass before shares its array.
+func (p *Pair) unstickLocked(a Alarm) {
 	p.sticky = slices.DeleteFunc(p.sticky, func(s sticky) bool { return s.Alarm == a })
-	p.alarms = slices.DeleteFunc(p.alarms, func(x Alarm) bool { return x == a })
+}
+
+// keepUpLocked keeps an alarm raised outside a pass up for stickyPasses
+// more passes (p.mu held).
+func (p *Pair) keepUpLocked(a Alarm) {
+	for i := range p.sticky {
+		if p.sticky[i].Alarm == a {
+			p.sticky[i].left = stickyPasses
+			return
+		}
+	}
+	p.sticky = append(p.sticky, sticky{Alarm: a, left: stickyPasses})
 }
 
 // stick raises an alarm outside a pass.
@@ -458,6 +470,7 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 	p.mu.Lock()
 	prev := p.memo
 	p.mu.Unlock()
+	pending := p.pendingRollbacks()
 	alarm := func(code, format string, a ...any) {
 		pl.alarms = append(pl.alarms, Alarm{code, fmt.Sprintf(format, a...)})
 	}
@@ -509,6 +522,12 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 		return out
 	}
 	oa, ob := owns(A), owns(B)
+	// a half of the primary whose rollback waits has its own alarm
+	for k, it := range oa {
+		if pending[it.ID] {
+			delete(oa, k)
+		}
+	}
 	for _, d := range []struct {
 		have, other map[ownKey]driver.MirrorItem
 		in, notIn   *side
