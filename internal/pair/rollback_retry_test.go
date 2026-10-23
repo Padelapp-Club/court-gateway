@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,5 +200,23 @@ func TestRollbackReportOfPassBeforeUnchanged(t *testing.T) {
 	p.Reconcile(context.Background())
 	if !reflect.DeepEqual(first.Alarms, want) {
 		t.Fatalf("the Report before changed: %+v, was %+v", first.Alarms, want)
+	}
+}
+
+// The mirror took the partner's booking but answered an error, and the
+// primary's rollback waits: the mirror's half is the other half of the
+// primary's, not a booking in one CRM only.
+func TestRollbackWaitingHalfStillPairsTheMirrors(t *testing.T) {
+	a, p, _, start := newRollbackLoop(t)
+	own := driver.MirrorItem{ID: "e-1", Court: "court-1", Start: start, End: start.Add(time.Hour), Class: driver.ClassOwn, Partner: "padelapp"}
+	a.fakeCRM.add(own)
+	own.ID = "l-1"
+	p.Mirror().(*refusingCRM).fakeCRM.add(own)
+	for i := range 4 {
+		for _, al := range p.Reconcile(context.Background()).Alarms {
+			if al.Code == pair.AlarmHalfBooking && strings.Contains(al.Problem, "(l-1)") {
+				t.Fatalf("pass %d: the mirror's half is alarmed as in one CRM only: %s", i+1, al.Problem)
+			}
+		}
 	}
 }
