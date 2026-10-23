@@ -447,15 +447,20 @@ no restart. Never use `set-password` for Lunda (it answers `NO_PASSWORD`). Then 
 
 Only when the operator says the club keeps Lunda next to its CRM (Viva, YCLIENTS or 1C:Fitness).
 
-**At setup (preferred):** add `--mirror lunda` to the setup command of step 3 and have the human run it
-in a terminal they see (a member of the club's staff with the Lunda app logs Lunda in by QR or code —
-`--non-interactive` refuses it, `LOGIN_REQUIRED`). Setup asks the first CRM's questions, logs Lunda in,
-has the human choose the club's service client in Lunda and writes the `mirror:` section; for 1C:Fitness
-it also asks the phone of a second technical client of 1C for the mirrors (`--crm-mirror-client-phone`,
-never the one of `client_phone`). The result JSON has `"mirror": "lunda"`. A warning
-`NO_MIRROR_SERVICE_CLIENT` means no service client was chosen in Lunda: neither PadelApp's bookings nor
-the mirrors go into Lunda — have the human run setup again. A failure of the Lunda step names it
-(«вторая CRM (Лунда): …») and writes nothing; the join code is not spent. Then run step 5.
+**At setup (preferred):** take the setup command of step 3, **remove `--non-interactive`** from it (a
+member of the club's staff with the Lunda app logs Lunda in by QR or code; with the flag setup refuses,
+`LOGIN_REQUIRED`, nothing written, the join code not spent), add `--mirror lunda`, and have the human run
+it in a terminal they see. Setup asks the first CRM's questions, logs Lunda in, has the human choose the
+club's service client in Lunda and writes the `mirror:` section; for 1C:Fitness it also asks the phone of
+a second technical client of 1C for the mirrors (`--crm-mirror-client-phone`, never the one of
+`client_phone`). The result JSON has `"mirror": "lunda"`. A warning `NO_MIRROR_SERVICE_CLIENT` means no
+service client was chosen in Lunda: neither PadelApp's bookings nor the mirrors go into Lunda — have the
+human add `service_client: <the client's id in Lunda>` to the `mirror:` section of `gateway.yaml` (the
+human reads it in Lunda's admin), then restart the service. A failure of the Lunda step is named
+«вторая CRM (Лунда): …», writes nothing and spends no join code; a failed `setup --force` of a running
+installation leaves its sessions as they were. In Docker the Lunda login of setup is lost with its
+throwaway container, as for Lunda as the only CRM: after setup have the human run
+`docker compose run --rm -it court-gateway login --mirror` once. Then run steps 4 and 5.
 
 **On an installation already set up** (no new join code): add to `gateway.yaml` a `mirror:` section next
 to `crm:` — `type: lunda` and `service_client: <the club's service client id in Lunda>` (the human reads it

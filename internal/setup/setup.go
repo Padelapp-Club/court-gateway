@@ -247,14 +247,16 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 	}
 	notProtected := func(err error) (Result, error) { return fail(notProtectedProblem(err)) }
 	sessions := deps.Sessions
-	loginRequired := func(name string) (Result, error) {
-		return fail(problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", name))
+	loginRequiredProblem := func(name string) *Problem {
+		return problem("LOGIN_REQUIRED", "в CRM %s входит сотрудник клуба (QR-код или код из сообщения): запустите setup без --non-interactive", name)
 	}
+	loginRequired := func(name string) (Result, error) { return fail(loginRequiredProblem(name)) }
 	stateDir := core.StateDir(cfgPath, nil)
 	var cleanups []func() // undo what a setup that fails leaves: saved sessions
 	// keepSession prepares the state directory for the session an
 	// interactive login saves in store (file): the folders are closed
-	// before it exists, and a setup that fails leaves none
+	// before it exists, and a setup that fails leaves the session as it
+	// found it (that of a running installation set up again stays)
 	keepSession := func(store driver.SessionStore, file string) *Problem {
 		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 			return problem("WRITE_FAILED", "%v", err)
@@ -269,9 +271,13 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 				}
 			}
 		}
+		prev, err := store.LoadSession()
+		if err != nil {
+			prev = nil // unreadable as a session: not kept
+		}
 		cleanups = append(cleanups, func() {
-			if err := store.SaveSession(nil); err != nil && deps.Note != nil {
-				deps.Note("сессия входа в CRM осталась в папке состояния, удалите её вручную (" + file + "): " + err.Error())
+			if err := store.SaveSession(prev); err != nil && deps.Note != nil {
+				deps.Note("сессия входа в CRM в папке состояния не возвращена к прежней (" + file + "): " + err.Error())
 			}
 		})
 		return nil
@@ -346,7 +352,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		msessions := deps.MirrorSessions
 		if mspec.Interactive {
 			if deps.Login == nil {
-				return loginRequired(mname)
+				return fail(mirrorProblem(mname, loginRequiredProblem(mname)))
 			}
 			if msessions == nil {
 				msessions = core.NamedSessionStore{Dir: stateDir, File: core.MirrorSessionFile}
@@ -357,11 +363,11 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 		}
 		macct, err := mfactory(driver.Config{CRM: mirror, Now: deps.Now, Sessions: msessions})
 		if err != nil {
-			return fail(problem("INVALID_INPUT", "%s: %v", mname, err))
+			return fail(mirrorProblem(mname, problem("INVALID_INPUT", "%v", err)))
 		}
 		if il, ok := macct.(driver.InteractiveLogin); ok {
 			if deps.Login == nil {
-				return loginRequired(mname)
+				return fail(mirrorProblem(mname, loginRequiredProblem(mname)))
 			}
 			if deps.Note != nil {
 				deps.Note("Теперь вход во вторую CRM — " + mname + ".")
@@ -385,7 +391,7 @@ func Run(ctx context.Context, in Input, deps Deps) (Result, error) {
 				d.MirrorCRM = append(d.MirrorCRM, [2]string{cp.ClientKey(), id})
 			} else {
 				res.Warnings = append(res.Warnings, Warning{Code: "NO_MIRROR_SERVICE_CLIENT",
-					Message: "служебный клиент клуба в " + mname + " не выбран: ни брони PadelApp, ни отражения броней в " + mname + " не встанут — выберите его, запустив setup ещё раз"})
+					Message: "служебный клиент клуба в " + mname + " не выбран: ни брони PadelApp, ни отражения броней в " + mname + " не встанут — впишите его id в gateway.yaml, mirror." + cp.ClientKey() + ", и перезапустите службу"})
 			}
 		}
 	}

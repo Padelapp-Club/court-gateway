@@ -522,18 +522,17 @@ func (p *Pair) plan(A, B *side, now, from, to time.Time) plan {
 		return out
 	}
 	oa, ob := owns(A), owns(B)
-	// a half of the primary whose rollback waits has its own alarm
-	for k, it := range oa {
-		if pending[it.ID] {
-			delete(oa, k)
-		}
-	}
 	for _, d := range []struct {
 		have, other map[ownKey]driver.MirrorItem
 		in, notIn   *side
 	}{{oa, ob, A, B}, {ob, oa, B, A}} {
 		for k, it := range d.have {
 			if _, ok := d.other[k]; ok {
+				continue
+			}
+			// a half of the primary whose rollback waits has its own
+			// alarm; it still counts as the other half of the mirror's
+			if d.in == A && pending[it.ID] {
 				continue
 			}
 			key := d.in.typ + "|" + itemKey(it)

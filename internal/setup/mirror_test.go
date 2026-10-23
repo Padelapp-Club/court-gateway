@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -102,7 +103,7 @@ func TestSetupMirrorNeedsAPerson(t *testing.T) {
 	in, deps, calls := mirrorSetup(t)
 	deps.Login = nil
 	res, err := Run(context.Background(), in, deps)
-	if err == nil || res.Error.Code != "LOGIN_REQUIRED" || !strings.Contains(res.Error.Message, "Лунда") || *calls != 0 {
+	if err == nil || res.Error.Code != "LOGIN_REQUIRED" || !strings.Contains(res.Error.Message, "вторая CRM (Лунда)") || *calls != 0 {
 		t.Fatalf("%+v %v, redeemed %d", res.Error, err, *calls)
 	}
 	if _, err := os.Stat(in.ConfigPath); err == nil {
@@ -163,5 +164,58 @@ func TestValidateChecksTheMirror(t *testing.T) {
 	}
 	if _, p := validate(d, crm, driver.Params{"service_client": "c2"}, "inst-1", "", "pw", "secret"); p == nil || p.Code != "INTERNAL" {
 		t.Fatalf("a mirror key not of the inputs passed: %v", p)
+	}
+}
+
+// A setup --force of a running installation that fails leaves each CRM's
+// session as it was: the service keeps serving with it.
+func TestSetupForceThatFailsKeepsTheLiveSessions(t *testing.T) {
+	for _, c := range []struct {
+		name, file string
+		set        func(*Input, *Deps)
+	}{
+		{"second CRM", core.MirrorSessionFile, func(in *Input, d *Deps) {}},
+		{"first CRM", core.SessionFile, func(in *Input, d *Deps) {
+			in.CRMType, in.CRM, in.Password, in.Mirror = "logintest", nil, "", ""
+			d.Accounts["logintest"] = newFakeLogin
+		}},
+	} {
+		in, deps, calls := mirrorSetup(t)
+		c.set(&in, &deps)
+		dir := filepath.Dir(in.ConfigPath)
+		if err := os.MkdirAll(filepath.Join(dir, "state"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sess := filepath.Join(dir, "state", c.file)
+		if err := os.WriteFile(sess, []byte("LIVE-SESSION"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		in.Force = true
+		deps.Login = func(ctx context.Context, il driver.InteractiveLogin) error {
+			if err := personLogsIn(ctx, il); err != nil {
+				return err
+			}
+			return driver.ErrLoginExpired // a new session was saved, then the login failed
+		}
+		if res, err := Run(context.Background(), in, deps); err == nil || *calls != 0 {
+			t.Fatalf("%s: %+v %v, redeemed %d", c.name, res.Error, err, *calls)
+		}
+		if b, err := os.ReadFile(sess); err != nil || string(b) != "LIVE-SESSION" {
+			t.Fatalf("%s: the live session after a failed setup --force: %q %v", c.name, b, err)
+		}
+	}
+}
+
+// Choosing the second CRM's service client fails: setup fails, named as
+// the second CRM's, and writes nothing.
+func TestSetupMirrorClientChoiceFails(t *testing.T) {
+	in, deps, calls := mirrorSetup(t)
+	deps.PickClient = func(context.Context, driver.ClientPicker) (string, error) { return "", errors.New("search failed") }
+	res, err := Run(context.Background(), in, deps)
+	if err == nil || res.Error.Code != "CLIENT_NOT_CHOSEN" || !strings.Contains(res.Error.Message, "вторая CRM (Лунда)") || *calls != 0 {
+		t.Fatalf("%+v %v, redeemed %d", res.Error, err, *calls)
+	}
+	if _, err := os.Stat(in.ConfigPath); err == nil {
+		t.Fatal("gateway.yaml written")
 	}
 }
