@@ -550,6 +550,10 @@ func buildClub(base *core.Settings, factories map[string]driver.Factory, hook fu
 
 // DiscoverRequest is the body of a discovery request from the hub.
 type DiscoverRequest struct {
+	// Mirror: discover the installation's second CRM (gateway.yaml
+	// mirror:) instead of its first — the courts a club in two CRMs maps
+	// its courts to (their lunda_court).
+	Mirror      bool   `json:"mirror,omitempty"`
 	Studio      string `json:"studio,omitempty"`
 	Timezone    string `json:"timezone,omitempty"`
 	SlotMinutes int    `json:"slot_minutes,omitempty"`
@@ -576,8 +580,10 @@ type DiscoverResponse struct {
 }
 
 // DiscoverHandler serves tunnel.PathDiscover with the installation's CRM
-// account. clubs tells which studios are already served.
-func DiscoverHandler(acct driver.Account, clubs *core.Clubs, log *slog.Logger) http.Handler {
+// account, or with mirror, the account of its second CRM (nil: none),
+// when the request asks for it. clubs tells which studios are already
+// served.
+func DiscoverHandler(acct, mirror driver.Account, clubs *core.Clubs, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -597,17 +603,28 @@ func DiscoverHandler(acct driver.Account, clubs *core.Clubs, log *slog.Logger) h
 			core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed discovery request")
 			return
 		}
+		from := acct
+		if req.Mirror {
+			if mirror == nil {
+				core.WriteError(w, r, http.StatusConflict, "NO_MIRROR", "the installation has no second CRM (no mirror: in gateway.yaml)")
+				return
+			}
+			from = mirror
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
-		d, err := acct.Discover(ctx, driver.DiscoverQuery{Studio: strings.TrimSpace(req.Studio)})
+		d, err := from.Discover(ctx, driver.DiscoverQuery{Studio: strings.TrimSpace(req.Studio)})
 		if err != nil {
 			reason := core.ReadyReason(err)
 			log.Warn("discovery failed", "reason", reason, "error", err)
 			core.WriteError(w, r, http.StatusBadGateway, reason, "the CRM could not be read: "+reason)
 			return
 		}
-		served := map[string]string{} // studio -> club
+		served := map[string]string{} // studio -> club (of the first CRM: a mirror's are not studios of clubs)
 		for _, id := range clubs.IDs() {
+			if req.Mirror {
+				break
+			}
 			if srv, ok := clubs.Server(id); ok {
 				if ac, ok := srv.Driver().(driver.AccountClub); ok && ac.Studio() != "" {
 					served[strings.ToLower(ac.Studio())] = id

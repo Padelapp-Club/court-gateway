@@ -230,6 +230,9 @@ curl -s -H "$AUTH" -X POST $H/hub/installations/my-net/discover -d '{"studio": "
 #      "slot_minutes":30,"hours":{…},"crm":{"studio":"…"},"courts":[{"id":"court-1","name":"Корт 1",
 #      "viva_room":"…","price_list":"…"}, …]},"price_lists":[…],"notices":[…]}
 
+# корты второй CRM (Лунды) клуба в двух CRM — для lunda_court кортов
+curl -s -H "$AUTH" -X POST $H/hub/installations/my-net/discover -d '{"mirror": true}'
+
 # 4. клуб установки: полный конфиг клуба (черновик после проверки)
 curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
   "name": "Клуб Север", "timezone": "Europe/Moscow", "slot_minutes": 30,
@@ -248,7 +251,7 @@ curl -s -H "$AUTH" -X PUT $H/hub/installations/my-net/clubs/club-north -d '{
 | `POST /hub/installations/{id}/join-codes` | `{"ttl"?: "24h"}` (до `720h`) | `201 {"code", "installation_id", "expires_at", "hub_key_fingerprint"}` |
 | `PUT /hub/installations/{id}/clubs/{club_id}` | конфиг клуба | `201`/`200 {"installation_id", "club_id", "config_version"}`; `400 INVALID_CLUB_CONFIG` с `problems`; `409 CLUB_TAKEN` — клуб у другой установки; `409 STUDIO_TAKEN` — студию `crm.studio` уже обслуживает клуб другой установки; `409 ROOM_TAKEN` — комнату корта (`viva_room`, `lunda_court` — ключ корта драйвера) уже бронирует другой клуб (той же или другой установки) |
 | `DELETE /hub/installations/{id}/clubs/{club_id}` | — | `200 {"installation_id", "club_id", "config_version"}`; партнёры сразу получают `404` |
-| `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN` |
+| `POST /hub/installations/{id}/discover` | `{"studio"?, "timezone"?, "slot_minutes"?, "mirror"?}` | ответ шлюза: `200 {"studios", "studios_reason"?, "studio"?, "draft", "price_lists", "notices"}`; `503 GATEWAY_OFFLINE` / `GATEWAY_BUSY`; `502` с кодом CRM; `502 OUTCOME_UNKNOWN`; с `"mirror": true` — обнаружение второй CRM установки (Лунды): `draft.courts` с `lunda_court` для раздела `mirror` клуба; `409 NO_MIRROR` — у установки второй CRM нет; шлюз до v1.2.2 отвечает `400 INVALID_REQUEST` |
 
 С состоянием в Postgres изменения (`POST`, `PUT`, `DELETE`) могут получить ещё
 `409 STATE_CHANGED` — установку изменили в базе мимо этого хаба, он перечитал состояние, запрос можно
