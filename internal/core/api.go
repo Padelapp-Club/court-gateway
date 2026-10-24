@@ -51,8 +51,9 @@ type intervalDTO struct {
 }
 
 type occupancyDTO struct {
-	Complete  bool          `json:"complete"`
-	Intervals []intervalDTO `json:"intervals"`
+	Complete      bool          `json:"complete"`
+	BeyondHorizon bool          `json:"beyond_horizon"`
+	Intervals     []intervalDTO `json:"intervals"`
 }
 
 // periodDTO: start_at and end_at are the instants; start and end, the
@@ -179,7 +180,7 @@ func (s *Server) handleOccupancy(w http.ResponseWriter, r *http.Request) {
 		s.driverError(w, r, "occupancy", err)
 		return
 	}
-	out := occupancyDTO{Complete: occ.Complete, Intervals: make([]intervalDTO, 0, len(occ.Intervals))}
+	out := occupancyDTO{Complete: occ.Complete, BeyondHorizon: occ.BeyondHorizon, Intervals: make([]intervalDTO, 0, len(occ.Intervals))}
 	for _, iv := range occ.Intervals {
 		out.Intervals = append(out.Intervals, intervalDTO{ID: iv.ID, Court: iv.Court, Start: s.ts(iv.Start), End: s.ts(iv.End)})
 	}
@@ -371,6 +372,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if !occ.Complete {
 		WriteError(w, r, http.StatusConflict, "OCCUPANCY_UNKNOWN", "the occupancy of this interval cannot be confirmed")
+		return
+	}
+	// Beyond the CRM's booking horizon for players only a tournament block is
+	// written: the gateway does not open the club's sale there itself
+	if occ.BeyondHorizon && kind != driver.KindTournament {
+		WriteError(w, r, http.StatusConflict, "BEYOND_BOOKING_HORIZON", "the interval is beyond the club's booking horizon for players")
 		return
 	}
 	if len(occ.Intervals) > 0 {
