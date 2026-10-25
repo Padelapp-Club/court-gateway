@@ -133,8 +133,15 @@ type Interval struct {
 // Occupancy is the answer to an occupancy query.
 type Occupancy struct {
 	// Complete is false when the CRM may not have returned everything.
-	Complete  bool
-	Intervals []Interval
+	// It is about the data only: a day beyond the CRM's booking horizon
+	// for players whose schedule was read in full is complete.
+	Complete bool
+	// BeyondHorizon is true when some of the range lies beyond the CRM's
+	// booking horizon for players. It never makes the answer incomplete;
+	// the core decides what may be booked there (a tournament block may, a
+	// player's game may not), no driver does.
+	BeyondHorizon bool
+	Intervals     []Interval
 }
 
 // OccupancyQuery asks for intervals overlapping [From, To).

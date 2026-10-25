@@ -260,7 +260,7 @@ func (p *Pair) merge(ea, eb error, loop *driver.ConfigAlert) error {
 }
 
 // Occupancy implements driver.Driver: the union of both CRMs, complete
-// only when both answers are. An interval of the mirror that repeats one
+// only when both answers are, beyond the horizon when either is. An interval of the mirror that repeats one
 // of the primary exactly (the mirror's half of a partner's booking, a
 // block of the loop) is left out: the primary's id stands for it.
 func (p *Pair) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
@@ -278,7 +278,11 @@ func (p *Pair) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.O
 		start, end int64
 	}
 	seen := map[key]bool{}
-	out := driver.Occupancy{Complete: oa.Complete && ob.Complete, Intervals: append([]driver.Interval{}, oa.Intervals...)}
+	out := driver.Occupancy{
+		Complete:      oa.Complete && ob.Complete,
+		BeyondHorizon: oa.BeyondHorizon || ob.BeyondHorizon,
+		Intervals:     append([]driver.Interval{}, oa.Intervals...),
+	}
 	for _, iv := range oa.Intervals {
 		seen[key{iv.Court, iv.Start.UnixNano(), iv.End.UnixNano()}] = true
 	}

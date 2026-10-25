@@ -197,11 +197,13 @@ func truncate(s string, n int) string {
 // Occupancy implements driver.Driver: the schedule of every local day the
 // range touches, and of the day before it: a slot is listed under the day
 // it begins on, so a booking running past midnight, however far into the
-// morning, is only there. Intervals are clipped to the range. The answer
-// is incomplete from the first day beyond the club's booking depth on
-// (Lunda may not show it all), and from the first day that cannot be
-// read; an answer that does not parse, or a lost session, is an error. A
-// booking cut into several slots of one court is one interval.
+// morning, is only there. Intervals are clipped to the range. A day beyond
+// the club's booking depth is read like any other: the staff login gets
+// its whole schedule, and the answer only
+// says it is beyond the horizon. The answer is incomplete from the first
+// day that cannot be read; an answer that does not parse, or a lost
+// session, is an error. A booking cut into several slots of one court is
+// one interval.
 func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver.Occupancy, error) {
 	want := map[string]string{}
 	for _, cid := range q.Courts {
@@ -232,8 +234,7 @@ func (d *Driver) Occupancy(ctx context.Context, q driver.OccupancyQuery) (driver
 		}
 		all = append(all, ivs...)
 		if ds.BeyondBookingDepth {
-			occ.Complete = false // every later day is beyond it too
-			break
+			occ.BeyondHorizon = true // the range is still read to its last day
 		}
 	}
 	for _, iv := range merge(all) {

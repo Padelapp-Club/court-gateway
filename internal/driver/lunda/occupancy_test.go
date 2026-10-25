@@ -78,18 +78,67 @@ func TestCourtMissingFromTheDayIsOccupied(t *testing.T) {
 	}
 }
 
-// Beyond the club's booking depth Lunda may not show everything: the
-// answer is incomplete, and later days are not read.
-func TestBeyondBookingDepthIsIncomplete(t *testing.T) {
+// Beyond the club's booking depth the staff login still gets the whole
+// schedule: every day of the range is read, a booking there is returned,
+// and the answer is complete and says it is beyond the horizon (REQ-400).
+func TestBeyondBookingDepthIsReadInFull(t *testing.T) {
 	f, d := loggedIn(t)
-	f.stub.BookingDepth = 2
-	day := futureDay() // three days ahead
-	occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: day.Add(10 * time.Hour), To: day.AddDate(0, 0, 5)})
-	if err != nil || occ.Complete {
+	f.stub.BookingDepth = 14
+	day := futureDay().AddDate(0, 0, 17) // +20, six days past the depth
+	booking := seedClubBooking(f.stub, court1, day.Add(10*time.Hour), day.Add(12*time.Hour))
+	occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: day, To: day.AddDate(0, 0, 1)})
+	if err != nil || !occ.Complete || !occ.BeyondHorizon {
 		t.Fatalf("occupancy: %+v %v", occ, err)
 	}
-	if n := f.stub.CallsTo("/club/booking/slots-load"); n != 2 { // the day before, and the first day
-		t.Fatalf("%d days read past the depth", n)
+	if iv, ok := findIv(occ, day.Add(10*time.Hour)); !ok || iv.ID != "l-"+booking || !iv.End.Equal(day.Add(12*time.Hour)) {
+		t.Fatalf("the booking at +20 is not returned: %+v", occ)
+	}
+	if n := f.stub.CallsTo("/club/booking/slots-load"); n != 2 { // the day before, and the day
+		t.Fatalf("%d days read", n)
+	}
+}
+
+// Every day of a range crossing the depth is read: a booking on the last
+// day is returned.
+func TestRangeAcrossBookingDepthIsReadToItsLastDay(t *testing.T) {
+	f, d := loggedIn(t)
+	f.stub.BookingDepth = 2
+	day := futureDay() // three days ahead: beyond the depth from the first day on
+	last := day.AddDate(0, 0, 4)
+	booking := seedClubBooking(f.stub, court1, last.Add(9*time.Hour), last.Add(10*time.Hour))
+	occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: day.Add(10 * time.Hour), To: day.AddDate(0, 0, 5)})
+	if err != nil || !occ.Complete || !occ.BeyondHorizon {
+		t.Fatalf("occupancy: %+v %v", occ, err)
+	}
+	if _, ok := findIv(occ, last.Add(9*time.Hour)); !ok {
+		t.Fatalf("the booking of the last day (%s) is not returned: %+v", booking, occ)
+	}
+	if n := f.stub.CallsTo("/club/booking/slots-load"); n != 6 { // the day before, and the five days
+		t.Fatalf("%d days read", n)
+	}
+}
+
+// Within the depth the answer is not beyond the horizon.
+func TestWithinBookingDepthIsNotBeyondTheHorizon(t *testing.T) {
+	f, d := loggedIn(t)
+	f.stub.BookingDepth = 14
+	day := futureDay()
+	occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: day, To: day.AddDate(0, 0, 1)})
+	if err != nil || !occ.Complete || occ.BeyondHorizon {
+		t.Fatalf("occupancy: %+v %v", occ, err)
+	}
+}
+
+// A day beyond the depth that cannot be read keeps the answer incomplete,
+// however full its neighbours are.
+func TestUnreadDayBeyondTheDepthIsIncomplete(t *testing.T) {
+	f, d := loggedIn(t)
+	f.stub.BookingDepth = 2
+	day := futureDay()
+	f.stub.FailNextQuery(http.MethodGet, "/club/booking/slots-load", "date="+day.AddDate(0, 0, 1).Format("2006-01-02"), http.StatusServiceUnavailable, `{}`)
+	occ, err := d.Occupancy(context.Background(), driver.OccupancyQuery{Courts: []string{"court-1"}, From: day, To: day.AddDate(0, 0, 3)})
+	if err != nil || occ.Complete {
+		t.Fatalf("occupancy: %+v %v", occ, err)
 	}
 }
 

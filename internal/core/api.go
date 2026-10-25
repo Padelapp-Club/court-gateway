@@ -373,6 +373,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusConflict, "OCCUPANCY_UNKNOWN", "the occupancy of this interval cannot be confirmed")
 		return
 	}
+	// Beyond the CRM's booking horizon for players only a tournament block is
+	// written: the gateway does not open the club's sale there itself
+	if occ.BeyondHorizon && kind != driver.KindTournament {
+		WriteError(w, r, http.StatusConflict, "BEYOND_BOOKING_HORIZON", "the interval is beyond the club's booking horizon for players")
+		return
+	}
 	if len(occ.Intervals) > 0 {
 		WriteError(w, r, http.StatusConflict, "SLOT_UNAVAILABLE", "the court is occupied in this interval")
 		return
