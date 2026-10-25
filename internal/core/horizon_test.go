@@ -50,7 +50,7 @@ func horizonCreate(srv *Server, start time.Time, kind string) *httptest.Response
 	return w
 }
 
-// D15 wave D, D7 (REQ-400): a day beyond the CRM's booking horizon for
+// REQ-400: a day beyond the CRM's booking horizon for
 // players whose occupancy the driver read in full is read — the core takes
 // completeness from Complete alone, never from the horizon flag, for every
 // driver. Beyond the horizon only a tournament block is written; a player's
@@ -90,8 +90,8 @@ func TestOccupiedBeyondHorizonIsNotWritten(t *testing.T) {
 	}
 }
 
-// The occupancy answer carries both flags separately.
-func TestOccupancyAnswerCarriesTheHorizonSeparately(t *testing.T) {
+// Beyond the horizon the occupancy answer is complete when the data is: the horizon does not make it incomplete.
+func TestOccupancyAnswerCompletenessIgnoresTheHorizon(t *testing.T) {
 	for _, occ := range []driver.Occupancy{{Complete: true, BeyondHorizon: true}, {Complete: false, BeyondHorizon: true}, {Complete: true}} {
 		created := 0
 		srv, start := horizonServer(occ, &created)
@@ -100,13 +100,12 @@ func TestOccupancyAnswerCarriesTheHorizonSeparately(t *testing.T) {
 		w := httptest.NewRecorder()
 		srv.APIHandler().ServeHTTP(w, r)
 		var out struct {
-			Complete      bool `json:"complete"`
-			BeyondHorizon bool `json:"beyond_horizon"`
+			Complete bool `json:"complete"`
 		}
 		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
 			t.Fatalf("%+v: %d %s", occ, w.Code, w.Body)
 		}
-		if out.Complete != occ.Complete || out.BeyondHorizon != occ.BeyondHorizon {
+		if out.Complete != occ.Complete {
 			t.Fatalf("%+v answered as %+v", occ, out)
 		}
 	}

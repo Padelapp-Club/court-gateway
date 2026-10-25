@@ -199,7 +199,7 @@ func truncate(s string, n int) string {
 // it begins on, so a booking running past midnight, however far into the
 // morning, is only there. Intervals are clipped to the range. A day beyond
 // the club's booking depth is read like any other: the staff login gets
-// its whole schedule (Kosmos rehearsal 2026-10-17), and the answer only
+// its whole schedule, and the answer only
 // says it is beyond the horizon. The answer is incomplete from the first
 // day that cannot be read; an answer that does not parse, or a lost
 // session, is an error. A booking cut into several slots of one court is

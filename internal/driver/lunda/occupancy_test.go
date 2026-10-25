@@ -79,11 +79,8 @@ func TestCourtMissingFromTheDayIsOccupied(t *testing.T) {
 }
 
 // Beyond the club's booking depth the staff login still gets the whole
-// schedule (Kosmos rehearsal 2026-10-17): every day of the range is read,
-// a booking there is returned, and the answer is complete and says it is
-// beyond the horizon. (Until D15 wave D, D7, the driver stopped at the
-// first such day and called the answer incomplete: the gateway answered
-// 409 OCCUPANCY_UNKNOWN and no tournament could be set there, REQ-400.)
+// schedule: every day of the range is read, a booking there is returned,
+// and the answer is complete and says it is beyond the horizon (REQ-400).
 func TestBeyondBookingDepthIsReadInFull(t *testing.T) {
 	f, d := loggedIn(t)
 	f.stub.BookingDepth = 14
@@ -133,7 +130,7 @@ func TestWithinBookingDepthIsNotBeyondTheHorizon(t *testing.T) {
 }
 
 // A day beyond the depth that cannot be read keeps the answer incomplete,
-// however full its neighbours are (astra plan review, item 4).
+// however full its neighbours are.
 func TestUnreadDayBeyondTheDepthIsIncomplete(t *testing.T) {
 	f, d := loggedIn(t)
 	f.stub.BookingDepth = 2

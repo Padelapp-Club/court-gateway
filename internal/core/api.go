@@ -51,9 +51,8 @@ type intervalDTO struct {
 }
 
 type occupancyDTO struct {
-	Complete      bool          `json:"complete"`
-	BeyondHorizon bool          `json:"beyond_horizon"`
-	Intervals     []intervalDTO `json:"intervals"`
+	Complete  bool          `json:"complete"`
+	Intervals []intervalDTO `json:"intervals"`
 }
 
 // periodDTO: start_at and end_at are the instants; start and end, the
@@ -180,7 +179,7 @@ func (s *Server) handleOccupancy(w http.ResponseWriter, r *http.Request) {
 		s.driverError(w, r, "occupancy", err)
 		return
 	}
-	out := occupancyDTO{Complete: occ.Complete, BeyondHorizon: occ.BeyondHorizon, Intervals: make([]intervalDTO, 0, len(occ.Intervals))}
+	out := occupancyDTO{Complete: occ.Complete, Intervals: make([]intervalDTO, 0, len(occ.Intervals))}
 	for _, iv := range occ.Intervals {
 		out.Intervals = append(out.Intervals, intervalDTO{ID: iv.ID, Court: iv.Court, Start: s.ts(iv.Start), End: s.ts(iv.End)})
 	}
