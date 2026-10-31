@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Padelapp-Club/court-gateway/internal/driver"
@@ -348,9 +350,9 @@ func (d *Driver) book(ctx context.Context, req driver.CreateRequest, notes strin
 
 // priceLines describes the booking's courts[] for the log, entry by
 // entry: its kind ("booked" on court, "other" on another court, "none"
-// without a courtUid), its raw price cut to 20 characters and its
-// description cut to 40. Neither a court uid nor anything about the
-// customer is in it.
+// without a courtUid), its price (priceShape) and its description
+// (descriptionShape). Lunda's free text never reaches the log: a court uid,
+// a name or a phone can't be in it.
 func (b *lundaBooking) priceLines(court string) string {
 	lines := make([]string, len(b.Courts))
 	for i, c := range b.Courts {
@@ -361,9 +363,60 @@ func (b *lundaBooking) priceLines(court string) string {
 		case "":
 			kind = "none"
 		}
-		lines[i] = fmt.Sprintf("%s price=%s description=%q", kind, truncate(strings.TrimSpace(string(c.Price)), 20), truncate(c.Description, 40))
+		lines[i] = fmt.Sprintf("%s price=%s description=%s", kind, priceShape(c.Price), descriptionShape(c.Description))
 	}
 	return strings.Join(lines, "; ")
+}
+
+// loggedPriceRe is a price the log may show as it is: a number, maybe
+// negative, of at most 9 integer digits — never a phone's 10 or 11.
+var loggedPriceRe = regexp.MustCompile(`^-?[0-9]{1,9}(\.[0-9]{1,6})?$`)
+
+// priceShape is a price as the log shows it: a number (or a string of
+// one, quoted) as it is, null and absent by name, anything else only by
+// its length.
+func priceShape(raw json.RawMessage) string {
+	p := strings.TrimSpace(string(raw))
+	switch {
+	case p == "":
+		return "absent"
+	case p == "null" || loggedPriceRe.MatchString(p):
+		return p
+	case len(p) > 2 && p[0] == '"' && p[len(p)-1] == '"' && loggedPriceRe.MatchString(p[1:len(p)-1]):
+		return p
+	}
+	return fmt.Sprintf("unreadable(len=%d)", utf8.RuneCountInString(p))
+}
+
+// descriptionShape is a description as the log shows it: empty or the
+// discount's (discountRow) as they are, any other text only by its shape —
+// length, script, words, digits — which tells a discount in another
+// language from a name without either reaching the log.
+func descriptionShape(s string) string {
+	if s == "" || s == discountRow {
+		return strconv.Quote(s)
+	}
+	var latin, cyrillic, digits int
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Latin, r):
+			latin++
+		case unicode.Is(unicode.Cyrillic, r):
+			cyrillic++
+		case unicode.IsDigit(r):
+			digits++
+		}
+	}
+	script := "none"
+	switch {
+	case latin > 0 && cyrillic > 0:
+		script = "mixed"
+	case latin > 0:
+		script = "latin"
+	case cyrillic > 0:
+		script = "cyrillic"
+	}
+	return fmt.Sprintf("text(len=%d %s words=%d digits=%d)", utf8.RuneCountInString(s), script, len(strings.Fields(s)), digits)
 }
 
 // write sends a change of a booking: anything but a 2xx is an error.

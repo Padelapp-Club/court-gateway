@@ -122,9 +122,10 @@ func netWarning(logs, booking string) (lines string, ok bool) {
 // rolled back. Over- or under-adjusted, a negative price, an entry
 // without courtUid that is not the discount, an entry on another court,
 // prices that do not read, no entry at all: the booking stays, and a WARN
-// names it and describes its lines — kind, raw price cut to 20
-// characters, description cut to 40 — but no court uid and nothing about
-// the customer.
+// names it and describes its lines — kind, a price that is a number as it
+// is, any other price and any description but the discount's only by
+// shape — but no court uid and nothing about the customer, even when
+// Lunda's text in the lines is a name and a phone.
 func TestCreateAcceptsAPaidReadBackThatDoesNotNetToZero(t *testing.T) {
 	const court = `booked price=1500 description=""`
 	for name, tc := range map[string]struct {
@@ -138,16 +139,19 @@ func TestCreateAcceptsAPaidReadBackThatDoesNotNetToZero(t *testing.T) {
 		"negative court":            {[]any{row(court1, -1500), discountRow(0)}, `booked price=-1500 description=""; none price=0 description="Court discount"`},
 		"both negative":             {[]any{row(court1, -1500), discountRow(-1500)}, `booked price=-1500 description=""; none price=-1500 description="Court discount"`},
 		"discount on the court":     {[]any{row(court1, 1500), map[string]any{"courtUid": court1, "price": 1500, "description": "Court discount"}}, court + `; booked price=1500 description="Court discount"`},
-		"no courtUid, not discount": {[]any{row(court1, 1500), map[string]any{"price": 1500, "description": "Bonus"}}, court + `; none price=1500 description="Bonus"`},
+		"no courtUid, not discount": {[]any{row(court1, 1500), map[string]any{"price": 1500, "description": "Bonus"}}, court + `; none price=1500 description=text(len=5 latin words=1 digits=0)`},
+		"discount in Russian":       {[]any{row(court1, 1500), map[string]any{"price": 1500, "description": "Скидка на корт"}}, court + `; none price=1500 description=text(len=14 cyrillic words=3 digits=0)`},
 		"no courtUid, no desc":      {[]any{row(court1, 1500), map[string]any{"price": 1500}}, court + `; none price=1500 description=""`},
 		"another court":             {[]any{row(court1, 1500), row(court2, 0), discountRow(1500)}, court + `; other price=0 description=""; none price=1500 description="Court discount"`},
 		"only a discount":           {[]any{discountRow(0)}, `none price=0 description="Court discount"`},
 		"unreadable":                {[]any{row(court1, "1500"), discountRow(1500)}, `booked price="1500" description=""; none price=1500 description="Court discount"`},
 		"null discount":             {[]any{row(court1, 1500), discountRow(nil)}, court + `; none price=null description="Court discount"`},
-		"no price":                  {[]any{map[string]any{"courtUid": court1}}, `booked price= description=""`},
+		"no price":                  {[]any{map[string]any{"courtUid": court1}}, `booked price=absent description=""`},
 		"no courts":                 {[]any{}, ``},
-		"cut to size": {[]any{map[string]any{"courtUid": court1, "price": "123456789012345678901234", "description": strings.Repeat("я", 50)}},
-			`booked price="1234567890123456789 description="` + strings.Repeat("я", 40) + `"`},
+		"long text": {[]any{map[string]any{"courtUid": court1, "price": "123456789012345678901234", "description": strings.Repeat("я", 50)}},
+			`booked price=unreadable(len=26) description=text(len=50 cyrillic words=1 digits=0)`},
+		"a name and a phone": {[]any{row(court1, 1500), map[string]any{"price": "+79990000000", "description": "Jane Smith +79990000000"}, map[string]any{"price": 79990000000, "description": "Jane"}},
+			court + `; none price=unreadable(len=14) description=text(len=23 latin words=3 digits=11); none price=unreadable(len=11) description=text(len=4 latin words=1 digits=0)`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
@@ -166,7 +170,7 @@ func TestCreateAcceptsAPaidReadBackThatDoesNotNetToZero(t *testing.T) {
 			if lines, ok := netWarning(logs, b.ID); !ok || lines != tc.lines {
 				t.Fatalf("WARN lines %q, want %q; logs %s", lines, tc.lines, logs)
 			}
-			if strings.Contains(logs, "PRIVACY-MARKER") || strings.Contains(logs, "+7999") || strings.Contains(logs, court1) {
+			if strings.Contains(logs, "PRIVACY-MARKER") || strings.Contains(logs, "+7999") || strings.Contains(logs, "79990000000") || strings.Contains(logs, "Jane") || strings.Contains(logs, court1) {
 				t.Fatalf("logs: %s", logs)
 			}
 		})
