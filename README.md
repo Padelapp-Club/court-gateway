@@ -135,8 +135,8 @@ OpenSSH 7.7 подписи не проверяет) или его нет вов�
   $m = 'C:\openssh.msi'
   Invoke-WebRequest "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-$($v[0])-v10.0.0.0.msi" -OutFile $m -UseBasicParsing -ErrorAction Stop
   if ((Get-FileHash -LiteralPath $m -Algorithm SHA256 -ErrorAction Stop).Hash -ne $v[1]) { throw "Контрольная сумма C:\openssh.msi не совпала. Ничего не установлено; удалите файл и повторите" }
-  $p = Start-Process msiexec -ArgumentList "/i $m ADDLOCAL=Client /qn" -Wait -PassThru
-  if ($p.ExitCode -notin 0, 3010) { throw "Установщик OpenSSH завершился с кодом $($p.ExitCode). Ничего не изменено" }
+  $p = Start-Process msiexec -ArgumentList "/i $m ADDLOCAL=Client /qn /norestart" -Wait -PassThru
+  if ($p.ExitCode -notin 0, 3010) { throw "Установщик OpenSSH завершился с кодом $($p.ExitCode): OpenSSH не установлен или установлен не полностью. Пришлите этот текст нам" }
   Write-Host "OpenSSH (только клиент) установлен"
 }
 ```
@@ -144,7 +144,10 @@ OpenSSH 7.7 подписи не проверяет) или его нет вов�
 Файл кладётся в `C:\openssh.msi`, а не в `C:\court-gateway`: посторонние файлы в той папке команда
 установки не примет. `ADDLOCAL=Client` обязателен: без него установщик ставит и SSH-сервер, который
 запускается сам при каждом включении компьютера и открывает вход по сети на порт 22. Если OpenSSH уже
-ставили без него (этим MSI или через winget), выключите сервер: `Stop-Service sshd; Set-Service sshd -StartupType Disabled`.
+ставили без него (этим MSI или через winget) и `Get-Service sshd` находит службу, удалите сервер тем же
+файлом: `Start-Process msiexec -ArgumentList '/i C:\openssh.msi REMOVE=Server /qn /norestart' -Wait`
+(скачайте его блоком выше), затем `Get-Service sshd` должен ответить, что службы нет. Просто выключить
+службу мало: следующая установка OpenSSH включит её снова.
 
 Затем закройте окно, откройте PowerShell от имени администратора заново и проверьте:
 `(Get-Command ssh-keygen).Source` должен показать `C:\Program Files\OpenSSH\ssh-keygen.exe` (иначе
@@ -156,7 +159,7 @@ OpenSSH 7.7 подписи не проверяет) или его нет вов�
 запускается сама при включении компьютера и перезапускается при сбое.
 
 Журнал службы: `C:\court-gateway\court-gateway.log`. Читайте его в PowerShell от имени
-администратора: `Get-Content C:\court-gateway\court-gateway.log -Tail 100`. **Не открывайте папку
+администратора: `Get-Content C:\court-gateway\court-gateway.log -Tail 100 -Encoding UTF8`. **Не открывайте папку
 `C:\court-gateway` в Проводнике** и не нажимайте «Продолжить» в его вопросе о доступе: Проводник
 навсегда откроет папку вашей учётной записи, а в ней пароль CRM (`doctor` покажет это ошибкой
 `SECRETS_FILE`, повторная команда установки — отказом закрыть папку).

@@ -222,9 +222,10 @@ PowerShell 5.1 does not use by default). `ssh-keygen -Y` needs OpenSSH 8.1 or ne
 `SSH-KEYGEN TOO OLD`: tell the human, install the OpenSSH **client only** with the block in
 README.md «Если нет OpenSSH 8.1» (PowerShell as Administrator; it downloads a pinned Win32-OpenSSH MSI
 to `C:\openssh.msi`, outside `C:\court-gateway`, checks its SHA-256 and runs `msiexec` with
-`ADDLOCAL=Client`). Never install it without `ADDLOCAL=Client` (that includes `winget install
+`ADDLOCAL=Client /qn /norestart`). Never install it without `ADDLOCAL=Client` (that includes `winget install
 Microsoft.OpenSSH.Preview`, and the old `Microsoft.OpenSSH.Beta` is gone from winget): the MSI then also
-installs the SSH server, started at every boot and reachable on port 22. Then a new PowerShell as
+installs the SSH server, started at every boot and reachable on port 22; if `Get-Service sshd` finds it,
+remove it as README says (`REMOVE=Server` with the same MSI), not just stop it. Then a new PowerShell as
 Administrator, `(Get-Command ssh-keygen).Source` is `C:\Program Files\OpenSSH\ssh-keygen.exe` (else
 reboot), and run the block again. Verified on Windows 10 Pro 19045 x64: its built-in
 `OpenSSH_for_Windows_9.5` is enough, nothing to install there.

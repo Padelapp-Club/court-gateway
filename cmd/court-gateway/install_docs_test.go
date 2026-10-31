@@ -649,7 +649,7 @@ func TestReadmeDoctorSampleShowsEveryCheck(t *testing.T) {
 // What the club or the operator must be told, and the docs keep saying.
 func TestDocsKeepTheOperatorFacts(t *testing.T) {
 	for _, c := range []struct{ doc, fact string }{
-		{"README.md", "-ArgumentList \"/i $m ADDLOCAL=Client /qn\""}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10; the MSI alone also installs sshd
+		{"README.md", "-ArgumentList \"/i $m ADDLOCAL=Client /qn /norestart\""}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10; the MSI alone also installs sshd
 		{"AGENTS.md", "`ADDLOCAL=Client`"},
 		{"README.md", "не нажимайте «Продолжить» в его вопросе о доступе"}, // «Continue» in Explorer opens the folder holding .env
 		{"README.md", "FileVault, после отключения питания"},               // after a power loss a Mac with FileVault waits for a login
