@@ -649,8 +649,8 @@ func TestReadmeDoctorSampleShowsEveryCheck(t *testing.T) {
 // What the club or the operator must be told, and the docs keep saying.
 func TestDocsKeepTheOperatorFacts(t *testing.T) {
 	for _, c := range []struct{ doc, fact string }{
-		{"README.md", "winget install Microsoft.OpenSSH.Beta"}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10
-		{"AGENTS.md", "winget install Microsoft.OpenSSH.Beta"},
+		{"README.md", "winget install Microsoft.OpenSSH.Preview"}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10; .Beta left winget
+		{"AGENTS.md", "winget install Microsoft.OpenSSH.Preview"},
 		{"README.md", "FileVault, после отключения питания"}, // after a power loss a Mac with FileVault waits for a login
 		{"README.md", "`CLOCK_UNKNOWN`"},                     // a buffering proxy keeps the hub's time from the gateway
 		{"docs/hub.md", "`504` (любой код)"},                 // a create answered 502/504 has an unknown outcome

@@ -93,11 +93,11 @@
   }
   & $get SHA256SUMS
   & $get SHA256SUMS.sig
-  if (-not (Get-Command ssh-keygen -ErrorAction SilentlyContinue)) { throw "Нет ssh-keygen (OpenSSH) — выполните winget install Microsoft.OpenSSH.Beta, откройте PowerShell от имени администратора заново и повторите" }
+  if (-not (Get-Command ssh-keygen -ErrorAction SilentlyContinue)) { throw "Нет ssh-keygen (OpenSSH) — поставьте OpenSSH: winget install Microsoft.OpenSSH.Preview, а без winget — MSI со страницы github.com/PowerShell/Win32-OpenSSH/releases (раздел «OpenSSH» в README). Затем откройте PowerShell от имени администратора заново и повторите" }
   & $drop allowed_signers
   'court-gateway ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJAe4CDRNNnk++UtmLOdDcQcRc0jK56eYJPo+DfdyK8y' | Set-Content -LiteralPath allowed_signers -Encoding ascii -ErrorAction Stop
   $out = cmd /c 'ssh-keygen -Y verify -f allowed_signers -I court-gateway -n court-gateway -s SHA256SUMS.sig < SHA256SUMS 2>&1'
-  if ($LASTEXITCODE -ne 0 -and "$out" -match 'unknown option|illegal option|usage:') { throw "ssh-keygen старше OpenSSH 8.1 и не проверяет подписи — выполните winget install Microsoft.OpenSSH.Beta, откройте PowerShell от имени администратора заново и повторите" }
+  if ($LASTEXITCODE -ne 0 -and "$out" -match 'unknown option|illegal option|usage:') { throw "ssh-keygen старше OpenSSH 8.1 и не проверяет подписи — поставьте новый OpenSSH: winget install Microsoft.OpenSSH.Preview, а без winget — MSI со страницы github.com/PowerShell/Win32-OpenSSH/releases (раздел «OpenSSH» в README). Затем откройте PowerShell от имени администратора заново и повторите" }
   if ($LASTEXITCODE -ne 0) { throw "Подпись SHA256SUMS не сошлась с ключом выпуска ($out). Ничего не запущено; удалите SHA256SUMS и SHA256SUMS.sig из папки и повторите" }
   $m = @(Select-String -LiteralPath SHA256SUMS -Pattern "^([0-9a-f]{64})  (court-gateway-[0-9][0-9A-Za-z.\-]*-windows-$a\.exe)$" -ErrorAction Stop)
   if ($m.Count -ne 1) { throw "В SHA256SUMS не одна сборка для windows-$a, а $($m.Count). Ничего не запущено; напишите нам" }
@@ -111,17 +111,35 @@
 }
 ```
 
-Подпись сверяет `ssh-keygen` из OpenSSH 8.1 или новее. Если команда скажет, что его нет или он
-старый (бывает на Windows 10), выполните `winget install Microsoft.OpenSSH.Beta`, откройте
-PowerShell от имени администратора заново и повторите команду. На Windows 10 Pro 19045 x64
-проверено: встроенного `OpenSSH_for_Windows_9.5` достаточно, ставить ничего не нужно.
+**Вставляйте команду целиком, с первой строкой `& {`.** Тогда у её строк в окне продолжение `>>`, и
+первая же непройденная проверка останавливает всё. Если у каждой строки своё приглашение
+`PS C:\…>`, команда вставилась без `& {` и выполняется построчно: проверки сообщают об ошибке, но
+следующие строки всё равно идут. Закройте такое окно и вставьте команду заново.
+
+**OpenSSH.** Подпись сверяет `ssh-keygen` из OpenSSH 8.1 или новее. Если команда скажет, что его нет
+или он старый (бывает на Windows 10: встроенный OpenSSH 7.7 подписи не проверяет), поставьте новый:
+
+- есть winget — `winget install Microsoft.OpenSSH.Preview -e` (прежнего пакета
+  `Microsoft.OpenSSH.Beta` в winget больше нет);
+- winget нет (на Windows 10 бывает) — скачайте со страницы
+  <https://github.com/PowerShell/Win32-OpenSSH/releases/latest> файл `OpenSSH-Win64-v….msi`
+  (на ARM — `OpenSSH-ARM64-v….msi`) **не в** `C:\court-gateway` (посторонние файлы в ней команда не
+  примет), например в `C:\openssh.msi`, и поставьте его: `Start-Process msiexec -ArgumentList '/i C:\openssh.msi /qn' -Wait`.
+
+Затем закройте окно, откройте PowerShell от имени администратора заново и проверьте:
+`(Get-Command ssh-keygen).Source` должен показать `C:\Program Files\OpenSSH\ssh-keygen.exe` (иначе
+перезагрузите компьютер). Повторите команду установки: уже скачанные ею файлы в папке не мешают.
+На Windows 10 Pro 19045 x64 проверено: встроенного `OpenSSH_for_Windows_9.5` достаточно, ставить
+ничего не нужно.
 
 Программа спросит логин и пароль Viva и код подключения — больше ничего (адрес хаба и отпечаток его
 ключа — только самостоятельно собранная программа). Пароль и код при вводе не отображаются. Затем
 она закроет папку от других пользователей компьютера (в ней пароль Viva) и установит службу: та
 запускается сама при включении компьютера и перезапускается при сбое.
 
-Журнал службы: `C:\court-gateway\court-gateway.log`.
+Журнал службы: `C:\court-gateway\court-gateway.log`. Проводник по умолчанию прячет расширения, и
+там файл виден как `court-gateway` с типом «Текстовый документ». Последние строки журнала можно
+показать и в PowerShell: `Get-Content C:\court-gateway\court-gateway.log -Tail 100`.
 
 Если у компьютера нет прямого доступа к GitHub, скачайте на другом компьютере со страницы
 <https://github.com/Padelapp-Club/court-gateway/releases/latest> три файла — `SHA256SUMS`,
@@ -275,6 +293,8 @@ CRM) делает это так же, как админка Лунды:
 2. **Служебный клиент.** Сразу после входа программа просит найти и выбрать служебного клиента клуба
    (обычно клиент с названием клуба): на него встают брони партнёров. Свой клиент партнёр в Лунде не
    заводит. Пока клиент не выбран, шлюз показывает занятость, но брони не ставит (`setup` предупредит).
+   **Ищите одним словом**, например `Padelapp`: имя клиента может быть записано кириллицей (в живом
+   клубе — «Padelapp Амур Падел»), и полное имя латиницей Лунда не найдёт.
 
 **Сессия.** Лунда выдаёт шлюзу сессию, и шлюз продлевает её сам, без человека. Она хранится в папке
 состояния шлюза (`state/crm-session`, доступ только владельцу) — как пароль Viva в `.env`, это секрет
