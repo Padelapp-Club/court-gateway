@@ -649,14 +649,15 @@ func TestReadmeDoctorSampleShowsEveryCheck(t *testing.T) {
 // What the club or the operator must be told, and the docs keep saying.
 func TestDocsKeepTheOperatorFacts(t *testing.T) {
 	for _, c := range []struct{ doc, fact string }{
-		{"README.md", "winget install Microsoft.OpenSSH.Preview"}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10; .Beta left winget
-		{"AGENTS.md", "winget install Microsoft.OpenSSH.Preview"},
-		{"README.md", "FileVault, после отключения питания"}, // after a power loss a Mac with FileVault waits for a login
-		{"README.md", "`CLOCK_UNKNOWN`"},                     // a buffering proxy keeps the hub's time from the gateway
-		{"docs/hub.md", "`504` (любой код)"},                 // a create answered 502/504 has an unknown outcome
-		{"docs/hub.md", "`outdated=1` дольше суток"},         // a self-built gateway does not update itself
-		{"README.md", "Образ выпуска пока не публикуется"},   // Docker is a self-build for now
-		{"README.md", "переживает пересоздание контейнера"},  // the state is a volume: rejected CRM logins stay counted
+		{"README.md", "-ArgumentList \"/i $m ADDLOCAL=Client /qn\""}, // ssh-keygen -Y needs OpenSSH 8.1, older on Windows 10; the MSI alone also installs sshd
+		{"AGENTS.md", "`ADDLOCAL=Client`"},
+		{"README.md", "не нажимайте «Продолжить» в его вопросе о доступе"}, // «Continue» in Explorer opens the folder holding .env
+		{"README.md", "FileVault, после отключения питания"},               // after a power loss a Mac with FileVault waits for a login
+		{"README.md", "`CLOCK_UNKNOWN`"},                                   // a buffering proxy keeps the hub's time from the gateway
+		{"docs/hub.md", "`504` (любой код)"},                               // a create answered 502/504 has an unknown outcome
+		{"docs/hub.md", "`outdated=1` дольше суток"},                       // a self-built gateway does not update itself
+		{"README.md", "Образ выпуска пока не публикуется"},                 // Docker is a self-build for now
+		{"README.md", "переживает пересоздание контейнера"},                // the state is a volume: rejected CRM logins stay counted
 	} {
 		if !strings.Contains(readDoc(t, c.doc), c.fact) {
 			t.Errorf("%s no longer says %q", c.doc, c.fact)
