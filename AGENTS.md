@@ -219,8 +219,15 @@ Linux and macOS:
 Windows: run in PowerShell as Administrator, from any folder (it forces TLS 1.2, which Windows
 PowerShell 5.1 does not use by default). `ssh-keygen -Y` needs OpenSSH 8.1 or newer; Windows
 10 may have an older one or none, and the command then stops with `NO SSH-KEYGEN` or
-`SSH-KEYGEN TOO OLD`: tell the human, run `winget install Microsoft.OpenSSH.Beta`, open a new
-PowerShell as Administrator and run it again. Verified on Windows 10 Pro 19045 x64: its built-in
+`SSH-KEYGEN TOO OLD`: tell the human, install the OpenSSH **client only** with the block in
+README.md «Если нет OpenSSH 8.1» (PowerShell as Administrator; it downloads a pinned Win32-OpenSSH MSI
+to `C:\openssh.msi`, outside `C:\court-gateway`, checks its SHA-256 and runs `msiexec` with
+`ADDLOCAL=Client /qn /norestart`). Never install it without `ADDLOCAL=Client` (that includes `winget install
+Microsoft.OpenSSH.Preview`, and the old `Microsoft.OpenSSH.Beta` is gone from winget): the MSI then also
+installs the SSH server, started at every boot and reachable on port 22; if `Get-Service sshd` finds it,
+remove it as README says (`REMOVE=Server` with the same MSI), not just stop it. Then a new PowerShell as
+Administrator, `(Get-Command ssh-keygen).Source` is `C:\Program Files\OpenSSH\ssh-keygen.exe` (else
+reboot), and run the block again. Verified on Windows 10 Pro 19045 x64: its built-in
 `OpenSSH_for_Windows_9.5` is enough, nothing to install there.
 
 ```powershell
@@ -287,7 +294,8 @@ binary without the release key: it works but never updates itself — tell the h
 
 **Lunda: the human runs setup, not you.** Lunda is entered by a person: `setup` draws a QR code the
 staff member scans in the Lunda Padel app (or sends a code to their phone), then asks them to pick
-the club's service client. `--non-interactive` refuses it (`LOGIN_REQUIRED`). Give the human this
+the club's service client (tell them to search by one word of the client's name, e.g. `Padelapp`: the client's name may be
+in Cyrillic, and Lunda finds no full Latin name). `--non-interactive` refuses it (`LOGIN_REQUIRED`). Give the human this
 command to run in a terminal they see, in the install folder, with `GATEWAY_JOIN_CODE` set as in
 step 0 (Windows: PowerShell as Administrator, `.\court-gateway.exe`):
 
