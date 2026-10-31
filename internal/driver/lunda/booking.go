@@ -249,11 +249,12 @@ const bookingGoal = "GENERAL"
 // (booking-create, placeholder false), adjusted by minus the booked court's
 // price (update-courts-price-adjustment) so it is PAID without any payment,
 // its notes starting with the partner's marker (booking-notes-update). Read
-// back, it must be PAID, list no payment, have a price on the booked court
-// equal to its discount entries' (net 0), and carry the marker and the
-// service client. If a step after the create fails, the booking is
-// cancelled unless it has started (rollback) and the partner gets an
-// error: never a half-made booking, an unpaid debt of the service client.
+// back, it must be PAID, list no payment, and carry the marker and the
+// service client; a price on the booked court other than its discount
+// entries' (net 0) is logged at WARN, not rolled back (book). If a step
+// after the create fails, the booking is cancelled unless it has started
+// (rollback) and the partner gets an error: never a half-made booking, an
+// unpaid debt of the service client.
 // A create of unknown outcome (no answer, a 5xx, no readable id) cancels
 // nothing: the club books its own tournaments on the same service client
 // (unknownOutcome). Without a service client nothing is sent.
@@ -328,12 +329,41 @@ func (d *Driver) book(ctx context.Context, req driver.CreateRequest, notes strin
 		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "GET /"+opBookingLoad+": the booking just made is not found"))
 	case !strings.EqualFold(got.Status, "PAID") || !got.noPayments():
 		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made is not PAID without payments"))
-	case !got.netZero(c.uid):
-		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back at a net court price of 0"))
 	case got.Notes == nil || !marked(*got.Notes) || got.customer() != d.service:
 		return "", d.rollback(ctx, uid, req, driver.Upstream(driver.UpstreamInvalid, "the booking just made does not read back with the gateway's marker and service client"))
 	}
+	// Lunda calling it PAID with no payment already rules out a debt of the
+	// service client; the net of its price lines is only what the gateway
+	// expects to see. Seen live at Amur Padel (2026-10-31): bookings PAID
+	// without payments whose lines did not read as net 0 by the shape seen
+	// at Kosmos, every one of them rolled back. They are accepted and their
+	// lines logged: [UNVERIFIED] what shape Amur's lines have; the check can
+	// be tightened to what the log shows.
+	if !got.netZero(c.uid) {
+		d.log.Warn("a booking the gateway made in Lunda reads back PAID without payments, but its price lines do not net to 0: accepted",
+			"booking", "l-"+uid, "court", req.Court, "lines", got.priceLines(c.uid))
+	}
 	return uid, nil
+}
+
+// priceLines describes the booking's courts[] for the log, entry by
+// entry: its kind ("booked" on court, "other" on another court, "none"
+// without a courtUid), its raw price cut to 20 characters and its
+// description cut to 40. Neither a court uid nor anything about the
+// customer is in it.
+func (b *lundaBooking) priceLines(court string) string {
+	lines := make([]string, len(b.Courts))
+	for i, c := range b.Courts {
+		kind := "other"
+		switch c.CourtUID {
+		case court:
+			kind = "booked"
+		case "":
+			kind = "none"
+		}
+		lines[i] = fmt.Sprintf("%s price=%s description=%q", kind, truncate(strings.TrimSpace(string(c.Price)), 20), truncate(c.Description, 40))
+	}
+	return strings.Join(lines, "; ")
 }
 
 // write sends a change of a booking: anything but a 2xx is an error.

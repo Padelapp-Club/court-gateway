@@ -1,8 +1,9 @@
 package lunda_test
 
 // The price of a booking the gateway makes: the adjustment is minus the
-// price of the booked court alone, and the booking reads back at a net
-// court price of 0.
+// price of the booked court alone. Read back PAID without payments, it is
+// the gateway's at whatever net its price lines read: one other than 0 is
+// logged at WARN, not rolled back.
 
 import (
 	"context"
@@ -19,6 +20,14 @@ import (
 // to the stub unchanged.
 func rewriteCourts(t *testing.T, f *acctFixture, path string, courts []any) {
 	t.Helper()
+	rewriteResult(t, f, path, func(b map[string]any) { b["courts"] = courts })
+}
+
+// rewriteResult answers the first request to path as the stub does, but
+// with the booking it answers changed by edit; later requests go to the
+// stub unchanged.
+func rewriteResult(t *testing.T, f *acctFixture, path string, edit func(map[string]any)) {
+	t.Helper()
 	stub := f.srv.Config.Handler
 	var done atomic.Bool
 	intercept(f, path, func(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +42,7 @@ func rewriteCourts(t *testing.T, f *acctFixture, path string, courts []any) {
 			t.Errorf("stub answer: %v", err)
 			return
 		}
-		env["result"].(map[string]any)["courts"] = courts
+		edit(env["result"].(map[string]any))
 		w.WriteHeader(rec.Code)
 		_ = json.NewEncoder(w).Encode(env)
 	})
@@ -93,43 +102,108 @@ func TestCreatePriceIsTheBookedCourtsOnly(t *testing.T) {
 	}
 }
 
-// Read back, the booked court's price less the "Court discount" entries
-// (live: no courtUid, a positive price) must be 0. Over- or
-// under-adjusted, a negative price anywhere, an entry without courtUid
-// that is not the discount, an entry on another court, or prices that do
-// not read: it is rolled back even though Lunda calls it PAID.
-func TestCreateReadsBackANetPriceOfZero(t *testing.T) {
-	for name, courts := range map[string][]any{
-		"over-adjusted":             {row(court1, 1500), discountRow(3000)},
-		"under-adjusted":            {row(court1, 1500), discountRow(1499)},
-		"discount missing":          {row(court1, 1500)},
-		"negative discount":         {row(court1, 1500), discountRow(-1500)},
-		"negative court":            {row(court1, -1500), discountRow(0)},
-		"both negative":             {row(court1, -1500), discountRow(-1500)},
-		"discount on the court":     {row(court1, 1500), map[string]any{"courtUid": court1, "price": 1500, "description": "Court discount"}},
-		"no courtUid, not discount": {row(court1, 1500), map[string]any{"price": 1500, "description": "Bonus"}},
-		"no courtUid, no desc":      {row(court1, 1500), map[string]any{"price": 1500}},
-		"another court":             {row(court1, 1500), row(court2, 0), discountRow(1500)},
-		"only a discount":           {discountRow(0)},
-		"unreadable":                {row(court1, "1500"), discountRow(1500)},
-		"null discount":             {row(court1, 1500), discountRow(nil)},
-		"no courts":                 {},
+// netWarning is the "lines" of the WARN that booking, read back PAID
+// without payments, does not net to 0; ok is false when there is none.
+func netWarning(logs, booking string) (lines string, ok bool) {
+	for _, l := range strings.Split(logs, "\n") {
+		var e struct{ Level, Msg, Booking, Lines string }
+		if json.Unmarshal([]byte(l), &e) == nil && e.Level == "WARN" && strings.Contains(e.Msg, "do not net to 0") && e.Booking == booking {
+			return e.Lines, true
+		}
+	}
+	return "", false
+}
+
+// Read back PAID without payments, with the marker and the service
+// client, a booking is the gateway's whatever its price lines net to:
+// Lunda calling it PAID with no payment rules out a debt of the service
+// client. Live at Amur Padel (2026-10-31) bookings read back so in lines
+// that did not net to 0 by the shape seen at Kosmos, and every one was
+// rolled back. Over- or under-adjusted, a negative price, an entry
+// without courtUid that is not the discount, an entry on another court,
+// prices that do not read, no entry at all: the booking stays, and a WARN
+// names it and describes its lines — kind, raw price cut to 20
+// characters, description cut to 40 — but no court uid and nothing about
+// the customer.
+func TestCreateAcceptsAPaidReadBackThatDoesNotNetToZero(t *testing.T) {
+	const court = `booked price=1500 description=""`
+	for name, tc := range map[string]struct {
+		courts []any
+		lines  string
+	}{
+		"over-adjusted":             {[]any{row(court1, 1500), discountRow(3000)}, court + `; none price=3000 description="Court discount"`},
+		"under-adjusted":            {[]any{row(court1, 1500), discountRow(1499)}, court + `; none price=1499 description="Court discount"`},
+		"discount missing":          {[]any{row(court1, 1500)}, court},
+		"negative discount":         {[]any{row(court1, 1500), discountRow(-1500)}, court + `; none price=-1500 description="Court discount"`},
+		"negative court":            {[]any{row(court1, -1500), discountRow(0)}, `booked price=-1500 description=""; none price=0 description="Court discount"`},
+		"both negative":             {[]any{row(court1, -1500), discountRow(-1500)}, `booked price=-1500 description=""; none price=-1500 description="Court discount"`},
+		"discount on the court":     {[]any{row(court1, 1500), map[string]any{"courtUid": court1, "price": 1500, "description": "Court discount"}}, court + `; booked price=1500 description="Court discount"`},
+		"no courtUid, not discount": {[]any{row(court1, 1500), map[string]any{"price": 1500, "description": "Bonus"}}, court + `; none price=1500 description="Bonus"`},
+		"no courtUid, no desc":      {[]any{row(court1, 1500), map[string]any{"price": 1500}}, court + `; none price=1500 description=""`},
+		"another court":             {[]any{row(court1, 1500), row(court2, 0), discountRow(1500)}, court + `; other price=0 description=""; none price=1500 description="Court discount"`},
+		"only a discount":           {[]any{discountRow(0)}, `none price=0 description="Court discount"`},
+		"unreadable":                {[]any{row(court1, "1500"), discountRow(1500)}, `booked price="1500" description=""; none price=1500 description="Court discount"`},
+		"null discount":             {[]any{row(court1, 1500), discountRow(nil)}, court + `; none price=null description="Court discount"`},
+		"no price":                  {[]any{map[string]any{"courtUid": court1}}, `booked price= description=""`},
+		"no courts":                 {[]any{}, ``},
+		"cut to size": {[]any{map[string]any{"courtUid": court1, "price": "123456789012345678901234", "description": strings.Repeat("я", 50)}},
+			`booked price="1234567890123456789 description="` + strings.Repeat("я", 40) + `"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, d := loggedIn(t)
-			rewriteCourts(t, f, "/club/booking/booking-load", courts)
-			_, err := d.Create(context.Background(), createReq(futureDay(), 10))
-			assertRolledBack(t, f, err, "net court price of 0")
+			rewriteResult(t, f, "/club/booking/booking-load", func(b map[string]any) {
+				b["courts"] = tc.courts
+				b["customer"] = map[string]any{"firstName": "PRIVACY-MARKER-FIRSTNAME-91c2", "phone": "+79990000000"}
+			})
+			b, err := d.Create(context.Background(), createReq(futureDay(), 10))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := f.stub.Booking(strings.TrimPrefix(b.ID, "l-")); got.Status != "PAID" || f.stub.CallsTo("/club/booking/booking-cancel") != 0 {
+				t.Fatalf("rolled back: %+v", got)
+			}
+			logs := f.logs.String()
+			if lines, ok := netWarning(logs, b.ID); !ok || lines != tc.lines {
+				t.Fatalf("WARN lines %q, want %q; logs %s", lines, tc.lines, logs)
+			}
+			if strings.Contains(logs, "PRIVACY-MARKER") || strings.Contains(logs, "+7999") || strings.Contains(logs, court1) {
+				t.Fatalf("logs: %s", logs)
+			}
 		})
 	}
-	// the cancel failing too: the booking stays, said and logged at ERROR
+	// at net 0 nothing is said
 	f, d := loggedIn(t)
-	rewriteCourts(t, f, "/club/booking/booking-load", []any{row(court1, 1500), discountRow(3000)})
-	f.stub.FailNext(http.MethodDelete, "/club/booking/booking-cancel", http.StatusInternalServerError, `{}`)
-	_, err := d.Create(context.Background(), createReq(futureDay(), 10))
-	bs := f.stub.Bookings()
-	if err == nil || len(bs) != 1 || !strings.Contains(err.Error(), "STAYS IN LUNDA") || !errorLogged(f.logs.String(), "l-"+bs[0].ID) {
+	b, err := d.Create(context.Background(), createReq(futureDay(), 10))
+	if _, warned := netWarning(f.logs.String(), b.ID); err != nil || warned {
 		t.Fatalf("create: %v; logs %s", err, f.logs.String())
+	}
+}
+
+// Only the net is relaxed: read back not PAID, with a payment, without
+// the gateway's marker or on another client, a booking whose lines do not
+// net to 0 either is rolled back as before.
+func TestCreateRollsBackANetOtherThanZeroNotPaidOrNotOurs(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit func(map[string]any)
+		why  string
+	}{
+		"not paid": {func(b map[string]any) { b["status"] = "NOT_PAID" }, "not PAID without payments"},
+		"a payment": {func(b map[string]any) {
+			b["payments"] = []any{map[string]any{"type": "OFFLINE_PAYMENT", "amount": 1500}}
+		}, "not PAID without payments"},
+		"no notes":       {func(b map[string]any) { delete(b, "notes") }, "marker and service client"},
+		"another marker": {func(b map[string]any) { b["notes"] = "[cg:other] PadelApp 123" }, "marker and service client"},
+		"another client": {func(b map[string]any) { b["customerUid"] = clubClient }, "marker and service client"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, d := loggedIn(t)
+			rewriteResult(t, f, "/club/booking/booking-load", func(b map[string]any) {
+				b["courts"] = []any{row(court1, 1500), discountRow(3000)}
+				tc.edit(b)
+			})
+			_, err := d.Create(context.Background(), createReq(futureDay(), 10))
+			assertRolledBack(t, f, err, tc.why)
+		})
 	}
 }
 
